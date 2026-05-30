@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api_client.dart';
 import '../core/ibkr_browser.dart';
 import '../core/theme.dart';
+import 'home_page.dart';
 import 'positions_page.dart';
 import 'settings_page.dart';
 
@@ -17,6 +18,7 @@ class DesktopShell extends ConsumerWidget {
   const DesktopShell({super.key});
 
   static final _pages = <Widget>[
+    const HomePage(),
     const PositionsPage(),
     const _WatchlistPanel(),
     const _ChartPlaceholder(),
@@ -24,6 +26,7 @@ class DesktopShell extends ConsumerWidget {
   ];
 
   static const _navItems = [
+    (icon: Icons.dashboard_outlined, label: '首页'),
     (icon: Icons.pie_chart_outline, label: '持仓'),
     (icon: Icons.star_outline, label: '自选'),
     (icon: Icons.show_chart, label: 'K线'),

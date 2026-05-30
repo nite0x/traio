@@ -9,18 +9,12 @@ import (
 
 // Config holds all Traio runtime settings (persisted in SQLite, editable via UI).
 type Config struct {
-	Server    ServerConfig    `json:"server" yaml:"server"`
 	Database  DatabaseConfig  `json:"database" yaml:"database"`
 	SnapTrade SnapTradeConfig `json:"snaptrade" yaml:"snaptrade"`
 	Schwab    SchwabConfig    `json:"schwab" yaml:"schwab"`
 	IBKR      IBKRConfig      `json:"ibkr" yaml:"ibkr"`
 	Finnhub   FinnhubConfig   `json:"finnhub" yaml:"finnhub"`
 	Claude    ClaudeConfig    `json:"claude" yaml:"claude"`
-}
-
-type ServerConfig struct {
-	Host string `json:"host" yaml:"host"`
-	Port int    `json:"port" yaml:"port"`
 }
 
 const DefaultServerPort = 38180
@@ -44,6 +38,9 @@ type IBKRConfig struct {
 	SubAccount        string `json:"sub_account" yaml:"sub_account"`
 	Password          string `json:"password" yaml:"password"`
 	TOTPSecret        string `json:"totp_secret" yaml:"totp_secret"`
+	FlexToken         string `json:"flex_token" yaml:"flex_token"`
+	FlexQueryID       string `json:"flex_query_id" yaml:"flex_query_id"`
+	FlexBaseURL       string `json:"flex_base_url" yaml:"flex_base_url"`
 	GatewayDir        string `json:"gateway_dir" yaml:"gateway_dir"`
 	BundledGatewayDir string `json:"bundled_gateway_dir" yaml:"bundled_gateway_dir"`
 	GatewayPort       int    `json:"gateway_port" yaml:"gateway_port"`
@@ -67,17 +64,6 @@ type ClaudeConfig struct {
 	Model  string `json:"model" yaml:"model"`
 }
 
-func (c *Config) Addr() string {
-	host := c.Server.Host
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if c.Server.Port <= 0 {
-		return fmt.Sprintf("%s:%d", host, DefaultServerPort)
-	}
-	return fmt.Sprintf("%s:%d", host, c.Server.Port)
-}
-
 // Default returns built-in defaults; no external config file required.
 func Default(baseDir string) Config {
 	bundledGW := ResolveBundledGatewayDir()
@@ -85,10 +71,6 @@ func Default(baseDir string) Config {
 		bundledGW = filepath.Join(baseDir, "third_party", "clientportal.gw")
 	}
 	cfg := Config{
-		Server: ServerConfig{
-			Host: "127.0.0.1",
-			Port: DefaultServerPort,
-		},
 		Database: DatabaseConfig{
 			Path: filepath.Join(baseDir, "data", "traio.db"),
 		},
@@ -113,12 +95,6 @@ func Default(baseDir string) Config {
 
 // Normalize fills empty fields and resolves relative paths against baseDir.
 func (c *Config) Normalize(baseDir string) {
-	if c.Server.Host == "" {
-		c.Server.Host = "127.0.0.1"
-	}
-	if c.Server.Port <= 0 {
-		c.Server.Port = DefaultServerPort
-	}
 	if c.Database.Path == "" {
 		c.Database.Path = filepath.Join(baseDir, "data", "traio.db")
 	} else if !filepath.IsAbs(c.Database.Path) {
@@ -152,6 +128,10 @@ func (c *IBKRConfig) normalize(baseDir string) {
 		c.GatewayURL = fmt.Sprintf("https://localhost:%d", c.GatewayPort)
 	}
 	c.GatewayURL = strings.TrimSuffix(strings.TrimRight(c.GatewayURL, "/"), "/v1/api")
+	if c.FlexBaseURL == "" {
+		c.FlexBaseURL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+	}
+	c.FlexBaseURL = strings.TrimRight(c.FlexBaseURL, "/")
 	if c.GatewayProxyHost == "" {
 		c.GatewayProxyHost = "https://api.ibkr.com"
 	}

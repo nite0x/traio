@@ -6,26 +6,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nite/traio/internal/runtime"
 )
 
 type ServerControl struct {
-	BaseDir   string
 	StartedAt time.Time
+	APIURL    string
 	Shutdown  func()
 }
 
 func serverStatus(ctrl ServerControl) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ep, err := runtime.ReadEndpoint(ctrl.BaseDir)
-		apiURL := ""
-		if err == nil {
-			apiURL = ep.APIURL
-		}
 		c.JSON(http.StatusOK, gin.H{
 			"running":    true,
 			"pid":        os.Getpid(),
-			"api_url":    apiURL,
+			"api_url":    ctrl.APIURL,
 			"started_at": ctrl.StartedAt.UTC().Format(time.RFC3339),
 		})
 	}

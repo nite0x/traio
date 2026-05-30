@@ -1,4 +1,4 @@
-.PHONY: server tui deps tidy docker build-server build-tui build-mcp build-binaries macos-release macos-dist bundle-ibkr-gateway icons dev test-launch ios-check ios-framework
+.PHONY: server tui deps tidy build-server build-tui build-mcp build-binaries macos-release macos-dist bundle-ibkr-gateway icons dev dev-fresh clean-local test test-launch ios-check ios-framework
 
 IBKR_SRC ?= /Users/nite/Downloads/clientportal.gw
 FLUTTER ?= /Users/nite/env/flutter/bin/flutter
@@ -26,9 +26,6 @@ deps:
 
 tidy:
 	go mod tidy
-
-docker:
-	docker compose up --build
 
 build-server:
 	@mkdir -p $(BIN_DIR)
@@ -88,9 +85,24 @@ bundle-ibkr-gateway:
 	@echo "bundled IBKR gateway -> third_party/clientportal.gw"
 
 TRAIO_RUNTIME_DIR ?= $(HOME)/Library/Application Support/Traio
+TRAIO_SERVER_BIN := $(CURDIR)/$(BIN_DIR)/traio-server
 
+# 清理 dev/安装缓存（保留 ibkr-gateway 与 data/）
+clean-local:
+	@bash scripts/clean-local.sh
+
+# 日常开发：重建 server，清理 runtime 状态，启动 Flutter
 dev: build-server
-	cd flutter && TRAIO_RUNTIME_DIR="$(TRAIO_RUNTIME_DIR)" $(FLUTTER) run -d macos
+	@bash scripts/clean-local.sh --state
+	cd flutter && TRAIO_RUNTIME_DIR="$(TRAIO_RUNTIME_DIR)" TRAIO_SERVER_BIN="$(TRAIO_SERVER_BIN)" $(FLUTTER) run -d macos
+
+# 遇到端口/缓存问题时：完整清理后再 dev
+dev-fresh: clean-local build-server
+	cd flutter && TRAIO_RUNTIME_DIR="$(TRAIO_RUNTIME_DIR)" TRAIO_SERVER_BIN="$(TRAIO_SERVER_BIN)" $(FLUTTER) run -d macos
+
+test:
+	go test ./...
+	cd flutter && $(FLUTTER) test
 
 # Open the macOS Flutter app for UI/startup testing without auto-starting traio-server.
 test-launch:

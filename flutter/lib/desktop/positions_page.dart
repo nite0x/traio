@@ -1,7 +1,9 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
+import '../core/backend_launcher.dart';
 import '../core/theme.dart';
 
 // ---------------------------------------------------------------------------
@@ -9,11 +11,25 @@ import '../core/theme.dart';
 // ---------------------------------------------------------------------------
 
 final positionsProvider = StreamProvider<List<_Position>>((ref) async* {
-  final client = ref.read(apiClientProvider);
+  ref.watch(apiClientProvider);
   while (true) {
-    final raw = await client.positions();
-    yield raw.map(_Position.fromJson).toList();
-    await Future<void>.delayed(const Duration(seconds: 10));
+    if (!await BackendLauncher.isServerRunning()) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      continue;
+    }
+    final client = ref.read(apiClientProvider);
+    try {
+      final raw = await client.positions();
+      yield raw.map(_Position.fromJson).toList();
+      await Future<void>.delayed(const Duration(seconds: 10));
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.connectionError ||
+          e.type == DioExceptionType.connectionTimeout) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        continue;
+      }
+      rethrow;
+    }
   }
 });
 

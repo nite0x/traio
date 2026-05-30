@@ -49,6 +49,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/quotes", listQuotes(deps.Quotes))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
 		v1.GET("/positions", listPositions(deps.Portfolio))
+		v1.GET("/account/equity", accountEquity(deps.Portfolio))
 		v1.GET("/news/:symbol", getNews(deps.News))
 		v1.POST("/orders", placeOrder(deps.Portfolio))
 		v1.GET("/ws", wsQuotes())
@@ -294,6 +295,28 @@ func listPositions(svc *portfolio.Service) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, pos)
+	}
+}
+
+func accountEquity(svc *portfolio.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			return
+		}
+		points, summary, err := svc.AccountTimeline(c.Request.Context())
+		if err != nil && len(points) == 0 && summary.NetLiquidation == 0 {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		payload := gin.H{
+			"points":  points,
+			"summary": summary,
+		}
+		if err != nil {
+			payload["warning"] = err.Error()
+		}
+		c.JSON(http.StatusOK, payload)
 	}
 }
 

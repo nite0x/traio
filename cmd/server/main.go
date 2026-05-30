@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -77,44 +76,23 @@ func main() {
 	}
 
 	router := api.NewRouter(deps, api.ServerControl{
-		BaseDir:   baseDir,
 		StartedAt: startedAt,
+		APIURL:    fmt.Sprintf("http://127.0.0.1:%d", config.DefaultServerPort),
 		Shutdown: func() {
 			quit <- syscall.SIGTERM
 		},
 	})
 
-	host := cfg.Server.Host
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	ln, err := net.Listen("tcp", cfg.Addr())
-	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
-	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		log.Fatalf("listen: unexpected addr type")
-	}
-	ep := runtime.Endpoint{
-		Host: tcpAddr.IP.String(),
-		Port: tcpAddr.Port,
-	}
-	if ep.Host == "0.0.0.0" || ep.Host == "::" {
-		ep.Host = host
-	}
-	ep.APIURL = "http://" + net.JoinHostPort(ep.Host, strconv.Itoa(ep.Port))
-	if err := runtime.WriteEndpoint(baseDir, ep); err != nil {
-		log.Printf("write endpoint: %v", err)
-	}
 	if err := runtime.WritePID(baseDir, os.Getpid()); err != nil {
 		log.Printf("write pid: %v", err)
 	}
 
-	srv := &http.Server{Handler: router}
+	addr := fmt.Sprintf("127.0.0.1:%d", config.DefaultServerPort)
+	apiURL := "http://" + addr
+	srv := &http.Server{Addr: addr, Handler: router}
 	go func() {
-		log.Printf("traio server listening on %s", ep.APIURL)
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Printf("traio server listening on %s", apiURL)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()
@@ -126,6 +104,5 @@ func main() {
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
 
-	runtime.RemoveEndpoint(baseDir)
 	runtime.RemovePID(baseDir)
 }

@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'backend_launcher.dart';
@@ -19,12 +22,16 @@ void refreshBackendEndpoint(WidgetRef ref) {
 final dioProvider = Provider<Dio>((ref) {
   ref.watch(backendEndpointProvider);
   final cfg = TraioConfig(apiBaseUrl: BackendLauncher.apiBaseUrl);
-  return Dio(BaseOptions(
+  final dio = Dio(BaseOptions(
     baseUrl: cfg.apiV1,
     connectTimeout: const Duration(seconds: 10),
     receiveTimeout: const Duration(seconds: 30),
     headers: {'Accept': 'application/json'},
   ));
+  (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+    return HttpClient()..findProxy = (uri) => 'DIRECT';
+  };
+  return dio;
 });
 
 class TraioApiClient {
@@ -34,7 +41,11 @@ class TraioApiClient {
 
   Future<Map<String, dynamic>> health() async {
     final root = _dio.options.baseUrl.replaceAll('/api/v1', '');
-    final res = await Dio(BaseOptions(baseUrl: root)).get('/health');
+    final dio = Dio(BaseOptions(baseUrl: root));
+    (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+      return HttpClient()..findProxy = (uri) => 'DIRECT';
+    };
+    final res = await dio.get('/health');
     return Map<String, dynamic>.from(res.data as Map);
   }
 
@@ -90,6 +101,12 @@ class TraioApiClient {
   Future<List<dynamic>> positions() async {
     final res = await _dio.get('/positions');
     return res.data as List<dynamic>;
+  }
+
+  Future<AccountEquityResponse> accountEquity() async {
+    final res = await _dio.get('/account/equity');
+    return AccountEquityResponse.fromJson(
+        Map<String, dynamic>.from(res.data as Map));
   }
 
   Future<Map<String, dynamic>> ibkrGatewayStatus() async {
@@ -185,8 +202,19 @@ class TraioApiClient {
 
 final ibkrGatewayStatusProvider =
     StreamProvider<Map<String, dynamic>>((ref) async* {
-  final client = ref.read(apiClientProvider);
+  ref.watch(apiClientProvider);
   while (true) {
+    if (!await BackendLauncher.isServerRunning()) {
+      yield {
+        'running': false,
+        'authenticated': false,
+        'account': '',
+        'session_age_seconds': 0,
+      };
+      await Future<void>.delayed(const Duration(seconds: 2));
+      continue;
+    }
+    final client = ref.read(apiClientProvider);
     Map<String, dynamic> status;
     try {
       status = await client.ibkrGatewayStatus();
@@ -225,6 +253,97 @@ class WatchlistGroup {
       id: json['id'] as int,
       name: json['name']?.toString() ?? '',
       sortOrder: json['sort_order'] as int? ?? 0,
+    );
+  }
+}
+
+class AccountEquityResponse {
+  const AccountEquityResponse({
+    required this.points,
+    required this.summary,
+    this.warning,
+  });
+
+  final List<AccountEquityPoint> points;
+  final AccountSummary summary;
+  final String? warning;
+
+  factory AccountEquityResponse.fromJson(Map<String, dynamic> json) {
+    final rawPoints = json['points'] as List<dynamic>? ?? const [];
+    return AccountEquityResponse(
+      points: rawPoints
+          .map((e) =>
+              AccountEquityPoint.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList(),
+      summary: AccountSummary.fromJson(
+          Map<String, dynamic>.from(json['summary'] as Map? ?? const {})),
+      warning: json['warning']?.toString(),
+    );
+  }
+}
+
+class AccountEquityPoint {
+  const AccountEquityPoint({
+    required this.time,
+    required this.value,
+    required this.currency,
+    required this.source,
+  });
+
+  final DateTime time;
+  final double value;
+  final String currency;
+  final String source;
+
+  factory AccountEquityPoint.fromJson(Map<String, dynamic> json) {
+    return AccountEquityPoint(
+      time: DateTime.tryParse(json['time']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      value: (json['value'] as num?)?.toDouble() ?? 0,
+      currency: json['currency']?.toString() ?? '',
+      source: json['source']?.toString() ?? '',
+    );
+  }
+}
+
+class AccountSummary {
+  const AccountSummary({
+    required this.accountId,
+    required this.currency,
+    required this.netLiquidation,
+    required this.totalCashValue,
+    required this.grossPositionValue,
+    required this.unrealizedPnl,
+    required this.realizedPnl,
+    required this.buyingPower,
+    required this.broker,
+    required this.asOf,
+  });
+
+  final String accountId;
+  final String currency;
+  final double netLiquidation;
+  final double totalCashValue;
+  final double grossPositionValue;
+  final double unrealizedPnl;
+  final double realizedPnl;
+  final double buyingPower;
+  final String broker;
+  final DateTime? asOf;
+
+  factory AccountSummary.fromJson(Map<String, dynamic> json) {
+    return AccountSummary(
+      accountId: json['account_id']?.toString() ?? '',
+      currency: json['currency']?.toString() ?? '',
+      netLiquidation: (json['net_liquidation'] as num?)?.toDouble() ?? 0,
+      totalCashValue: (json['total_cash_value'] as num?)?.toDouble() ?? 0,
+      grossPositionValue:
+          (json['gross_position_value'] as num?)?.toDouble() ?? 0,
+      unrealizedPnl: (json['unrealized_pnl'] as num?)?.toDouble() ?? 0,
+      realizedPnl: (json['realized_pnl'] as num?)?.toDouble() ?? 0,
+      buyingPower: (json['buying_power'] as num?)?.toDouble() ?? 0,
+      broker: json['broker']?.toString() ?? '',
+      asOf: DateTime.tryParse(json['as_of']?.toString() ?? ''),
     );
   }
 }

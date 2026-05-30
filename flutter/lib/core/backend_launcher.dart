@@ -11,32 +11,13 @@ class BackendLauncher {
 
   static const _defaultApiBaseUrl = 'http://127.0.0.1:38180';
 
-  static String? _apiBaseUrl;
-
-  /// Current backend base URL (from server.json or fallback).
-  static String get apiBaseUrl {
-    final ep = _readEndpoint();
-    if (ep != null) {
-      _apiBaseUrl = ep.apiUrl;
-      return _apiBaseUrl!;
-    }
-    if (_apiBaseUrl != null) return _apiBaseUrl!;
-    return _defaultApiBaseUrl;
-  }
+  /// Current backend base URL. Dev and desktop always use the fixed local port.
+  static String get apiBaseUrl => _defaultApiBaseUrl;
 
   static String get runtimeDir => _runtimeDir();
 
   static Future<bool> isServerRunning() async {
-    final ep = _readEndpoint();
-    if (ep != null && await _isHealthy(ep.apiUrl)) {
-      _apiBaseUrl = ep.apiUrl;
-      return true;
-    }
-    if (await _isHealthy(_defaultApiBaseUrl)) {
-      _apiBaseUrl = _defaultApiBaseUrl;
-      return true;
-    }
-    return false;
+    return _isHealthy(_defaultApiBaseUrl);
   }
 
   static Future<void> ensureStarted() async {
@@ -76,35 +57,35 @@ class BackendLauncher {
       mode: ProcessStartMode.detached,
     );
 
-    final ep = await _waitForEndpoint(const Duration(seconds: 20));
-    if (ep == null || !await _isHealthy(ep.apiUrl)) {
+    if (!await _waitForHealthy(const Duration(seconds: 20))) {
       throw StateError('Traio 后端启动超时');
     }
-    _apiBaseUrl = ep.apiUrl;
   }
 
   /// Stops traio-server via API, or kills by PID file.
   static Future<void> stopServer() async {
-    final ep = _readEndpoint();
-    if (ep != null && await _isHealthy(ep.apiUrl)) {
+    if (await _isHealthy(_defaultApiBaseUrl)) {
       try {
         final client = HttpClient();
+        client.findProxy = (uri) => 'DIRECT';
         final req = await client
-            .postUrl(Uri.parse('${ep.apiUrl}/api/v1/server/shutdown'));
+            .postUrl(Uri.parse('$_defaultApiBaseUrl/api/v1/server/shutdown'));
         await req.close().timeout(const Duration(seconds: 3));
         client.close();
         await _waitForServerDown(const Duration(seconds: 10));
-        _apiBaseUrl = null;
         return;
       } catch (_) {}
     }
     await _killByPidFile();
-    _apiBaseUrl = null;
   }
 
   static String binaryPath(String name) => _resolveBinary(name);
 
   static String _runtimeDir() {
+    final env = Platform.environment['TRAIO_RUNTIME_DIR'];
+    if (env != null && env.isNotEmpty) {
+      return env;
+    }
     if (Platform.isMacOS || Platform.isLinux) {
       final home = Platform.environment['HOME'];
       if (home != null && home.isNotEmpty) {
@@ -120,32 +101,15 @@ class BackendLauncher {
     return p.normalize(p.join(Directory.current.path, 'traio-data'));
   }
 
-  static String _endpointPath() => p.join(_runtimeDir(), 'server.json');
-
   static String _pidPath() => p.join(_runtimeDir(), 'traio-server.pid');
 
-  static _Endpoint? _readEndpoint() {
-    try {
-      final file = File(_endpointPath());
-      if (!file.existsSync()) return null;
-      final map = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
-      final host = map['host']?.toString() ?? '127.0.0.1';
-      final port = map['port'] as int? ?? 0;
-      final apiUrl = map['api_url']?.toString() ?? 'http://$host:$port';
-      return _Endpoint(host: host, port: port, apiUrl: apiUrl);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static Future<_Endpoint?> _waitForEndpoint(Duration timeout) async {
+  static Future<bool> _waitForHealthy(Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
-      final ep = _readEndpoint();
-      if (ep != null && await _isHealthy(ep.apiUrl)) return ep;
+      if (await _isHealthy(_defaultApiBaseUrl)) return true;
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    return null;
+    return false;
   }
 
   static Future<void> _waitForServerDown(Duration timeout) async {
@@ -161,9 +125,6 @@ class BackendLauncher {
       final pid = int.parse(File(_pidPath()).readAsStringSync().trim());
       final proc = await Process.start('kill', [pid.toString()]);
       await proc.exitCode;
-    } catch (_) {}
-    try {
-      File(_endpointPath()).deleteSync();
     } catch (_) {}
     try {
       File(_pidPath()).deleteSync();
@@ -215,6 +176,7 @@ class BackendLauncher {
   static Future<bool> _isHealthy(String base) async {
     try {
       final client = HttpClient();
+      client.findProxy = (uri) => 'DIRECT';
       final req = await client.getUrl(Uri.parse('$base/health'));
       final resp = await req.close().timeout(const Duration(seconds: 2));
       final body = await resp.transform(utf8.decoder).join();
@@ -226,12 +188,4 @@ class BackendLauncher {
       return false;
     }
   }
-}
-
-class _Endpoint {
-  const _Endpoint(
-      {required this.host, required this.port, required this.apiUrl});
-  final String host;
-  final int port;
-  final String apiUrl;
 }

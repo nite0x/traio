@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +23,164 @@ import (
 type Client struct {
 	cfg        config.IBKRConfig
 	httpClient *http.Client
+}
+
+func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, error) {
+	accountID, err := c.resolveAccountID(ctx)
+	if err != nil {
+		return broker.AccountSummary{}, fmt.Errorf("ibkr: resolve account: %w", err)
+	}
+
+	u := fmt.Sprintf("%s/v1/api/portfolio/%s/summary", c.cfg.GatewayURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return broker.AccountSummary{}, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return broker.AccountSummary{}, fmt.Errorf("ibkr: account summary request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return broker.AccountSummary{}, fmt.Errorf("ibkr: gateway not authenticated")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return broker.AccountSummary{}, fmt.Errorf("ibkr: account summary status %d", resp.StatusCode)
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return broker.AccountSummary{}, fmt.Errorf("ibkr: decode account summary: %w", err)
+	}
+
+	return broker.AccountSummary{
+		AccountID:          accountID,
+		Currency:           firstAccountCurrency(raw),
+		NetLiquidation:     firstAccountFloat(raw, "NetLiquidation", "netliquidation", "netLiquidation", "NLV", "CurrentAvailableFunds"),
+		TotalCashValue:     firstAccountFloat(raw, "TotalCashValue", "totalcashvalue", "totalCashValue", "CashBalance"),
+		GrossPositionValue: firstAccountFloat(raw, "GrossPositionValue", "grosspositionvalue", "grossPositionValue"),
+		UnrealizedPnL:      firstAccountFloat(raw, "UnrealizedPnL", "unrealizedpnl", "unrealizedPnl", "UnrealizedPnL-S"),
+		RealizedPnL:        firstAccountFloat(raw, "RealizedPnL", "realizedpnl", "realizedPnl"),
+		BuyingPower:        firstAccountFloat(raw, "BuyingPower", "buyingpower", "buyingPower"),
+		Broker:             "IBKR",
+		AsOf:               time.Now().UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPoint, error) {
+	token := strings.TrimSpace(c.cfg.FlexToken)
+	queryID := strings.TrimSpace(c.cfg.FlexQueryID)
+	if token == "" || queryID == "" {
+		return []broker.AccountEquityPoint{}, nil
+	}
+
+	refCode, err := c.flexSendRequest(ctx, token, queryID)
+	if err != nil {
+		return nil, err
+	}
+	body, err := c.flexGetStatement(ctx, token, refCode)
+	if err != nil {
+		return nil, err
+	}
+	return parseFlexEquity(body), nil
+}
+
+func (c *Client) flexSendRequest(ctx context.Context, token, queryID string) (string, error) {
+	u, err := url.Parse(c.cfg.FlexBaseURL + "/SendRequest")
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("t", token)
+	q.Set("q", queryID)
+	q.Set("v", "3")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Java")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ibkr flex: send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ibkr flex: send status %d", resp.StatusCode)
+	}
+
+	var parsed flexResponse
+	if err := xml.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return "", fmt.Errorf("ibkr flex: decode send response: %w", err)
+	}
+	if strings.EqualFold(parsed.Status, "Fail") || parsed.ErrorCode != "" {
+		return "", fmt.Errorf("ibkr flex: %s %s", parsed.ErrorCode, parsed.ErrorMessage)
+	}
+	if strings.TrimSpace(parsed.ReferenceCode) == "" {
+		return "", fmt.Errorf("ibkr flex: missing reference code")
+	}
+	return strings.TrimSpace(parsed.ReferenceCode), nil
+}
+
+func (c *Client) flexGetStatement(ctx context.Context, token, refCode string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 2 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		body, err := c.flexGetStatementOnce(ctx, token, refCode)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !isRetryableFlexError(err) {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string) ([]byte, error) {
+	u, err := url.Parse(c.cfg.FlexBaseURL + "/GetStatement")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("t", token)
+	q.Set("q", refCode)
+	q.Set("v", "3")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Java")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr flex: get statement: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ibkr flex: get status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr flex: read statement: %w", err)
+	}
+	if flexErr := parseFlexError(body); flexErr != nil {
+		return nil, flexErr
+	}
+	return body, nil
 }
 
 func New(cfg config.IBKRConfig) *Client {
@@ -354,6 +515,7 @@ func parseFloat(value any) float64 {
 	case string:
 		cleaned := strings.TrimSpace(strings.TrimSuffix(v, "%"))
 		cleaned = strings.ReplaceAll(cleaned, ",", "")
+		cleaned = strings.ReplaceAll(cleaned, "$", "")
 		n, _ := strconv.ParseFloat(cleaned, 64)
 		return n
 	default:
@@ -380,6 +542,212 @@ func parseInt64(value any) int64 {
 	default:
 		return 0
 	}
+}
+
+type flexResponse struct {
+	Status        string `xml:"Status"`
+	ReferenceCode string `xml:"ReferenceCode"`
+	ErrorCode     string `xml:"ErrorCode"`
+	ErrorMessage  string `xml:"ErrorMessage"`
+}
+
+type flexError struct {
+	code    string
+	message string
+}
+
+func (e flexError) Error() string {
+	if e.code == "" {
+		return "ibkr flex: " + e.message
+	}
+	return "ibkr flex: " + e.code + " " + e.message
+}
+
+func isRetryableFlexError(err error) bool {
+	fe, ok := err.(flexError)
+	if !ok {
+		return false
+	}
+	switch fe.code {
+	case "1001", "1003", "1004", "1005", "1006", "1007", "1008", "1009", "1018", "1019", "1021":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseFlexError(body []byte) error {
+	var parsed flexResponse
+	if err := xml.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if strings.EqualFold(parsed.Status, "Fail") || parsed.ErrorCode != "" {
+		return flexError{
+			code:    strings.TrimSpace(parsed.ErrorCode),
+			message: strings.TrimSpace(parsed.ErrorMessage),
+		}
+	}
+	return nil
+}
+
+func parseFlexEquity(body []byte) []broker.AccountEquityPoint {
+	decoder := xml.NewDecoder(strings.NewReader(string(body)))
+	pointsByTime := map[string]broker.AccountEquityPoint{}
+
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if !isFlexEquityElement(start.Name.Local) {
+			continue
+		}
+		attrs := lowerAttrs(start.Attr)
+		date := firstAttr(attrs, "reportdate", "date", "todate", "statementdate", "periodenddate")
+		if date == "" {
+			continue
+		}
+		value := firstAttrFloat(attrs,
+			"endingvalue",
+			"endingnav",
+			"endingnetassetvalue",
+			"currentnav",
+			"netassetvalue",
+			"netliquidation",
+			"equitywithloanvalue",
+			"total",
+		)
+		if value == 0 {
+			continue
+		}
+		key := normalizeFlexDate(date)
+		if key == "" {
+			continue
+		}
+		pointsByTime[key] = broker.AccountEquityPoint{
+			Time:     key,
+			Value:    value,
+			Currency: firstAttr(attrs, "currency", "basecurrency"),
+			Source:   "IBKR Flex",
+		}
+	}
+
+	out := make([]broker.AccountEquityPoint, 0, len(pointsByTime))
+	for _, point := range pointsByTime {
+		out = append(out, point)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Time < out[j].Time
+	})
+	return out
+}
+
+func lowerAttrs(attrs []xml.Attr) map[string]string {
+	out := make(map[string]string, len(attrs))
+	for _, attr := range attrs {
+		out[strings.ToLower(attr.Name.Local)] = strings.TrimSpace(attr.Value)
+	}
+	return out
+}
+
+func isFlexEquityElement(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "netassetvalue") ||
+		strings.Contains(name, "nav") ||
+		strings.Contains(name, "equitywithloan") ||
+		strings.Contains(name, "netliquidation")
+}
+
+func firstAttr(attrs map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(attrs[strings.ToLower(key)]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstAttrFloat(attrs map[string]string, keys ...string) float64 {
+	for _, key := range keys {
+		if value := parseFloat(firstAttr(attrs, key)); value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func normalizeFlexDate(value string) string {
+	value = strings.TrimSpace(value)
+	formats := []string{"2006-01-02", "20060102", "2006/01/02", "01/02/2006", time.RFC3339}
+	for _, layout := range formats {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return value
+}
+
+func firstAccountFloat(raw map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		if value := accountValue(raw, key); value != nil {
+			if n := parseFloat(value); n != 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func firstAccountString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(asString(accountValue(raw, key))); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstAccountCurrency(raw map[string]any) string {
+	if value := firstAccountString(raw, "Currency", "currency", "BaseCurrency", "baseCurrency"); value != "" {
+		return value
+	}
+	for _, key := range []string{"NetLiquidation", "netliquidation", "TotalCashValue", "totalcashvalue"} {
+		for k, v := range raw {
+			if !strings.EqualFold(k, key) {
+				continue
+			}
+			if typed, ok := v.(map[string]any); ok {
+				if value := strings.TrimSpace(asString(typed["currency"])); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func accountValue(raw map[string]any, key string) any {
+	for k, v := range raw {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		switch typed := v.(type) {
+		case map[string]any:
+			if value, ok := typed["value"]; ok {
+				return value
+			}
+			if amount, ok := typed["amount"]; ok {
+				return amount
+			}
+		default:
+			return v
+		}
+	}
+	return nil
 }
 
 func hasQuotePrices(quotes []broker.Quote) bool {

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
@@ -13,7 +12,7 @@ Future<void> main() async {
   final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
   if (isDesktop && _shouldAutoStartBackend()) {
-    unawaited(_startBackend());
+    await _startBackend();
   }
 
   runApp(isDesktop ? const TraioDesktopApp() : const TraioMobileApp());

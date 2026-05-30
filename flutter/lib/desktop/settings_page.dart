@@ -78,10 +78,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _controllers[key] = TextEditingController(text: value?.toString() ?? '');
     }
 
-    final server = data['server'] as Map? ?? {};
-    reg('server.host', server['host']);
-    reg('server.port', server['port']);
-
     final db = data['database'] as Map? ?? {};
     reg('database.path', db['path']);
 
@@ -98,6 +94,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     reg('ibkr.sub_account', ibkr['sub_account']);
     reg('ibkr.password', ibkr['password'], obscure: true);
     reg('ibkr.totp_secret', ibkr['totp_secret'], obscure: true);
+    reg('ibkr.flex_token', ibkr['flex_token'], obscure: true);
+    reg('ibkr.flex_query_id', ibkr['flex_query_id']);
+    reg('ibkr.flex_base_url', ibkr['flex_base_url']);
     reg('ibkr.gateway_dir', ibkr['gateway_dir']);
     reg('ibkr.bundled_gateway_dir', ibkr['bundled_gateway_dir']);
     reg('ibkr.gateway_port', ibkr['gateway_port']);
@@ -116,10 +115,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     int? port(String key) => int.tryParse(_controllers[key]?.text ?? '');
 
     return {
-      'server': {
-        'host': _controllers['server.host']!.text.trim(),
-        'port': port('server.port') ?? 0,
-      },
       'database': {
         'path': _controllers['database.path']!.text.trim(),
       },
@@ -136,8 +131,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         'sub_account': _controllers['ibkr.sub_account']!.text.trim(),
         'password': _controllers['ibkr.password']!.text.trim(),
         'totp_secret': _controllers['ibkr.totp_secret']!.text.trim(),
+        'flex_token': _controllers['ibkr.flex_token']!.text.trim(),
+        'flex_query_id': _controllers['ibkr.flex_query_id']!.text.trim(),
+        'flex_base_url': _controllers['ibkr.flex_base_url']!.text.trim(),
         'gateway_dir': _controllers['ibkr.gateway_dir']!.text.trim(),
-        'bundled_gateway_dir': _controllers['ibkr.bundled_gateway_dir']!.text.trim(),
+        'bundled_gateway_dir':
+            _controllers['ibkr.bundled_gateway_dir']!.text.trim(),
         'gateway_port': port('ibkr.gateway_port') ?? 5680,
         'gateway_url': _controllers['ibkr.gateway_url']!.text.trim(),
         'download_proxy': _controllers['ibkr.download_proxy']!.text.trim(),
@@ -182,11 +181,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         backgroundColor: TraioTheme.surface,
         title: Text('设置', style: TraioTheme.mono(context)),
         actions: [
-          TextButton(onPressed: _loading ? null : _loadDefaults, child: const Text('恢复默认')),
+          TextButton(
+              onPressed: _loading ? null : _loadDefaults,
+              child: const Text('恢复默认')),
           TextButton(
             onPressed: _saving || _loading ? null : _save,
             child: _saving
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Text('保存'),
           ),
         ],
@@ -194,7 +198,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : _error != null
-              ? Center(child: Text(_error!, style: const TextStyle(color: TraioTheme.down)))
+              ? Center(
+                  child: Text(_error!,
+                      style: const TextStyle(color: TraioTheme.down)))
               : Form(
                   key: _formKey,
                   child: ListView(
@@ -204,11 +210,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       _section('后台服务', const [
                         ServiceControlsPanel(),
                       ]),
-                      _section('服务', [
-                        _field('server.host', '监听地址', hint: '127.0.0.1'),
-                        _field('server.port', '端口', hint: '0 = 随机', numbersOnly: true),
-                        _hint('端口 0 表示随机可用端口，避免冲突；修改后需在「后台服务」中重启 traio-server'),
-                      ]),
                       _section('数据库', [
                         _field('database.path', 'SQLite 路径'),
                         _hint('修改数据库路径后需在「后台服务」中重启 traio-server'),
@@ -217,17 +218,28 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                         _hint('留空账号/密码/TOTP → Gateway 启动后浏览器手动登录'),
                         _field('ibkr.sub_account', '子账号'),
                         _field('ibkr.password', '密码', obscure: true),
-                        _field('ibkr.totp_secret', 'TOTP Secret', obscure: true),
-                        _field('ibkr.gateway_port', 'Gateway 端口', hint: '5680', numbersOnly: true),
-                        _field('ibkr.gateway_url', 'Gateway URL', hint: 'https://localhost:5680'),
+                        _field('ibkr.totp_secret', 'TOTP Secret',
+                            obscure: true),
+                        _field('ibkr.flex_token', 'Flex Token', obscure: true),
+                        _field('ibkr.flex_query_id', 'Flex Query ID'),
+                        _field('ibkr.flex_base_url', 'Flex Base URL',
+                            hint:
+                                'https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService'),
+                        _field('ibkr.gateway_port', 'Gateway 端口',
+                            hint: '5680', numbersOnly: true),
+                        _field('ibkr.gateway_url', 'Gateway URL',
+                            hint: 'https://localhost:5680'),
                         _field('ibkr.bundled_gateway_dir', '捆绑 Gateway 目录'),
                         _field('ibkr.gateway_dir', '运行时 Gateway 目录'),
-                        _field('ibkr.download_proxy', '下载代理', hint: 'http://127.0.0.1:7897'),
+                        _field('ibkr.download_proxy', '下载代理',
+                            hint: 'http://127.0.0.1:7897'),
                       ]),
                       _section('Schwab', [
                         _field('schwab.client_id', 'Client ID'),
-                        _field('schwab.client_secret', 'Client Secret', obscure: true),
-                        _field('schwab.redirect_uri', 'Redirect URI', hint: 'https://127.0.0.1:8182'),
+                        _field('schwab.client_secret', 'Client Secret',
+                            obscure: true),
+                        _field('schwab.redirect_uri', 'Redirect URI',
+                            hint: 'https://127.0.0.1:8182'),
                       ]),
                       _section('SnapTrade', [
                         _field('snaptrade.client_id', 'Client ID'),
@@ -238,7 +250,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       ]),
                       _section('Claude', [
                         _field('claude.api_key', 'API Key', obscure: true),
-                        _field('claude.model', 'Model', hint: 'claude-sonnet-4-20250514'),
+                        _field('claude.model', 'Model',
+                            hint: 'claude-sonnet-4-20250514'),
                       ]),
                       const SizedBox(height: 32),
                     ],
@@ -252,7 +265,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 16),
-        Text(title, style: TraioTheme.mono(context, size: 13, color: TraioTheme.textMuted)),
+        Text(title,
+            style: TraioTheme.mono(context,
+                size: 13, color: TraioTheme.textMuted)),
         const SizedBox(height: 8),
         ...children,
       ],
@@ -262,7 +277,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Widget _hint(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Text(text, style: TraioTheme.mono(context, size: 11, color: TraioTheme.textMuted)),
+      child: Text(text,
+          style:
+              TraioTheme.mono(context, size: 11, color: TraioTheme.textMuted)),
     );
   }
 
@@ -286,18 +303,24 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           hintText: hint,
           filled: true,
           fillColor: TraioTheme.surface,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: TraioTheme.border)),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: TraioTheme.border)),
-          labelStyle: const TextStyle(color: TraioTheme.textMuted, fontSize: 12),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: TraioTheme.border)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: TraioTheme.border)),
+          labelStyle:
+              const TextStyle(color: TraioTheme.textMuted, fontSize: 12),
           hintStyle: const TextStyle(color: TraioTheme.textMuted, fontSize: 11),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         ),
         keyboardType: numbersOnly ? TextInputType.number : TextInputType.text,
         validator: (v) {
           if (numbersOnly && key.endsWith('.port')) {
             if (v == null || v.isEmpty) return null;
             final n = int.tryParse(v);
-            if (n == null || n < 0) return '请输入有效端口（0=随机）';
+            if (n == null || n < 0) return '请输入有效端口';
           }
           return null;
         },

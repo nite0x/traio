@@ -19,6 +19,7 @@ const (
 type Service struct {
 	snaptrade broker.PortfolioProvider
 	ibkr      broker.PortfolioProvider
+	account   broker.AccountProvider
 
 	positionsCacheTTL      time.Duration
 	positionsErrorCacheTTL time.Duration
@@ -33,12 +34,44 @@ type Service struct {
 }
 
 func New(snaptrade, ibkr broker.PortfolioProvider) *Service {
+	var account broker.AccountProvider
+	if provider, ok := ibkr.(broker.AccountProvider); ok {
+		account = provider
+	}
 	return &Service{
 		snaptrade:              snaptrade,
 		ibkr:                   ibkr,
+		account:                account,
 		positionsCacheTTL:      DefaultPositionsCacheTTL,
 		positionsErrorCacheTTL: DefaultPositionsErrorCacheTTL,
 	}
+}
+
+func (s *Service) AccountTimeline(ctx context.Context) ([]broker.AccountEquityPoint, broker.AccountSummary, error) {
+	if s.account == nil {
+		return []broker.AccountEquityPoint{}, broker.AccountSummary{}, nil
+	}
+
+	points, historicalErr := s.account.HistoricalEquity(ctx)
+	summary, summaryErr := s.account.AccountSummary(ctx)
+	if summaryErr == nil && summary.NetLiquidation != 0 {
+		points = appendOrReplaceToday(points, broker.AccountEquityPoint{
+			Time:     summary.AsOf,
+			Value:    summary.NetLiquidation,
+			Currency: summary.Currency,
+			Source:   "IBKR realtime",
+		})
+	}
+	if summaryErr != nil && historicalErr != nil {
+		return nil, broker.AccountSummary{}, fmt.Errorf("historical: %w; realtime: %w", historicalErr, summaryErr)
+	}
+	if historicalErr != nil {
+		return points, summary, historicalErr
+	}
+	if summaryErr != nil {
+		return points, summary, summaryErr
+	}
+	return points, summary, nil
 }
 
 func (s *Service) AllPositions(ctx context.Context) ([]broker.Position, error) {
@@ -155,4 +188,21 @@ func clonePositions(in []broker.Position) []broker.Position {
 	out := make([]broker.Position, len(in))
 	copy(out, in)
 	return out
+}
+
+func appendOrReplaceToday(points []broker.AccountEquityPoint, realtime broker.AccountEquityPoint) []broker.AccountEquityPoint {
+	if realtime.Time == "" {
+		return points
+	}
+	realtimeDay := realtime.Time
+	if len(realtimeDay) > 10 {
+		realtimeDay = realtimeDay[:10]
+	}
+	for i, point := range points {
+		if len(point.Time) >= 10 && point.Time[:10] == realtimeDay {
+			points[i] = realtime
+			return points
+		}
+	}
+	return append(points, realtime)
 }

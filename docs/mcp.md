@@ -9,17 +9,15 @@ Cursor / Claude Desktop
         │  stdio (JSON-RPC)
         ▼
    traio-mcp          ← 独立二进制，内置于 Traio.app/Contents/Resources/
-        │  HTTP（自动读 server.json）
+        │  HTTP（默认 http://127.0.0.1:38180）
         ▼
-   traio-server       ← Flutter 启动时自动拉起（随机本机端口）
+   traio-server       ← Flutter 启动时自动拉起（固定本机端口）
         │
         ▼
    IBKR Gateway / 券商 API / SQLite
 ```
 
-**前提**：`traio-server` 必须在运行（打开 Traio 桌面 App 即可自动启动）。
-
-Go 后端启动后写入 `~/Library/Application Support/Traio/server.json`（含实际 `api_url`）。`traio-mcp` 会自动读取，**一般无需配置 `TRAIO_API`**。
+**前提**：`traio-server` 必须在运行（打开 Traio 桌面 App 即可自动启动），默认地址是 `http://127.0.0.1:38180`。
 
 ## Cursor 配置
 
@@ -76,4 +74,4 @@ make build-mcp
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `TRAIO_API` | 读 `server.json` | 可选，覆盖自动发现的 backend 地址 |
+| `TRAIO_API` | `http://127.0.0.1:38180` | 可选，覆盖 backend 地址 |
