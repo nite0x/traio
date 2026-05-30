@@ -1,0 +1,54 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+/vendor/
+
+# Local tooling state
+.codegraph/
+.cursor/
+.claude/settings.local.json
+
+# Config (local secrets)
+config.yaml
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Flutter
+flutter/.dart_tool/
+flutter/.packages
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+flutter/build/
+flutter/.pub-cache/
+flutter/.pub/
+flutter/**/doc/api/
+flutter/**/*.iml
+flutter/**/GeneratedPluginRegistrant.*
+
+# Docker
+.env
+
+# IBKR Gateway bundle (ship locally, do not commit binaries)
+ibkr-gateway/
+third_party/clientportal.gw/*
+!third_party/clientportal.gw/README.md
+
+# Logs
+*.log

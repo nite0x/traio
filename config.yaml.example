@@ -1,0 +1,35 @@
+# DEPRECATED — Traio 现已通过应用内「设置」页面管理全部配置（存 SQLite）。
+# 此文件仅作字段参考，启动 Traio 不再需要 config.yaml。
+
+server:
+  host: "127.0.0.1"
+  port: 38180
+
+database:
+  path: "./data/traio.db"
+
+snaptrade:
+  client_id: ""
+  consumer_key: ""
+
+schwab:
+  client_id: ""
+  client_secret: ""
+  redirect_uri: "https://127.0.0.1:8182"
+
+ibkr:
+  sub_account: ""
+  password: ""
+  totp_secret: ""
+  gateway_dir: ""
+  bundled_gateway_dir: "./third_party/clientportal.gw"
+  gateway_port: 5680
+  gateway_url: "https://localhost:5680"
+  download_proxy: ""
+
+finnhub:
+  api_key: ""
+
+claude:
+  api_key: ""
+  model: "claude-sonnet-4-20250514"

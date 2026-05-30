@@ -1,0 +1,26 @@
+name: traio
+description: Traio — personal trading terminal (presentation layer only).
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  dio: ^5.7.0
+  path: ^1.9.1
+  path_provider: ^2.1.4
+  flutter_secure_storage: ^9.2.4
+  webview_flutter: ^4.10.0
+  syncfusion_flutter_charts: ^28.1.38
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

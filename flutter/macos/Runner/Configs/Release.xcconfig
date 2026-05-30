@@ -1,0 +1,7 @@
+#include "AppInfo.xcconfig"
+#include "../../Flutter/Flutter-Release.xcconfig"
+#include "Warnings.xcconfig"
+
+// Release 构建：正式图标
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+PRODUCT_NAME = Traio
