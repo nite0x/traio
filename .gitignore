@@ -26,6 +26,7 @@ config.yaml
 # IDE
 .idea/
 .vscode/
+*.iml
 *.swp
 *.swo
 .DS_Store
