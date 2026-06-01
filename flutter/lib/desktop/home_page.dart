@@ -190,6 +190,25 @@ class _EquityChart extends StatelessWidget {
                 color: TraioTheme.textMuted, size: 13)),
       );
     }
+
+    final sorted = List<AccountEquityPoint>.from(points)
+      ..sort((a, b) => a.time.compareTo(b.time));
+    final values = sorted.map((p) => p.value).toList();
+    var minV = values.reduce((a, b) => a < b ? a : b);
+    var maxV = values.reduce((a, b) => a > b ? a : b);
+    var pad = (maxV - minV).abs() * 0.12;
+    if (pad == 0) pad = maxV.abs() * 0.05;
+
+    var xMin = sorted.first.time;
+    var xMax = sorted.last.time;
+    if (sorted.length == 1 || xMin.isAtSameMomentAs(xMax)) {
+      xMin = sorted.first.time.subtract(const Duration(days: 30));
+      xMax = sorted.first.time.add(const Duration(days: 1));
+    } else {
+      xMin = xMin.subtract(const Duration(hours: 12));
+      xMax = xMax.add(const Duration(hours: 12));
+    }
+
     return DecoratedBox(
       decoration: BoxDecoration(
         color: TraioTheme.surface,
@@ -201,12 +220,16 @@ class _EquityChart extends StatelessWidget {
         child: SfCartesianChart(
           plotAreaBorderWidth: 0,
           primaryXAxis: DateTimeAxis(
+            minimum: xMin,
+            maximum: xMax,
             majorGridLines: const MajorGridLines(width: 0),
             axisLine: const AxisLine(width: 0),
             labelStyle:
                 TraioTheme.mono(context, size: 10, color: TraioTheme.textMuted),
           ),
           primaryYAxis: NumericAxis(
+            minimum: minV - pad,
+            maximum: maxV + pad,
             opposedPosition: true,
             majorGridLines:
                 const MajorGridLines(color: TraioTheme.border, width: 0.7),
@@ -217,13 +240,20 @@ class _EquityChart extends StatelessWidget {
           tooltipBehavior: TooltipBehavior(enable: true),
           series: <CartesianSeries<AccountEquityPoint, DateTime>>[
             AreaSeries<AccountEquityPoint, DateTime>(
-              dataSource: points,
+              dataSource: sorted,
               xValueMapper: (p, _) => p.time,
               yValueMapper: (p, _) => p.value,
               color: TraioTheme.accent.withValues(alpha: 0.10),
               borderColor: TraioTheme.accent,
               borderWidth: 2,
               animationDuration: 250,
+              markerSettings: const MarkerSettings(
+                isVisible: true,
+                height: 6,
+                width: 6,
+                color: TraioTheme.accent,
+                borderColor: TraioTheme.accent,
+              ),
             ),
           ],
         ),

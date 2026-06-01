@@ -1,6 +1,7 @@
 package ibkr
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -68,6 +69,8 @@ func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, err
 	}, nil
 }
 
+const flexEquityPeriodDays = 365 // IBKR Flex Web Service max per request
+
 func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPoint, error) {
 	token := strings.TrimSpace(c.cfg.FlexToken)
 	queryID := strings.TrimSpace(c.cfg.FlexQueryID)
@@ -75,18 +78,34 @@ func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPo
 		return []broker.AccountEquityPoint{}, nil
 	}
 
-	refCode, err := c.flexSendRequest(ctx, token, queryID)
+	period := flexPeriod{days: flexEquityPeriodDays}
+	refCode, err := c.flexSendRequest(ctx, token, queryID, period)
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.flexGetStatement(ctx, token, refCode)
+	body, err := c.flexGetStatement(ctx, token, refCode, period)
 	if err != nil {
 		return nil, err
 	}
-	return parseFlexEquity(body), nil
+	points := parseFlexEquity(body)
+	if len(points) == 0 && len(bytes.TrimSpace(body)) > 0 {
+		return nil, fmt.Errorf("ibkr flex: query %s 未返回 NAV 数据，请勾选「以基础货币计的资产净值 (NAV)」区块（当前可能是持仓价值变动等错误区块）", queryID)
+	}
+	return points, nil
 }
 
-func (c *Client) flexSendRequest(ctx context.Context, token, queryID string) (string, error) {
+type flexPeriod struct {
+	days int // Flex "p" override: last N days (max 365)
+}
+
+func applyFlexPeriod(q url.Values, period flexPeriod) {
+	if period.days <= 0 || period.days > 365 {
+		return
+	}
+	q.Set("p", strconv.Itoa(period.days))
+}
+
+func (c *Client) flexSendRequest(ctx context.Context, token, queryID string, period flexPeriod) (string, error) {
 	u, err := url.Parse(c.cfg.FlexBaseURL + "/SendRequest")
 	if err != nil {
 		return "", err
@@ -95,6 +114,7 @@ func (c *Client) flexSendRequest(ctx context.Context, token, queryID string) (st
 	q.Set("t", token)
 	q.Set("q", queryID)
 	q.Set("v", "3")
+	applyFlexPeriod(q, period)
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -124,7 +144,7 @@ func (c *Client) flexSendRequest(ctx context.Context, token, queryID string) (st
 	return strings.TrimSpace(parsed.ReferenceCode), nil
 }
 
-func (c *Client) flexGetStatement(ctx context.Context, token, refCode string) ([]byte, error) {
+func (c *Client) flexGetStatement(ctx context.Context, token, refCode string, period flexPeriod) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -137,7 +157,7 @@ func (c *Client) flexGetStatement(ctx context.Context, token, refCode string) ([
 			}
 		}
 
-		body, err := c.flexGetStatementOnce(ctx, token, refCode)
+		body, err := c.flexGetStatementOnce(ctx, token, refCode, period)
 		if err == nil {
 			return body, nil
 		}
@@ -149,7 +169,7 @@ func (c *Client) flexGetStatement(ctx context.Context, token, refCode string) ([
 	return nil, lastErr
 }
 
-func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string) ([]byte, error) {
+func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string, period flexPeriod) ([]byte, error) {
 	u, err := url.Parse(c.cfg.FlexBaseURL + "/GetStatement")
 	if err != nil {
 		return nil, err
@@ -158,6 +178,7 @@ func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string
 	q.Set("t", token)
 	q.Set("q", refCode)
 	q.Set("v", "3")
+	applyFlexPeriod(q, period)
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -591,6 +612,20 @@ func parseFlexError(body []byte) error {
 }
 
 func parseFlexEquity(body []byte) []broker.AccountEquityPoint {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if trimmed[0] == '<' {
+		return parseFlexEquityXML(body)
+	}
+	if points := parseFlexEquityCSV(body); len(points) > 0 {
+		return points
+	}
+	return parseFlexEquityXML(body)
+}
+
+func parseFlexEquityXML(body []byte) []broker.AccountEquityPoint {
 	decoder := xml.NewDecoder(strings.NewReader(string(body)))
 	pointsByTime := map[string]broker.AccountEquityPoint{}
 
@@ -737,7 +772,7 @@ func accountValue(raw map[string]any, key string) any {
 		}
 		switch typed := v.(type) {
 		case map[string]any:
-			if value, ok := typed["value"]; ok {
+			if value, ok := typed["value"]; ok && !isAccountFieldEmpty(value) {
 				return value
 			}
 			if amount, ok := typed["amount"]; ok {
@@ -748,6 +783,16 @@ func accountValue(raw map[string]any, key string) any {
 		}
 	}
 	return nil
+}
+
+func isAccountFieldEmpty(value any) bool {
+	if value == nil {
+		return true
+	}
+	if s, ok := value.(string); ok {
+		return strings.TrimSpace(s) == ""
+	}
+	return false
 }
 
 func hasQuotePrices(quotes []broker.Quote) bool {
