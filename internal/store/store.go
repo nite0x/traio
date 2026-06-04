@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	if err := s.ensureWatchlistItemColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureCandleCache(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0);
 	`)

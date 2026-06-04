@@ -62,7 +62,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
-		v1.GET("/quotes/:symbol/history", getHistory(deps.Instruments, deps.Candles))
+		v1.GET("/quotes/:symbol/history", getHistory(deps.Store, deps.Instruments, deps.Candles))
 		v1.GET("/positions", listPositions(deps.Portfolio))
 		v1.GET("/account/equity", accountEquity(deps.Portfolio))
 		v1.GET("/news/:symbol", getNews(deps.News))
@@ -365,21 +365,36 @@ var periodToBar = map[string]string{
 	"5y":  "1w",
 }
 
-func getHistory(instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
+func getHistory(st *store.Store, instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if candles == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "candle data not available"})
 			return
 		}
-		symbol := strings.TrimSpace(c.Param("symbol"))
+		symbol := strings.ToUpper(strings.TrimSpace(c.Param("symbol")))
 		period := c.DefaultQuery("period", "1m")
 		bar := c.DefaultQuery("bar", "")
+		forceRefresh := c.Query("refresh") == "1"
 
 		if bar == "" {
 			if b, ok := periodToBar[period]; ok {
 				bar = b
 			} else {
 				bar = "1d"
+			}
+		}
+
+		// Cache lookup (skip when client requests a forced refresh)
+		if st != nil && !forceRefresh {
+			if cached, err := st.GetCachedCandles(c.Request.Context(), symbol, period, bar); err == nil && cached != nil {
+				c.Header("X-Cache", "HIT")
+				c.JSON(http.StatusOK, gin.H{
+					"symbol":  symbol,
+					"period":  period,
+					"bar":     bar,
+					"candles": cached,
+				})
+				return
 			}
 		}
 
@@ -404,6 +419,13 @@ func getHistory(instruments broker.InstrumentProvider, candles broker.CandleProv
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
+
+		// Persist to cache (best-effort, don't fail the request on cache write error)
+		if st != nil && len(bars) > 0 {
+			_ = st.SetCachedCandles(c.Request.Context(), instrument.Symbol, instrument.ConID, period, bar, bars)
+		}
+
+		c.Header("X-Cache", "MISS")
 		c.JSON(http.StatusOK, gin.H{
 			"symbol":  instrument.Symbol,
 			"conid":   instrument.ConID,
