@@ -1,0 +1,107 @@
+.holdings-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.holdings-symbol {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.holdings-row {
+  cursor: pointer;
+}
+
+.holdings-row:hover td {
+  background: var(--surface-2);
+}
+
+/* ── Weight bar ──────────────────────────────────────────────────────────── */
+.holdings-weight-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 180px;
+}
+
+.holdings-weight-pct {
+  font-size: 12px;
+  width: 36px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.weight-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 99px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.weight-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+/* ── Charts row ──────────────────────────────────────────────────────────── */
+.holdings-charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 16px;
+}
+
+/* ── Pie ─────────────────────────────────────────────────────────────────── */
+.holdings-pie-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.holdings-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.holdings-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.holdings-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.holdings-legend-label {
+  font-family: var(--font-mono);
+}
+
+/* ── Bar ─────────────────────────────────────────────────────────────────── */
+.holdings-bar-wrap {
+  margin-top: 8px;
+  margin-left: -4px;
+}
+
+/* ── Tooltip (reuse overview styles) ────────────────────────────────────── */
+.chart-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  box-shadow: var(--shadow-sm);
+}
+.chart-tooltip__date  { font-size: 11px; color: var(--text-3); margin-bottom: 3px; }
+.chart-tooltip__value { font-size: 14px; font-weight: 600; color: var(--text); }

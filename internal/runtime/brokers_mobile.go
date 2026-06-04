@@ -18,9 +18,10 @@ import (
 type Brokers struct {
 	Schwab      *schwab.Client
 	Portfolio   *portfolio.Service
-	Gateway     broker.GatewayController  // always nil on iOS
-	Instruments broker.InstrumentProvider // always nil on iOS
+	Gateway     broker.GatewayController    // always nil on iOS
+	Instruments broker.InstrumentProvider   // always nil on iOS
 	Quotes      broker.BatchMarketDataProvider
+	Candles     broker.CandleProvider        // always nil on iOS
 
 	schwab *schwab.Client
 	snap   *snaptrade.Client
@@ -37,6 +38,7 @@ func BuildBrokers(cfg config.Config) Brokers {
 		Gateway:     nil,
 		Instruments: nil,
 		Quotes:      nil,
+		Candles:     nil,
 
 		schwab: schwabClient,
 		snap:   snapClient,

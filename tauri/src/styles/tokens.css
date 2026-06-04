@@ -1,0 +1,52 @@
+/* ── Traio Design Tokens ─────────────────────────────────────────────────── */
+:root {
+  /* Surface */
+  --canvas:        #EFF0F3;
+  --bg:            #FCFCFD;
+  --surface:       #FFFFFF;
+  --surface-2:     #F6F6F8;
+  --surface-sunk:  #EFF0F3;
+
+  /* Border */
+  --border:        #E1E2E6;
+  --border-strong: #D0D2D8;
+
+  /* Text */
+  --text:          #20212B;
+  --text-2:        #6A6D78;
+  --text-3:        #969AA4;
+
+  /* Brand */
+  --accent:        #6C5DD3;
+  --accent-soft:   #F0EEFF;
+  --accent-hover:  #5a4ec0;
+
+  /* Semantic */
+  --up:            #57BD7D;
+  --up-soft:       rgba(87,189,125,0.12);
+  --down:          #E55B5B;
+  --down-soft:     rgba(229,91,91,0.12);
+  --warn:          #C7983F;
+  --warn-soft:     rgba(199,152,63,0.10);
+
+  /* Radius */
+  --r-sm:  9px;
+  --r:     13px;
+  --r-lg:  18px;
+  --r-xl:  26px;
+
+  /* Sidebar */
+  --sidebar-w: 196px;
+
+  /* Shadows */
+  --shadow-sm:
+    0 1px 2px rgba(20,22,40,0.05),
+    0 12px 32px -16px rgba(20,22,40,0.18);
+  --shadow-lg:
+    0 2px 6px rgba(20,22,40,0.06),
+    0 40px 90px -40px rgba(20,22,40,0.24);
+
+  /* Font */
+  --font-ui:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:    "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+}

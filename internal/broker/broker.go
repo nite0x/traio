@@ -93,3 +93,20 @@ type AccountProvider interface {
 	AccountSummary(ctx context.Context) (AccountSummary, error)
 	HistoricalEquity(ctx context.Context) ([]AccountEquityPoint, error)
 }
+
+// Candle is one OHLCV bar.
+type Candle struct {
+	Time   int64   `json:"time"`   // Unix seconds (UTC)
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
+	Volume int64   `json:"volume"`
+}
+
+// CandleProvider fetches historical OHLCV bars for a contract.
+// period: "1d" "5d" "1m" "3m" "6m" "1y" "2y" "5y"
+// bar:    "1min" "5min" "15min" "30min" "1h" "1d" "1w"
+type CandleProvider interface {
+	GetCandles(ctx context.Context, conID int64, period, bar string) ([]Candle, error)
+}

@@ -1,0 +1,227 @@
+/* ── Top row: two cards side by side ────────────────────────────────────── */
+.analysis-top-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* ── Risk card ───────────────────────────────────────────────────────────── */
+.analysis-risk-card {
+  border-color: var(--warn-soft);
+}
+
+.analysis-risk-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+  margin-bottom: 16px;
+}
+
+/* ── Concentration bars ──────────────────────────────────────────────────── */
+.concentration-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.concentration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.concentration-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  width: 52px;
+  flex-shrink: 0;
+}
+
+.concentration-track {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 99px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.concentration-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+.concentration-fill--accent {
+  background: var(--warn);
+}
+
+.concentration-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  width: 42px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.concentration-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.concentration-total__value {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* ── Eval card ───────────────────────────────────────────────────────────── */
+.eval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 12px;
+}
+
+.eval-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.eval-row:last-child {
+  border-bottom: none;
+}
+
+.eval-symbol {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ── Eval tags ───────────────────────────────────────────────────────────── */
+.eval-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.eval-tag--up     { background: var(--up-soft);   color: var(--up);   }
+.eval-tag--down   { background: var(--down-soft); color: var(--down); }
+.eval-tag--warn   { background: var(--warn-soft); color: var(--warn); }
+.eval-tag--accent { background: var(--accent-soft); color: var(--accent); }
+.eval-tag--muted  { background: rgba(150,154,164,0.10); color: var(--text-3); }
+
+/* ── Utilization footer ──────────────────────────────────────────────────── */
+.eval-utilization {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.eval-utilization--warn .mono {
+  color: var(--warn);
+}
+
+/* ── Suggestions ─────────────────────────────────────────────────────────── */
+.suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 12px;
+}
+
+.suggestion-item {
+  display: flex;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+  padding-bottom: 4px;
+}
+
+.suggestion-index {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.suggestion-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.suggestion-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.suggestion-body {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+/* ── All-good state ──────────────────────────────────────────────────────── */
+.analysis-ok {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.analysis-ok__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--up-soft);
+  color: var(--up);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.analysis-ok__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+/* ── Color helpers ───────────────────────────────────────────────────────── */
+.warn { color: var(--warn); }
+.up   { color: var(--up);   }
+.down { color: var(--down); }

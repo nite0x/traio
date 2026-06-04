@@ -1,0 +1,44 @@
+.settings-card {
+  max-width: 700px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-card__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-json-error {
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--down-soft);
+  border: 1px solid rgba(229,91,91,0.25);
+  color: var(--down);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.settings-textarea {
+  width: 100%;
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 14px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.14s;
+}
+.settings-textarea:focus { border-color: var(--accent); }
+.settings-textarea--error { border-color: var(--down); }
+.settings-textarea:disabled { opacity: 0.6; cursor: not-allowed; }

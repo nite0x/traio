@@ -17,9 +17,10 @@ import (
 type Brokers struct {
 	Schwab      *schwab.Client
 	Portfolio   *portfolio.Service
-	Gateway     broker.GatewayController  // nil on builds without IBKR
-	Instruments broker.InstrumentProvider // nil on builds without IBKR
+	Gateway     broker.GatewayController    // nil on builds without IBKR
+	Instruments broker.InstrumentProvider   // nil on builds without IBKR
 	Quotes      broker.BatchMarketDataProvider
+	Candles     broker.CandleProvider        // nil on builds without IBKR
 
 	snap    *snaptrade.Client
 	ibkr    *ibkr.Client
@@ -49,6 +50,7 @@ func BuildBrokers(cfg config.Config) Brokers {
 		Gateway:     gatewayAdapter{m: gatewayMgr},
 		Instruments: ibkrClient,
 		Quotes:      ibkrClient,
+		Candles:     ibkrClient,
 
 		snap:    snapClient,
 		ibkr:    ibkrClient,

@@ -1,0 +1,47 @@
+.broker-card {
+  max-width: 560px;
+}
+
+.broker-loading {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.broker-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.broker-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.broker-row__label {
+  width: 90px;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.broker-row__value {
+  display: flex;
+  align-items: center;
+}
+
+.broker-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.broker-help-card {
+  max-width: 560px;
+}
+
+.broker-help-text {
+  font-size: 13px;
+  line-height: 1.6;
+}

@@ -70,6 +70,7 @@ func main() {
 		IBKR:        brokers.Gateway,
 		Instruments: brokers.Instruments,
 		Quotes:      brokers.Quotes,
+		Candles:     brokers.Candles,
 		Portfolio:   brokers.Portfolio,
 		News:        newsSvc,
 		AI:          aiSvc,

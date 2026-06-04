@@ -26,14 +26,28 @@ type Deps struct {
 	IBKR        broker.GatewayController
 	Instruments broker.InstrumentProvider
 	Quotes      broker.BatchMarketDataProvider
+	Candles     broker.CandleProvider
 	Portfolio   *portfolio.Service
 	News        *news.Service
 	AI          *ai.Service
 }
 
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "http://localhost:1420")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
 func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), gin.Logger())
+	r.Use(gin.Recovery(), gin.Logger(), corsMiddleware())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
@@ -48,6 +62,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
+		v1.GET("/quotes/:symbol/history", getHistory(deps.Instruments, deps.Candles))
 		v1.GET("/positions", listPositions(deps.Portfolio))
 		v1.GET("/account/equity", accountEquity(deps.Portfolio))
 		v1.GET("/news/:symbol", getNews(deps.News))
@@ -335,6 +350,67 @@ func getNews(svc *news.Service) gin.HandlerFunc {
 func placeOrder(svc *portfolio.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "place order not implemented"})
+	}
+}
+
+// periodToBar returns a sensible default bar size for a given period.
+var periodToBar = map[string]string{
+	"1d":  "5min",
+	"5d":  "30min",
+	"1m":  "1h",
+	"3m":  "1d",
+	"6m":  "1d",
+	"1y":  "1d",
+	"2y":  "1w",
+	"5y":  "1w",
+}
+
+func getHistory(instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if candles == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "candle data not available"})
+			return
+		}
+		symbol := strings.TrimSpace(c.Param("symbol"))
+		period := c.DefaultQuery("period", "1m")
+		bar := c.DefaultQuery("bar", "")
+
+		if bar == "" {
+			if b, ok := periodToBar[period]; ok {
+				bar = b
+			} else {
+				bar = "1d"
+			}
+		}
+
+		// Resolve symbol → conid
+		if instruments == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "instrument search not available"})
+			return
+		}
+		results, err := instruments.SearchInstruments(c.Request.Context(), symbol)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		instrument, ok := preferredInstrument(symbol, results)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "instrument not found"})
+			return
+		}
+
+		bars, err := candles.GetCandles(c.Request.Context(), instrument.ConID, period, bar)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"symbol":  instrument.Symbol,
+			"conid":   instrument.ConID,
+			"period":  period,
+			"bar":     bar,
+			"candles": bars,
+		})
 	}
 }
 

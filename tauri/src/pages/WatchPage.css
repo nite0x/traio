@@ -1,0 +1,40 @@
+.watch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.watch-search {
+  flex: 1;
+  max-width: 320px;
+}
+
+.watch-symbol-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.watch-symbol {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.watch-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+
+tr:hover .watch-actions { opacity: 1; }
+
+.watch-row {
+  cursor: pointer;
+}
+
+.watch-row:hover td {
+  background: var(--surface-2);
+}

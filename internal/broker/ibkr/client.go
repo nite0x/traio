@@ -296,6 +296,92 @@ func (c *Client) getQuoteSnapshot(ctx context.Context, conIDs []int64) ([]broker
 	return out, nil
 }
 
+// GetCandles fetches OHLCV history via IBKR CPAPI /iserver/marketdata/history.
+// period maps to IBKR "period" param (e.g. "1d", "1m", "1y").
+// bar maps to IBKR "bar" param (e.g. "5min", "1h", "1d").
+func (c *Client) GetCandles(ctx context.Context, conID int64, period, bar string) ([]broker.Candle, error) {
+	u, err := url.Parse(c.cfg.GatewayURL + "/v1/api/iserver/marketdata/history")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("conid", strconv.FormatInt(conID, 10))
+	q.Set("period", period)
+	q.Set("bar", bar)
+	q.Set("outsideRth", "false")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr: history request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("ibkr: gateway not authenticated")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ibkr: history status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// IBKR returns t as either a millisecond-epoch integer or a date string.
+	// Use json.Number so we can handle both without a type mismatch.
+	var raw struct {
+		Data []struct {
+			T json.Number `json:"t"`
+			O float64    `json:"o"`
+			H float64    `json:"h"`
+			L float64    `json:"l"`
+			C float64    `json:"c"`
+			V float64    `json:"v"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("ibkr: decode history: %w", err)
+	}
+
+	candles := make([]broker.Candle, 0, len(raw.Data))
+	for _, d := range raw.Data {
+		ts := parseIBKRTime(d.T.String())
+		candles = append(candles, broker.Candle{
+			Time:   ts,
+			Open:   d.O,
+			High:   d.H,
+			Low:    d.L,
+			Close:  d.C,
+			Volume: int64(d.V),
+		})
+	}
+	return candles, nil
+}
+
+// parseIBKRTime parses IBKR time strings: epoch-ms integer string or "20240101 09:30:00".
+func parseIBKRTime(s string) int64 {
+	// IBKR sometimes returns millisecond epoch as a string
+	if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if ms > 1e12 {
+			return ms / 1000
+		}
+		return ms
+	}
+	// Try "20060102 15:04:05" in Eastern time
+	loc, _ := time.LoadLocation("America/New_York")
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range []string{"20060102 15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
+}
+
 // SearchInstruments resolves user-entered symbols/names through IBKR Gateway.
 func (c *Client) SearchInstruments(ctx context.Context, query string) ([]broker.Instrument, error) {
 	query = strings.TrimSpace(query)
