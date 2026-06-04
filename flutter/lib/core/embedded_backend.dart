@@ -3,12 +3,9 @@ import 'package:path_provider/path_provider.dart';
 
 /// Starts the Traio Go backend in-process on mobile (iOS/Android).
 ///
-/// Unlike desktop, where [BackendLauncher] spawns the `traio-server` binary as a
-/// separate process, mobile platforms forbid launching external executables.
-/// The Go backend is instead compiled into a gomobile library (Traio.xcframework
-/// on iOS) that runs an HTTP server inside the app process. A small native
-/// MethodChannel handler calls `Traio.StartServer(dataDir)` and returns the
-/// loopback port it chose.
+/// The Go backend is compiled into a gomobile xcframework that runs an HTTP
+/// server inside the app process. A native MethodChannel calls
+/// `Traio.StartServer(dataDir)` and returns the loopback port it chose.
 class EmbeddedBackend {
   static const _channel = MethodChannel('traio/backend');
 

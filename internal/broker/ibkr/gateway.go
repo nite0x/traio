@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,7 +337,9 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 
 func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
 	if !g.hasCredentials() {
-		log.Printf("[IBKR] credentials not configured — please log in manually at %s/sso/Login", g.config.GatewayURL)
+		loginURL := g.config.GatewayURL + "/sso/Login"
+		log.Printf("[IBKR] credentials not configured — opening browser for manual login at %s", loginURL)
+		openBrowser(loginURL)
 		return nil
 	}
 
@@ -821,4 +824,19 @@ func unzip(src, dest string) error {
 		}
 	}
 	return nil
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("[IBKR] failed to open browser: %v", err)
+	}
 }

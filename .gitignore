@@ -53,3 +53,8 @@ third_party/clientportal.gw/*
 
 # Logs
 *.log
+
+# Tauri desktop
+tauri/node_modules/
+tauri/dist/
+tauri/src-tauri/target/
