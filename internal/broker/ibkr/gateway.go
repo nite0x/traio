@@ -336,6 +336,14 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 }
 
 func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
+	// Always check tickle first — the gateway session may still be alive from a
+	// previous traio run, in which case we must not open the browser unnecessarily.
+	if tickle, online := g.fetchTickle(); online && tickleAuthenticated(tickle) {
+		g.markAuthenticated(tickleAccount(tickle))
+		log.Printf("[IBKR] session already authenticated (account=%s)", tickleAccount(tickle))
+		return nil
+	}
+
 	if !g.hasCredentials() {
 		loginURL := g.config.GatewayURL + "/sso/Login"
 		log.Printf("[IBKR] credentials not configured — opening browser for manual login at %s", loginURL)
