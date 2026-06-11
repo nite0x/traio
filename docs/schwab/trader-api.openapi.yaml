@@ -1,0 +1,707 @@
+openapi: 3.0.1
+info:
+  title: Trader API - Account Access and User Preferences
+  description: >-
+    Sanitized Traio reference derived from Schwab Retail Trader API Production.
+    Credentials and hard-coded OAuth client identifiers are intentionally
+    omitted.
+  version: 1.0.0
+  contact:
+    name: Schwab Trader API team
+    email: TraderAPI@Schwab.com
+servers:
+  - url: https://api.schwabapi.com/trader/v1
+security:
+  - oauth: []
+tags:
+  - name: Accounts
+  - name: Orders
+  - name: Transactions
+  - name: UserPreference
+paths:
+  /accounts/accountNumbers:
+    get:
+      tags: [Accounts]
+      operationId: getAccountNumbers
+      summary: Get account numbers and their encrypted values
+      responses:
+        "200":
+          description: Linked account number/hash pairs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountNumberHash"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts:
+    get:
+      tags: [Accounts]
+      operationId: getAccounts
+      summary: Get linked account balances and optionally positions
+      parameters:
+        - $ref: "#/components/parameters/Fields"
+      responses:
+        "200":
+          description: Linked accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}:
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Get one account balance and optionally positions
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+        - $ref: "#/components/parameters/Fields"
+      responses:
+        "200":
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}/orders:
+    get:
+      tags: [Orders]
+      operationId: getOrdersByPathParam
+      summary: Get orders for an account
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+        - $ref: "#/components/parameters/MaxResults"
+        - $ref: "#/components/parameters/FromEnteredTime"
+        - $ref: "#/components/parameters/ToEnteredTime"
+        - $ref: "#/components/parameters/OrderStatus"
+      responses:
+        "200":
+          description: Orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Orders]
+      operationId: placeOrder
+      summary: Place an order
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderRequest"
+      responses:
+        "201":
+          description: Order created; new order URL is returned in Location
+          headers:
+            Location:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}/orders/{orderId}:
+    parameters:
+      - $ref: "#/components/parameters/AccountNumber"
+      - $ref: "#/components/parameters/OrderId"
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      summary: Get an order
+      responses:
+        "200":
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [Orders]
+      operationId: replaceOrder
+      summary: Replace an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderRequest"
+      responses:
+        "201":
+          description: Replacement order created
+          headers:
+            Location:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Orders]
+      operationId: cancelOrder
+      summary: Cancel an order
+      responses:
+        "200":
+          description: Order canceled
+        default:
+          $ref: "#/components/responses/Error"
+  /orders:
+    get:
+      tags: [Orders]
+      operationId: getOrdersByQueryParam
+      summary: Get orders for all linked accounts
+      parameters:
+        - $ref: "#/components/parameters/MaxResults"
+        - $ref: "#/components/parameters/FromEnteredTime"
+        - $ref: "#/components/parameters/ToEnteredTime"
+        - $ref: "#/components/parameters/OrderStatus"
+      responses:
+        "200":
+          description: Orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}/previewOrder:
+    post:
+      tags: [Orders]
+      operationId: previewOrder
+      summary: Preview an order
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderRequest"
+      responses:
+        "200":
+          description: Preview result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewOrder"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}/transactions:
+    get:
+      tags: [Transactions]
+      operationId: getTransactionsByPathParam
+      summary: Get transactions for an account
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/TransactionType"
+      responses:
+        "200":
+          description: Transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+        default:
+          $ref: "#/components/responses/Error"
+  /accounts/{accountNumber}/transactions/{transactionId}:
+    get:
+      tags: [Transactions]
+      operationId: getTransactionsById
+      summary: Get a specific transaction
+      parameters:
+        - $ref: "#/components/parameters/AccountNumber"
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        default:
+          $ref: "#/components/responses/Error"
+  /userPreference:
+    get:
+      tags: [UserPreference]
+      operationId: getUserPreference
+      summary: Get preferences and streamer connection information
+      responses:
+        "200":
+          description: User preferences
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserPreference"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.schwabapi.com/v1/oauth/authorize
+          tokenUrl: https://api.schwabapi.com/v1/oauth/token
+          scopes: {}
+  parameters:
+    AccountNumber:
+      name: accountNumber
+      in: path
+      description: Encrypted account ID returned by /accounts/accountNumbers
+      required: true
+      schema:
+        type: string
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    Fields:
+      name: fields
+      in: query
+      description: Set to positions to include positions
+      schema:
+        type: string
+        enum: [positions]
+    MaxResults:
+      name: maxResults
+      in: query
+      schema:
+        type: integer
+        format: int64
+        default: 3000
+    FromEnteredTime:
+      name: fromEnteredTime
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    ToEnteredTime:
+      name: toEnteredTime
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    OrderStatus:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/OrderStatus"
+  responses:
+    Error:
+      description: Schwab API error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceError"
+  schemas:
+    AccountNumberHash:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        hashValue:
+          type: string
+    Account:
+      type: object
+      properties:
+        securitiesAccount:
+          $ref: "#/components/schemas/SecuritiesAccount"
+    SecuritiesAccount:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [CASH, MARGIN]
+        accountNumber:
+          type: string
+        roundTrips:
+          type: integer
+          format: int32
+        isDayTrader:
+          type: boolean
+        isClosingOnlyRestricted:
+          type: boolean
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+        initialBalances:
+          type: object
+          additionalProperties:
+            type: number
+        currentBalances:
+          type: object
+          additionalProperties:
+            type: number
+        projectedBalances:
+          type: object
+          additionalProperties:
+            type: number
+    Position:
+      type: object
+      properties:
+        shortQuantity:
+          type: number
+        averagePrice:
+          type: number
+        currentDayProfitLoss:
+          type: number
+        currentDayProfitLossPercentage:
+          type: number
+        longQuantity:
+          type: number
+        settledLongQuantity:
+          type: number
+        settledShortQuantity:
+          type: number
+        instrument:
+          $ref: "#/components/schemas/Instrument"
+        marketValue:
+          type: number
+        maintenanceRequirement:
+          type: number
+        averageLongPrice:
+          type: number
+        averageShortPrice:
+          type: number
+        taxLotAverageLongPrice:
+          type: number
+        taxLotAverageShortPrice:
+          type: number
+        longOpenProfitLoss:
+          type: number
+        shortOpenProfitLoss:
+          type: number
+        currentDayCost:
+          type: number
+    Instrument:
+      type: object
+      properties:
+        assetType:
+          $ref: "#/components/schemas/AssetType"
+        cusip:
+          type: string
+        symbol:
+          type: string
+        description:
+          type: string
+        instrumentId:
+          type: integer
+          format: int64
+    OrderRequest:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/Session"
+        duration:
+          $ref: "#/components/schemas/Duration"
+        orderType:
+          $ref: "#/components/schemas/OrderType"
+        price:
+          type: number
+        stopPrice:
+          type: number
+        stopPriceLinkBasis:
+          type: string
+          enum: [MANUAL, BASE, TRIGGER, LAST, BID, ASK, ASK_BID, MARK, AVERAGE]
+        stopPriceLinkType:
+          type: string
+          enum: [VALUE, PERCENT, TICK]
+        stopPriceOffset:
+          type: number
+        orderStrategyType:
+          $ref: "#/components/schemas/OrderStrategyType"
+        complexOrderStrategyType:
+          type: string
+        orderLegCollection:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderLeg"
+        childOrderStrategies:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderRequest"
+    Order:
+      allOf:
+        - $ref: "#/components/schemas/OrderRequest"
+        - type: object
+          properties:
+            orderId:
+              type: integer
+              format: int64
+            cancelable:
+              type: boolean
+            editable:
+              type: boolean
+            status:
+              $ref: "#/components/schemas/OrderStatus"
+            enteredTime:
+              type: string
+              format: date-time
+            closeTime:
+              type: string
+              format: date-time
+            filledQuantity:
+              type: number
+            remainingQuantity:
+              type: number
+            accountNumber:
+              type: integer
+              format: int64
+            statusDescription:
+              type: string
+    OrderLeg:
+      type: object
+      properties:
+        instruction:
+          $ref: "#/components/schemas/Instruction"
+        quantity:
+          type: number
+        instrument:
+          $ref: "#/components/schemas/Instrument"
+        positionEffect:
+          type: string
+          enum: [OPENING, CLOSING, AUTOMATIC]
+        quantityType:
+          type: string
+          enum: [ALL_SHARES, DOLLARS, SHARES]
+    PreviewOrder:
+      type: object
+      properties:
+        orderId:
+          type: integer
+          format: int64
+        orderStrategy:
+          type: object
+        orderValidationResult:
+          type: object
+        commissionAndFee:
+          type: object
+    Transaction:
+      type: object
+      properties:
+        activityId:
+          type: integer
+          format: int64
+        time:
+          type: string
+          format: date-time
+        description:
+          type: string
+        accountNumber:
+          type: string
+        type:
+          $ref: "#/components/schemas/TransactionType"
+        status:
+          type: string
+          enum: [VALID, INVALID, PENDING, UNKNOWN]
+        subAccount:
+          type: string
+          enum: [CASH, MARGIN, SHORT, DIV, INCOME, UNKNOWN]
+        tradeDate:
+          type: string
+          format: date-time
+        settlementDate:
+          type: string
+          format: date-time
+        positionId:
+          type: integer
+          format: int64
+        orderId:
+          type: integer
+          format: int64
+        netAmount:
+          type: number
+        activityType:
+          type: string
+          enum: [ACTIVITY_CORRECTION, EXECUTION, ORDER_ACTION, TRANSFER, UNKNOWN]
+        transferItems:
+          type: array
+          items:
+            type: object
+    UserPreference:
+      type: object
+      properties:
+        accounts:
+          type: array
+          items:
+            type: object
+        streamerInfo:
+          type: array
+          items:
+            type: object
+            properties:
+              streamerSocketUrl:
+                type: string
+              schwabClientCustomerId:
+                type: string
+              schwabClientCorrelId:
+                type: string
+              schwabClientChannel:
+                type: string
+              schwabClientFunctionId:
+                type: string
+        offers:
+          type: array
+          items:
+            type: object
+    Session:
+      type: string
+      enum: [NORMAL, AM, PM, SEAMLESS]
+    Duration:
+      type: string
+      enum:
+        - DAY
+        - GOOD_TILL_CANCEL
+        - FILL_OR_KILL
+        - IMMEDIATE_OR_CANCEL
+        - END_OF_WEEK
+        - END_OF_MONTH
+        - NEXT_END_OF_MONTH
+    OrderType:
+      type: string
+      enum:
+        - MARKET
+        - LIMIT
+        - STOP
+        - STOP_LIMIT
+        - TRAILING_STOP
+        - CABINET
+        - NON_MARKETABLE
+        - MARKET_ON_CLOSE
+        - EXERCISE
+        - TRAILING_STOP_LIMIT
+        - NET_DEBIT
+        - NET_CREDIT
+        - NET_ZERO
+        - LIMIT_ON_CLOSE
+    OrderStrategyType:
+      type: string
+      enum: [SINGLE, CANCEL, RECALL, PAIR, FLATTEN, TWO_DAY_SWAP, BLAST_ALL, OCO, TRIGGER]
+    OrderStatus:
+      type: string
+      enum:
+        - AWAITING_PARENT_ORDER
+        - AWAITING_CONDITION
+        - AWAITING_STOP_CONDITION
+        - AWAITING_MANUAL_REVIEW
+        - ACCEPTED
+        - AWAITING_UR_OUT
+        - PENDING_ACTIVATION
+        - QUEUED
+        - WORKING
+        - REJECTED
+        - PENDING_CANCEL
+        - CANCELED
+        - PENDING_REPLACE
+        - REPLACED
+        - FILLED
+        - EXPIRED
+        - NEW
+        - AWAITING_RELEASE_TIME
+        - PENDING_ACKNOWLEDGEMENT
+        - PENDING_RECALL
+        - UNKNOWN
+    Instruction:
+      type: string
+      enum:
+        - BUY
+        - SELL
+        - BUY_TO_COVER
+        - SELL_SHORT
+        - BUY_TO_OPEN
+        - BUY_TO_CLOSE
+        - SELL_TO_OPEN
+        - SELL_TO_CLOSE
+        - EXCHANGE
+        - SELL_SHORT_EXEMPT
+    AssetType:
+      type: string
+      enum:
+        - EQUITY
+        - MUTUAL_FUND
+        - OPTION
+        - FUTURE
+        - FOREX
+        - INDEX
+        - CASH_EQUIVALENT
+        - FIXED_INCOME
+        - PRODUCT
+        - CURRENCY
+        - COLLECTIVE_INVESTMENT
+    TransactionType:
+      type: string
+      enum:
+        - TRADE
+        - RECEIVE_AND_DELIVER
+        - DIVIDEND_OR_INTEREST
+        - ACH_RECEIPT
+        - ACH_DISBURSEMENT
+        - CASH_RECEIPT
+        - CASH_DISBURSEMENT
+        - ELECTRONIC_FUND
+        - WIRE_OUT
+        - WIRE_IN
+        - JOURNAL
+        - MEMORANDUM
+        - MARGIN_CALL
+        - MONEY_MARKET
+        - SMA_ADJUSTMENT
+    ServiceError:
+      type: object
+      properties:
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string

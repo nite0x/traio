@@ -1,0 +1,630 @@
+openapi: 3.0.3
+info:
+  title: Schwab Market Data
+  version: 1.0.0
+  description: >-
+    Sanitized Traio project reference derived from Schwab Market Data
+    Production. Credentials and hard-coded OAuth client identifiers are
+    intentionally omitted.
+  contact:
+    name: Schwab Trader API team
+    email: TraderAPI@Schwab.com
+servers:
+  - url: https://api.schwabapi.com/marketdata/v1
+security:
+  - oauth: []
+tags:
+  - name: Quotes
+  - name: Option Chains
+  - name: Option Expiration Chain
+  - name: PriceHistory
+  - name: Movers
+  - name: MarketHours
+  - name: Instruments
+paths:
+  /quotes:
+    get:
+      tags: [Quotes]
+      operationId: getQuotes
+      summary: Get quotes by comma-separated symbols
+      parameters:
+        - $ref: "#/components/parameters/Symbols"
+        - $ref: "#/components/parameters/QuoteFields"
+        - name: indicative
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Symbol-to-quote map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /{symbol_id}/quotes:
+    get:
+      tags: [Quotes]
+      operationId: getQuote
+      summary: Get a quote by symbol
+      parameters:
+        - $ref: "#/components/parameters/SymbolPath"
+        - $ref: "#/components/parameters/QuoteFields"
+      responses:
+        "200":
+          description: Symbol-to-quote map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /chains:
+    get:
+      tags: [Option Chains]
+      operationId: getChain
+      summary: Get an option chain
+      parameters:
+        - $ref: "#/components/parameters/Symbol"
+        - name: contractType
+          in: query
+          schema:
+            type: string
+            enum: [CALL, PUT, ALL]
+        - name: strikeCount
+          in: query
+          schema:
+            type: integer
+        - name: includeUnderlyingQuote
+          in: query
+          schema:
+            type: boolean
+        - name: strategy
+          in: query
+          schema:
+            $ref: "#/components/schemas/OptionStrategy"
+        - name: interval
+          in: query
+          schema:
+            type: number
+        - name: strike
+          in: query
+          schema:
+            type: number
+        - name: range
+          in: query
+          schema:
+            type: string
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: volatility
+          in: query
+          schema:
+            type: number
+        - name: underlyingPrice
+          in: query
+          schema:
+            type: number
+        - name: interestRate
+          in: query
+          schema:
+            type: number
+        - name: daysToExpiration
+          in: query
+          schema:
+            type: integer
+        - name: expMonth
+          in: query
+          schema:
+            type: string
+            enum: [JAN, FEB, MAR, APR, MAY, JUN, JUL, AUG, SEP, OCT, NOV, DEC, ALL]
+        - name: optionType
+          in: query
+          schema:
+            type: string
+        - name: entitlement
+          in: query
+          schema:
+            type: string
+            enum: [PN, NP, PP]
+      responses:
+        "200":
+          description: Option chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OptionChain"
+        default:
+          $ref: "#/components/responses/Error"
+  /expirationchain:
+    get:
+      tags: [Option Expiration Chain]
+      operationId: getExpirationChain
+      summary: Get option expiration series
+      parameters:
+        - $ref: "#/components/parameters/Symbol"
+      responses:
+        "200":
+          description: Expiration series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpirationChain"
+        default:
+          $ref: "#/components/responses/Error"
+  /pricehistory:
+    get:
+      tags: [PriceHistory]
+      operationId: getPriceHistory
+      summary: Get OHLCV price history
+      parameters:
+        - $ref: "#/components/parameters/Symbol"
+        - name: periodType
+          in: query
+          schema:
+            type: string
+            enum: [day, month, year, ytd]
+        - name: period
+          in: query
+          schema:
+            type: integer
+        - name: frequencyType
+          in: query
+          schema:
+            type: string
+            enum: [minute, daily, weekly, monthly]
+        - name: frequency
+          in: query
+          schema:
+            type: integer
+        - name: startDate
+          in: query
+          description: Unix epoch milliseconds
+          schema:
+            type: integer
+            format: int64
+        - name: endDate
+          in: query
+          description: Unix epoch milliseconds
+          schema:
+            type: integer
+            format: int64
+        - name: needExtendedHoursData
+          in: query
+          schema:
+            type: boolean
+        - name: needPreviousClose
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Candle list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandleList"
+        default:
+          $ref: "#/components/responses/Error"
+  /movers/{symbol_id}:
+    get:
+      tags: [Movers]
+      operationId: getMovers
+      summary: Get movers for an index or market group
+      parameters:
+        - $ref: "#/components/parameters/MoverSymbolPath"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [VOLUME, TRADES, PERCENT_CHANGE_UP, PERCENT_CHANGE_DOWN]
+        - name: frequency
+          in: query
+          schema:
+            type: integer
+            enum: [0, 1, 5, 10, 30, 60]
+      responses:
+        "200":
+          description: Movers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  screeners:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Screener"
+        default:
+          $ref: "#/components/responses/Error"
+  /markets:
+    get:
+      tags: [MarketHours]
+      operationId: getMarketHours
+      summary: Get hours for multiple markets
+      parameters:
+        - name: markets
+          in: query
+          required: true
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/Market"
+        - $ref: "#/components/parameters/Date"
+      responses:
+        "200":
+          description: Market-hours map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketHoursResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /markets/{market_id}:
+    get:
+      tags: [MarketHours]
+      operationId: getMarketHour
+      summary: Get hours for one market
+      parameters:
+        - name: market_id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Market"
+        - $ref: "#/components/parameters/Date"
+      responses:
+        "200":
+          description: Market-hours map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketHoursResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /instruments:
+    get:
+      tags: [Instruments]
+      operationId: getInstruments
+      summary: Search instruments
+      parameters:
+        - $ref: "#/components/parameters/Symbol"
+        - name: projection
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [symbol-search, symbol-regex, desc-search, desc-regex, search, fundamental]
+      responses:
+        "200":
+          description: Instrument search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instruments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Instrument"
+        default:
+          $ref: "#/components/responses/Error"
+  /instruments/{cusip_id}:
+    get:
+      tags: [Instruments]
+      operationId: getInstrumentsByCusip
+      summary: Get an instrument by CUSIP
+      parameters:
+        - name: cusip_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Instrument
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instrument"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.schwabapi.com/v1/oauth/authorize
+          tokenUrl: https://api.schwabapi.com/v1/oauth/token
+          scopes: {}
+  parameters:
+    Symbols:
+      name: symbols
+      in: query
+      description: Comma-separated symbols
+      schema:
+        type: string
+    Symbol:
+      name: symbol
+      in: query
+      required: true
+      schema:
+        type: string
+    SymbolPath:
+      name: symbol_id
+      in: path
+      required: true
+      schema:
+        type: string
+    QuoteFields:
+      name: fields
+      in: query
+      description: Comma-separated quote root nodes; omit for all
+      schema:
+        type: string
+    MoverSymbolPath:
+      name: symbol_id
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - $DJI
+          - $COMPX
+          - $SPX
+          - NYSE
+          - NASDAQ
+          - OTCBB
+          - INDEX_ALL
+          - EQUITY_ALL
+          - OPTION_ALL
+          - OPTION_PUT
+          - OPTION_CALL
+    Date:
+      name: date
+      in: query
+      schema:
+        type: string
+        format: date
+  responses:
+    Error:
+      description: Schwab Market Data API error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    QuoteResponse:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/Quote"
+    Quote:
+      type: object
+      properties:
+        assetMainType:
+          type: string
+          enum: [BOND, EQUITY, FOREX, FUTURE, FUTURE_OPTION, INDEX, MUTUAL_FUND, OPTION]
+        assetSubType:
+          type: string
+        symbol:
+          type: string
+        realtime:
+          type: boolean
+        ssid:
+          type: integer
+          format: int64
+        quoteType:
+          type: string
+        reference:
+          type: object
+          additionalProperties: true
+        quote:
+          type: object
+          additionalProperties: true
+        regular:
+          type: object
+          additionalProperties: true
+        extended:
+          type: object
+          additionalProperties: true
+        fundamental:
+          type: object
+          additionalProperties: true
+    OptionStrategy:
+      type: string
+      enum: [SINGLE, ANALYTICAL, COVERED, VERTICAL, CALENDAR, STRANGLE, STRADDLE, BUTTERFLY, CONDOR, DIAGONAL, COLLAR, ROLL]
+    OptionChain:
+      type: object
+      properties:
+        symbol:
+          type: string
+        status:
+          type: string
+        underlying:
+          type: object
+          additionalProperties: true
+        strategy:
+          $ref: "#/components/schemas/OptionStrategy"
+        interval:
+          type: number
+        isDelayed:
+          type: boolean
+        isIndex:
+          type: boolean
+        daysToExpiration:
+          type: number
+        interestRate:
+          type: number
+        underlyingPrice:
+          type: number
+        volatility:
+          type: number
+        callExpDateMap:
+          type: object
+          additionalProperties: true
+        putExpDateMap:
+          type: object
+          additionalProperties: true
+    ExpirationChain:
+      type: object
+      properties:
+        status:
+          type: string
+        expirationList:
+          type: array
+          items:
+            type: object
+            properties:
+              expirationDate:
+                type: string
+                format: date
+              daysToExpiration:
+                type: integer
+              expirationType:
+                type: string
+                enum: [M, Q, S, W]
+              standard:
+                type: boolean
+              settlementType:
+                type: string
+                enum: [A, P]
+              optionRoots:
+                type: string
+    CandleList:
+      type: object
+      properties:
+        symbol:
+          type: string
+        empty:
+          type: boolean
+        previousClose:
+          type: number
+        previousCloseDate:
+          type: integer
+          format: int64
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Candle"
+    Candle:
+      type: object
+      properties:
+        open:
+          type: number
+        high:
+          type: number
+        low:
+          type: number
+        close:
+          type: number
+        volume:
+          type: integer
+          format: int64
+        datetime:
+          type: integer
+          format: int64
+    Screener:
+      type: object
+      properties:
+        change:
+          type: number
+        description:
+          type: string
+        direction:
+          type: string
+          enum: [up, down]
+        last:
+          type: number
+        symbol:
+          type: string
+        totalVolume:
+          type: integer
+          format: int64
+    Market:
+      type: string
+      enum: [equity, option, bond, future, forex]
+    MarketHoursResponse:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties:
+          type: object
+          properties:
+            date:
+              type: string
+            marketType:
+              type: string
+            exchange:
+              type: string
+            category:
+              type: string
+            product:
+              type: string
+            productName:
+              type: string
+            isOpen:
+              type: boolean
+            sessionHours:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    start:
+                      type: string
+                      format: date-time
+                    end:
+                      type: string
+                      format: date-time
+    Instrument:
+      type: object
+      properties:
+        cusip:
+          type: string
+        symbol:
+          type: string
+        description:
+          type: string
+        exchange:
+          type: string
+        assetType:
+          type: string
+        fundamental:
+          type: object
+          additionalProperties: true
+        instrumentInfo:
+          type: object
+          additionalProperties: true
+        bondInstrumentInfo:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              status:
+                type: string
+              title:
+                type: string
+              detail:
+                type: string
+              source:
+                type: object
+                additionalProperties: true
