@@ -12,16 +12,25 @@ type Quote struct {
 	Change    float64 `json:"change"`
 	ChangePct float64 `json:"change_pct"`
 	Volume    int64   `json:"volume"`
+	High      float64 `json:"high"`
+	Low       float64 `json:"low"`
+	Delayed   bool    `json:"delayed,omitempty"`
 }
 
 // Position is a normalized holding.
 type Position struct {
 	Symbol      string  `json:"symbol"`
+	ConID       int64   `json:"conid"`
 	Quantity    float64 `json:"quantity"`
 	AvgCost     float64 `json:"avg_cost"`
+	MarketPrice float64 `json:"market_price"`
 	MarketValue float64 `json:"market_value"`
 	Unrealized  float64 `json:"unrealized_pnl"`
+	Realized    float64 `json:"realized_pnl"`
+	Currency    string  `json:"currency"`
+	Account     string  `json:"account"`
 	Broker      string  `json:"broker"`
+	SyncedAt    string  `json:"synced_at,omitempty"`
 }
 
 // AccountSummary is a normalized real-time account snapshot.
@@ -96,7 +105,7 @@ type AccountProvider interface {
 
 // Candle is one OHLCV bar.
 type Candle struct {
-	Time   int64   `json:"time"`   // Unix seconds (UTC)
+	Time   int64   `json:"time"` // Unix seconds (UTC)
 	Open   float64 `json:"open"`
 	High   float64 `json:"high"`
 	Low    float64 `json:"low"`

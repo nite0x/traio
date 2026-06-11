@@ -8,45 +8,131 @@ import (
 	"time"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/store"
 )
 
-const (
-	DefaultPositionsCacheTTL      = 15 * time.Second
-	DefaultPositionsErrorCacheTTL = 15 * time.Second
-)
+const DefaultPositionSyncInterval = 30 * time.Second
 
-// Service merges positions across Schwab (SnapTrade) and IBKR.
+// Source identifies one broker adapter that can sync normalized positions.
+type Source struct {
+	Name     string
+	Provider broker.PortfolioProvider
+}
+
+// Service separates broker synchronization from frontend reads.
+// SyncPositions calls broker APIs and updates SQLite; AllPositions only reads SQLite.
 type Service struct {
-	snaptrade broker.PortfolioProvider
-	ibkr      broker.PortfolioProvider
-	account   broker.AccountProvider
-
-	positionsCacheTTL      time.Duration
-	positionsErrorCacheTTL time.Duration
-
-	positionsMu           sync.Mutex
-	positionsCache        []broker.Position
-	positionsCacheErr     error
-	positionsCacheExpires time.Time
-	positionsCacheHasData bool
-	positionsRefreshCh    chan struct{}
-	positionsGeneration   uint64
+	store   *store.Store
+	sources []Source
+	account broker.AccountProvider
+	syncNow chan struct{}
+	syncMu  sync.Mutex
 }
 
-func New(snaptrade, ibkr broker.PortfolioProvider) *Service {
-	var account broker.AccountProvider
-	if provider, ok := ibkr.(broker.AccountProvider); ok {
-		account = provider
+func New(st *store.Store, sources ...Source) *Service {
+	svc := &Service{
+		store:   st,
+		sources: sources,
+		syncNow: make(chan struct{}, 1),
 	}
-	return &Service{
-		snaptrade:              snaptrade,
-		ibkr:                   ibkr,
-		account:                account,
-		positionsCacheTTL:      DefaultPositionsCacheTTL,
-		positionsErrorCacheTTL: DefaultPositionsErrorCacheTTL,
+	for _, source := range sources {
+		if provider, ok := source.Provider.(broker.AccountProvider); ok {
+			svc.account = provider
+			break
+		}
+	}
+	return svc
+}
+
+// StartPositionSync runs an immediate sync and then refreshes on an interval or request.
+func (s *Service) StartPositionSync(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = DefaultPositionSyncInterval
+	}
+	go func() {
+		_ = s.SyncPositions(ctx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = s.SyncPositions(ctx)
+			case <-s.syncNow:
+				_ = s.SyncPositions(ctx)
+			}
+		}
+	}()
+}
+
+// InvalidatePositions requests an asynchronous refresh without coupling callers to a broker.
+func (s *Service) InvalidatePositions() {
+	select {
+	case s.syncNow <- struct{}{}:
+	default:
 	}
 }
 
+// SyncPositions refreshes each broker projection independently.
+// A failed source keeps its previous successful projection readable.
+func (s *Service) SyncPositions(ctx context.Context) error {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	if s.store == nil {
+		return fmt.Errorf("position store is not available")
+	}
+
+	var errs []string
+	succeeded := false
+	for _, source := range s.sources {
+		if source.Provider == nil {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSpace(source.Name))
+		if name == "" {
+			continue
+		}
+		positions, err := source.Provider.ListPositions(ctx)
+		if err != nil {
+			_ = s.store.RecordBrokerPositionSyncError(ctx, name, err)
+			errs = append(errs, name+": "+err.Error())
+			continue
+		}
+		for i := range positions {
+			positions[i].Broker = name
+		}
+		if err := s.store.ReplaceBrokerPositions(ctx, name, positions); err != nil {
+			_ = s.store.RecordBrokerPositionSyncError(ctx, name, err)
+			errs = append(errs, name+": store: "+err.Error())
+			continue
+		}
+		succeeded = true
+	}
+
+	if succeeded || len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(errs, "; "))
+}
+
+// AllPositions reads the latest successful normalized projection from SQLite.
+func (s *Service) AllPositions(ctx context.Context) ([]broker.Position, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("position store is not available")
+	}
+	return s.store.ListBrokerPositions(ctx)
+}
+
+func (s *Service) PositionSyncs(ctx context.Context) ([]store.BrokerPositionSync, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("position store is not available")
+	}
+	return s.store.ListBrokerPositionSyncs(ctx)
+}
+
+// AccountTimeline remains provider-backed until account-equity projection is implemented.
 func (s *Service) AccountTimeline(ctx context.Context) ([]broker.AccountEquityPoint, broker.AccountSummary, error) {
 	if s.account == nil {
 		return []broker.AccountEquityPoint{}, broker.AccountSummary{}, nil
@@ -59,7 +145,7 @@ func (s *Service) AccountTimeline(ctx context.Context) ([]broker.AccountEquityPo
 			Time:     summary.AsOf,
 			Value:    summary.NetLiquidation,
 			Currency: summary.Currency,
-			Source:   "IBKR realtime",
+			Source:   summary.Broker + " realtime",
 		})
 	}
 	if summaryErr != nil && historicalErr != nil {
@@ -72,122 +158,6 @@ func (s *Service) AccountTimeline(ctx context.Context) ([]broker.AccountEquityPo
 		return points, summary, summaryErr
 	}
 	return points, summary, nil
-}
-
-func (s *Service) AllPositions(ctx context.Context) ([]broker.Position, error) {
-	for {
-		now := time.Now()
-
-		s.positionsMu.Lock()
-		if now.Before(s.positionsCacheExpires) {
-			pos, err := clonePositions(s.positionsCache), s.positionsCacheErr
-			s.positionsMu.Unlock()
-			return pos, err
-		}
-		if s.positionsRefreshCh != nil {
-			ch := s.positionsRefreshCh
-			s.positionsMu.Unlock()
-			select {
-			case <-ch:
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		ch := make(chan struct{})
-		s.positionsRefreshCh = ch
-		generation := s.positionsGeneration
-		s.positionsMu.Unlock()
-
-		pos, err := s.fetchAllPositions(ctx)
-		return s.finishPositionsRefresh(pos, err, ch, generation)
-	}
-}
-
-func (s *Service) InvalidatePositions() {
-	s.positionsMu.Lock()
-	defer s.positionsMu.Unlock()
-
-	s.positionsCache = nil
-	s.positionsCacheErr = nil
-	s.positionsCacheExpires = time.Time{}
-	s.positionsCacheHasData = false
-	s.positionsGeneration++
-}
-
-func (s *Service) finishPositionsRefresh(pos []broker.Position, err error, ch chan struct{}, generation uint64) ([]broker.Position, error) {
-	s.positionsMu.Lock()
-	defer s.positionsMu.Unlock()
-	defer close(ch)
-
-	if s.positionsRefreshCh == ch {
-		s.positionsRefreshCh = nil
-	}
-	if s.positionsGeneration != generation {
-		return clonePositions(pos), err
-	}
-
-	now := time.Now()
-	if err != nil {
-		s.positionsCacheExpires = now.Add(s.positionsErrorCacheTTL)
-		if s.positionsCacheHasData {
-			s.positionsCacheErr = nil
-			return clonePositions(s.positionsCache), nil
-		}
-		s.positionsCache = nil
-		s.positionsCacheErr = err
-		return nil, err
-	}
-
-	s.positionsCache = clonePositions(pos)
-	s.positionsCacheErr = nil
-	s.positionsCacheExpires = now.Add(s.positionsCacheTTL)
-	s.positionsCacheHasData = true
-	return clonePositions(pos), nil
-}
-
-func (s *Service) fetchAllPositions(ctx context.Context) ([]broker.Position, error) {
-	var out []broker.Position
-	var errs []string
-	succeeded := false
-
-	if s.snaptrade != nil {
-		pos, err := s.snaptrade.ListPositions(ctx)
-		if err != nil {
-			errs = append(errs, "snaptrade: "+err.Error())
-		} else {
-			succeeded = true
-			out = append(out, pos...)
-		}
-	}
-	if s.ibkr != nil {
-		pos, err := s.ibkr.ListPositions(ctx)
-		if err != nil {
-			errs = append(errs, "ibkr: "+err.Error())
-		} else {
-			succeeded = true
-			out = append(out, pos...)
-		}
-	}
-
-	// Return data if at least one broker succeeded.
-	if succeeded {
-		return out, nil
-	}
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return out, nil
-}
-
-func clonePositions(in []broker.Position) []broker.Position {
-	if in == nil {
-		return nil
-	}
-	out := make([]broker.Position, len(in))
-	copy(out, in)
-	return out
 }
 
 func appendOrReplaceToday(points []broker.AccountEquityPoint, realtime broker.AccountEquityPoint) []broker.AccountEquityPoint {

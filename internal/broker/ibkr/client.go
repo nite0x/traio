@@ -334,11 +334,11 @@ func (c *Client) GetCandles(ctx context.Context, conID int64, period, bar string
 	var raw struct {
 		Data []struct {
 			T json.Number `json:"t"`
-			O float64    `json:"o"`
-			H float64    `json:"h"`
-			L float64    `json:"l"`
-			C float64    `json:"c"`
-			V float64    `json:"v"`
+			O float64     `json:"o"`
+			H float64     `json:"h"`
+			L float64     `json:"l"`
+			C float64     `json:"c"`
+			V float64     `json:"v"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
@@ -398,13 +398,33 @@ func (c *Client) SearchInstruments(ctx context.Context, query string) ([]broker.
 	q.Set("name", "true")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
+	// IBKR CPAPI sometimes returns 400/503 on the first request after session
+	// establishment ("warming up"). Retry up to 3 times with a short back-off.
+	var resp *http.Response
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 600 * time.Millisecond):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("ibkr: instrument search request: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		resp.Body.Close()
+		resp = nil
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr: instrument search request: %w", err)
+	if resp == nil {
+		return nil, fmt.Errorf("ibkr: instrument search failed after retries")
 	}
 	defer resp.Body.Close()
 
@@ -482,12 +502,16 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 	}
 
 	var raw []struct {
+		ConID         int64   `json:"conid"`
+		AccountID     string  `json:"acctId"`
 		ContractDesc  string  `json:"contractDesc"`
 		Position      float64 `json:"position"`
 		MktPrice      float64 `json:"mktPrice"`
 		MktValue      float64 `json:"mktValue"`
 		AvgCost       float64 `json:"avgCost"`
 		UnrealizedPnl float64 `json:"unrealizedPnl"`
+		RealizedPnl   float64 `json:"realizedPnl"`
+		Currency      string  `json:"currency"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("ibkr: decode positions: %w", err)
@@ -500,10 +524,15 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 		}
 		out = append(out, broker.Position{
 			Symbol:      p.ContractDesc,
+			ConID:       p.ConID,
 			Quantity:    p.Position,
 			AvgCost:     p.AvgCost,
+			MarketPrice: p.MktPrice,
 			MarketValue: p.MktValue,
 			Unrealized:  p.UnrealizedPnl,
+			Realized:    p.RealizedPnl,
+			Currency:    p.Currency,
+			Account:     firstNonEmpty(p.AccountID, accountID),
 			Broker:      "IBKR",
 		})
 	}

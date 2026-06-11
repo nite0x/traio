@@ -76,7 +76,7 @@ func Default(baseDir string) Config {
 		},
 		SnapTrade: SnapTradeConfig{},
 		Schwab: SchwabConfig{
-			RedirectURI: "https://127.0.0.1:8182",
+			RedirectURI: "https://127.0.0.1:8182/callback",
 		},
 		IBKR: IBKRConfig{
 			GatewayDir:        filepath.Join(baseDir, "ibkr-gateway"),
@@ -100,8 +100,8 @@ func (c *Config) Normalize(baseDir string) {
 	} else if !filepath.IsAbs(c.Database.Path) {
 		c.Database.Path = filepath.Join(baseDir, c.Database.Path)
 	}
-	if c.Schwab.RedirectURI == "" {
-		c.Schwab.RedirectURI = "https://127.0.0.1:8182"
+	if c.Schwab.RedirectURI == "" || c.Schwab.RedirectURI == "https://127.0.0.1:8182" {
+		c.Schwab.RedirectURI = "https://127.0.0.1:8182/callback"
 	}
 	if c.Claude.Model == "" {
 		c.Claude.Model = "claude-sonnet-4-20250514"

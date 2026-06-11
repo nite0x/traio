@@ -61,13 +61,19 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", deleteWatchlistItem(deps.Store))
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
+		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
 		v1.GET("/quotes/:symbol/history", getHistory(deps.Store, deps.Instruments, deps.Candles))
 		v1.GET("/positions", listPositions(deps.Portfolio))
+		v1.GET("/positions/sync-status", positionSyncStatus(deps.Portfolio))
+		v1.POST("/positions/sync", syncPositions(deps.Portfolio))
 		v1.GET("/account/equity", accountEquity(deps.Portfolio))
 		v1.GET("/news/:symbol", getNews(deps.News))
 		v1.POST("/orders", placeOrder(deps.Portfolio))
-		v1.GET("/ws", wsQuotes())
+		v1.GET("/ws", wsQuotes(deps.Schwab))
+		v1.GET("/schwab/status", schwabStatus(deps.Schwab))
+		v1.GET("/schwab/oauth/url", schwabOAuthURL(deps.Schwab))
+		v1.POST("/schwab/oauth/exchange", schwabOAuthExchange(deps.Schwab, deps.Portfolio))
 
 		v1.GET("/ibkr/gateway/status", ibkrGatewayStatus(deps.IBKR))
 		v1.POST("/ibkr/gateway/start", ibkrGatewayStart(deps.IBKR, deps.Portfolio))
@@ -239,6 +245,22 @@ func listQuotes(provider broker.BatchMarketDataProvider) gin.HandlerFunc {
 	}
 }
 
+func listQuotesBySymbol(client *schwab.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if client == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab quotes are not available"})
+			return
+		}
+		symbols := strings.Split(c.Query("symbols"), ",")
+		quotes, err := client.GetQuotes(c.Request.Context(), symbols)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, quotes)
+	}
+}
+
 func getQuote(
 	schwabClient *schwab.Client,
 	instruments broker.InstrumentProvider,
@@ -313,6 +335,35 @@ func listPositions(svc *portfolio.Service) gin.HandlerFunc {
 	}
 }
 
+func syncPositions(svc *portfolio.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			return
+		}
+		if err := svc.SyncPositions(c.Request.Context()); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "synced"})
+	}
+}
+
+func positionSyncStatus(svc *portfolio.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			return
+		}
+		statuses, err := svc.PositionSyncs(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, statuses)
+	}
+}
+
 func accountEquity(svc *portfolio.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if svc == nil {
@@ -355,14 +406,14 @@ func placeOrder(svc *portfolio.Service) gin.HandlerFunc {
 
 // periodToBar returns a sensible default bar size for a given period.
 var periodToBar = map[string]string{
-	"1d":  "5min",
-	"5d":  "30min",
-	"1m":  "1h",
-	"3m":  "1d",
-	"6m":  "1d",
-	"1y":  "1d",
-	"2y":  "1w",
-	"5y":  "1w",
+	"1d": "5min",
+	"5d": "30min",
+	"1m": "1h",
+	"3m": "1d",
+	"6m": "1d",
+	"1y": "1d",
+	"2y": "1w",
+	"5y": "1w",
 }
 
 func getHistory(st *store.Store, instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {

@@ -23,9 +23,21 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// SQLite PRAGMAs are connection-local. Keep one shared connection so every
+	// store operation consistently uses foreign keys and WAL mode.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable sqlite wal: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
@@ -73,7 +85,43 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	data TEXT NOT NULL,
 	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-`
+
+	CREATE TABLE IF NOT EXISTS broker_accounts (
+		broker TEXT NOT NULL,
+		account TEXT NOT NULL DEFAULT '',
+		currency TEXT NOT NULL DEFAULT '',
+		synced_at TEXT NOT NULL,
+		PRIMARY KEY (broker, account)
+	);
+
+	CREATE TABLE IF NOT EXISTS broker_positions (
+		broker TEXT NOT NULL,
+		account TEXT NOT NULL DEFAULT '',
+		symbol TEXT NOT NULL,
+		conid INTEGER NOT NULL DEFAULT 0,
+		quantity REAL NOT NULL,
+		avg_cost REAL NOT NULL DEFAULT 0,
+		market_price REAL NOT NULL DEFAULT 0,
+		market_value REAL NOT NULL DEFAULT 0,
+		unrealized_pnl REAL NOT NULL DEFAULT 0,
+		realized_pnl REAL NOT NULL DEFAULT 0,
+		currency TEXT NOT NULL DEFAULT '',
+		synced_at TEXT NOT NULL,
+		PRIMARY KEY (broker, account, symbol, conid),
+		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
+			ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_broker_positions_symbol
+		ON broker_positions (symbol);
+
+	CREATE TABLE IF NOT EXISTS broker_position_syncs (
+		broker TEXT PRIMARY KEY,
+		synced_at TEXT NOT NULL DEFAULT '',
+		last_attempt_at TEXT NOT NULL,
+		last_error TEXT NOT NULL DEFAULT ''
+	);
+	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}

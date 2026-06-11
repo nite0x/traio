@@ -3,11 +3,12 @@ package portfolio
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/store"
 )
 
 type fakeProvider struct {
@@ -15,26 +16,15 @@ type fakeProvider struct {
 	calls     int
 	positions []broker.Position
 	err       error
-	wait      chan struct{}
 }
 
-func (f *fakeProvider) ListPositions(ctx context.Context) ([]broker.Position, error) {
+func (f *fakeProvider) ListPositions(context.Context) ([]broker.Position, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
-	wait := f.wait
-	positions := clonePositions(f.positions)
-	err := f.err
-	f.mu.Unlock()
-
-	if wait != nil {
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	return positions, err
+	out := make([]broker.Position, len(f.positions))
+	copy(out, f.positions)
+	return out, f.err
 }
 
 func (f *fakeProvider) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
@@ -44,7 +34,7 @@ func (f *fakeProvider) PlaceOrder(context.Context, broker.OrderRequest) (string,
 func (f *fakeProvider) setResult(positions []broker.Position, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.positions = clonePositions(positions)
+	f.positions = positions
 	f.err = err
 }
 
@@ -54,128 +44,103 @@ func (f *fakeProvider) callCount() int {
 	return f.calls
 }
 
-func newTestService(provider broker.PortfolioProvider, ttl time.Duration) *Service {
-	s := New(nil, provider)
-	s.positionsCacheTTL = ttl
-	s.positionsErrorCacheTTL = ttl
-	return s
+func newTestService(t *testing.T, sources ...Source) *Service {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "traio.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return New(st, sources...)
 }
 
-func TestAllPositionsCachesSuccessfulFetch(t *testing.T) {
-	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 2}}}
-	svc := newTestService(provider, time.Minute)
+func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
+	provider := &fakeProvider{positions: []broker.Position{{
+		Symbol: "AAPL", Quantity: 2, MarketValue: 400, Account: "U1",
+	}}}
+	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
 
+	if err := svc.SyncPositions(context.Background()); err != nil {
+		t.Fatalf("sync positions: %v", err)
+	}
 	first, err := svc.AllPositions(context.Background())
 	if err != nil {
-		t.Fatalf("first AllPositions: %v", err)
+		t.Fatalf("read positions: %v", err)
 	}
-	first[0].Symbol = "MUTATED"
-
 	second, err := svc.AllPositions(context.Background())
 	if err != nil {
-		t.Fatalf("second AllPositions: %v", err)
+		t.Fatalf("read positions again: %v", err)
 	}
 
 	if provider.callCount() != 1 {
-		t.Fatalf("expected one provider call, got %d", provider.callCount())
+		t.Fatalf("database reads called provider; got %d provider calls", provider.callCount())
 	}
-	if got := second[0].Symbol; got != "AAPL" {
-		t.Fatalf("expected cached positions to be cloned, got %q", got)
+	if len(first) != 1 || len(second) != 1 || second[0].Broker != "IBKR" {
+		t.Fatalf("unexpected positions: %#v", second)
 	}
-}
-
-func TestAllPositionsCoalescesConcurrentRefresh(t *testing.T) {
-	release := make(chan struct{})
-	provider := &fakeProvider{
-		positions: []broker.Position{{Symbol: "MSFT", Quantity: 1}},
-		wait:      release,
-	}
-	svc := newTestService(provider, time.Minute)
-
-	const callers = 8
-	var wg sync.WaitGroup
-	wg.Add(callers)
-	errs := make(chan error, callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			defer wg.Done()
-			pos, err := svc.AllPositions(context.Background())
-			if err != nil {
-				errs <- err
-				return
-			}
-			if len(pos) != 1 || pos[0].Symbol != "MSFT" {
-				errs <- errors.New("unexpected positions")
-			}
-		}()
-	}
-
-	for deadline := time.Now().Add(time.Second); provider.callCount() == 0 && time.Now().Before(deadline); {
-		time.Sleep(time.Millisecond)
-	}
-	close(release)
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if provider.callCount() != 1 {
-		t.Fatalf("expected one provider call, got %d", provider.callCount())
+	if got := second[0].MarketPrice; got != 200 {
+		t.Fatalf("expected derived market price 200, got %v", got)
 	}
 }
 
-func TestAllPositionsCachesErrors(t *testing.T) {
-	provider := &fakeProvider{err: errors.New("gateway busy")}
-	svc := newTestService(provider, time.Minute)
+func TestSyncReplacesOneBrokerProjection(t *testing.T) {
+	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 2}}}
+	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
 
-	if _, err := svc.AllPositions(context.Background()); err == nil {
-		t.Fatal("expected first error")
+	if err := svc.SyncPositions(context.Background()); err != nil {
+		t.Fatalf("first sync: %v", err)
 	}
-	if _, err := svc.AllPositions(context.Background()); err == nil {
-		t.Fatal("expected cached error")
+	provider.setResult([]broker.Position{{Symbol: "MSFT", Quantity: 3}}, nil)
+	if err := svc.SyncPositions(context.Background()); err != nil {
+		t.Fatalf("second sync: %v", err)
 	}
-	if provider.callCount() != 1 {
-		t.Fatalf("expected one provider call, got %d", provider.callCount())
-	}
-}
 
-func TestAllPositionsAllowsSuccessfulEmptyProvider(t *testing.T) {
-	failingProvider := &fakeProvider{err: errors.New("not implemented")}
-	emptyProvider := &fakeProvider{}
-	svc := New(failingProvider, emptyProvider)
-	svc.positionsCacheTTL = time.Minute
-	svc.positionsErrorCacheTTL = time.Minute
-
-	pos, err := svc.AllPositions(context.Background())
+	positions, err := svc.AllPositions(context.Background())
 	if err != nil {
-		t.Fatalf("expected empty successful positions, got error: %v", err)
+		t.Fatalf("read positions: %v", err)
 	}
-	if len(pos) != 0 {
-		t.Fatalf("expected empty positions, got %#v", pos)
+	if len(positions) != 1 || positions[0].Symbol != "MSFT" {
+		t.Fatalf("expected replaced projection, got %#v", positions)
 	}
 }
 
-func TestAllPositionsServesStaleDataWhenRefreshFails(t *testing.T) {
+func TestFailedSyncKeepsLastSuccessfulProjection(t *testing.T) {
 	provider := &fakeProvider{positions: []broker.Position{{Symbol: "NVDA", Quantity: 3}}}
-	svc := newTestService(provider, time.Millisecond)
+	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
 
-	if _, err := svc.AllPositions(context.Background()); err != nil {
-		t.Fatalf("prime cache: %v", err)
+	if err := svc.SyncPositions(context.Background()); err != nil {
+		t.Fatalf("prime projection: %v", err)
 	}
-	time.Sleep(2 * time.Millisecond)
 	provider.setResult(nil, errors.New("gateway restarting"))
+	if err := svc.SyncPositions(context.Background()); err == nil {
+		t.Fatal("expected sync error")
+	}
 
-	pos, err := svc.AllPositions(context.Background())
+	positions, err := svc.AllPositions(context.Background())
 	if err != nil {
-		t.Fatalf("expected stale positions instead of refresh error: %v", err)
+		t.Fatalf("read stale projection: %v", err)
 	}
-	if len(pos) != 1 || pos[0].Symbol != "NVDA" {
-		t.Fatalf("unexpected stale positions: %#v", pos)
+	if len(positions) != 1 || positions[0].Symbol != "NVDA" {
+		t.Fatalf("expected previous projection, got %#v", positions)
 	}
-	if provider.callCount() != 2 {
-		t.Fatalf("expected refresh attempt after ttl, got %d calls", provider.callCount())
+}
+
+func TestSyncKeepsSuccessfulBrokerWhenAnotherFails(t *testing.T) {
+	failing := &fakeProvider{err: errors.New("not authenticated")}
+	successful := &fakeProvider{positions: []broker.Position{{Symbol: "BTCUSD", Quantity: 1}}}
+	svc := newTestService(t,
+		Source{Name: "IBKR", Provider: failing},
+		Source{Name: "BINANCE", Provider: successful},
+	)
+
+	if err := svc.SyncPositions(context.Background()); err != nil {
+		t.Fatalf("expected partial sync success, got %v", err)
+	}
+	positions, err := svc.AllPositions(context.Background())
+	if err != nil {
+		t.Fatalf("read positions: %v", err)
+	}
+	if len(positions) != 1 || positions[0].Broker != "BINANCE" {
+		t.Fatalf("unexpected positions: %#v", positions)
 	}
 }

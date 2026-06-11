@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:38180";
+export const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:38180";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -42,6 +42,16 @@ export interface Quote {
   volume: number;
   high: number;
   low: number;
+  delayed?: boolean;
+}
+
+export interface SchwabStatus {
+  authenticated: boolean;
+  stream: {
+    connected: boolean;
+    symbols: number;
+    error?: string;
+  };
 }
 
 export interface Position {
@@ -139,12 +149,31 @@ export const api = {
   quotes: {
     byConIds: (conids: number[]) =>
       request<Quote[]>(`/api/v1/quotes?conids=${conids.join(",")}`),
+    bySymbols: (symbols: string[]) =>
+      request<Quote[]>(
+        `/api/v1/quotes/symbols?symbols=${encodeURIComponent(symbols.join(","))}`
+      ),
     bySymbol: (symbol: string) =>
       request<Quote>(`/api/v1/quotes/${symbol}`),
     history: (symbol: string, period = "1m", bar = "") =>
       request<HistoryResponse>(
         `/api/v1/quotes/${encodeURIComponent(symbol)}/history?period=${period}${bar ? `&bar=${bar}` : ""}`
       ),
+  },
+
+  quoteStreamUrl: (symbols: string[]) => {
+    const base = BASE.replace(/^http/, "ws");
+    return `${base}/api/v1/ws?symbols=${encodeURIComponent(symbols.join(","))}`;
+  },
+
+  schwab: {
+    status: () => request<SchwabStatus>("/api/v1/schwab/status"),
+    oauthUrl: () => request<{ url: string }>("/api/v1/schwab/oauth/url"),
+    exchange: (callbackUrl: string) =>
+      request<{ status: string }>("/api/v1/schwab/oauth/exchange", {
+        method: "POST",
+        body: JSON.stringify({ callback_url: callbackUrl }),
+      }),
   },
 
   instruments: {
@@ -171,8 +200,13 @@ export const api = {
 
   settings: {
     get: () => request<Settings>("/api/v1/settings"),
-    put: (s: Settings) =>
-      request<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(s) }),
+    put: async (s: Settings) => {
+      const result = await request<{ settings: Settings }>("/api/v1/settings", {
+        method: "PUT",
+        body: JSON.stringify(s),
+      });
+      return result.settings;
+    },
     defaults: () => request<Settings>("/api/v1/settings/defaults"),
   },
 

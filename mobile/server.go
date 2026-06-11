@@ -62,9 +62,11 @@ func StartServer(dataDir string) (int, error) {
 	}
 	cfg := settingsMgr.Get()
 
-	brokers := runtime.BuildBrokers(cfg) // iOS: Schwab-only, gateway == nil
+	brokers := runtime.BuildBrokers(cfg, st) // iOS: Schwab-only, gateway == nil
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
+	syncCtx := context.Background()
+	brokers.Portfolio.StartPositionSync(syncCtx, 0)
 
 	settingsMgr.OnApply(func(updated config.Config) {
 		brokers.ApplyConfig(updated)
@@ -78,6 +80,8 @@ func StartServer(dataDir string) (int, error) {
 		Schwab:      brokers.Schwab,
 		IBKR:        brokers.Gateway, // nil on iOS; /ibkr/* routes degrade gracefully
 		Instruments: brokers.Instruments,
+		Quotes:      brokers.Quotes,
+		Candles:     brokers.Candles,
 		Portfolio:   brokers.Portfolio,
 		News:        newsSvc,
 		AI:          aiSvc,
@@ -86,7 +90,6 @@ func StartServer(dataDir string) (int, error) {
 	// No pid/endpoint files and no signal handling: on iOS the OS owns the
 	// process lifecycle and there is no second process to coordinate with.
 	router := api.NewRouter(deps, api.ServerControl{
-		BaseDir:   dataDir,
 		StartedAt: time.Now(),
 		Shutdown:  nil, // shutdown is driven by the app lifecycle, not an HTTP call
 	})

@@ -27,7 +27,7 @@ make tui           # 另开终端，用 TUI 访问同一个 server
 ### Tauri 桌面端开发
 
 ```bash
-make tauri-dev     # 自动构建 traio-server，再启动 Tauri 开发服务器
+make tauri-dev     # 自动构建并启动 Go 后端，再启动 Tauri 桌面应用
 ```
 
 构建发布包：
@@ -103,11 +103,28 @@ POST /api/v1/ibkr/gateway/start
 POST /api/v1/ibkr/gateway/stop
 GET  /api/v1/settings
 PUT  /api/v1/settings
+GET  /api/v1/schwab/status
+GET  /api/v1/schwab/oauth/url
+POST /api/v1/schwab/oauth/exchange
 POST /api/v1/server/shutdown
-GET  /api/v1/ws              WebSocket（行情推送）
+GET  /api/v1/ws?symbols=AAPL,MSFT   WebSocket（Schwab 实时行情推送）
 ```
 
 完整 MCP 接入见 [docs/mcp.md](docs/mcp.md)。
+
+## Schwab 实时行情
+
+1. 在桌面端“设置”的配置 JSON 中填写 `schwab.client_id`、`schwab.client_secret` 和 Schwab Developer Portal 中登记的 `redirect_uri`，保存配置。
+2. 点击“打开授权页”，登录 Schwab 并授权。
+3. 浏览器跳转到回调地址后，将地址栏中的完整 URL 粘贴回设置页，点击“完成授权”。
+4. 打开自选、今日或个股图表页。后端会维护唯一 Schwab Streamer 连接，并将 `LEVELONE_EQUITIES` 增量行情转发给客户端。
+
+OAuth token 保存在本地 SQLite `oauth_tokens` 表中，并在过期前自动刷新。HTTP 报价仍作为桌面端回退数据源。
+
+## 架构文档
+
+- [券商持仓同步架构](docs/portfolio-sync.md)
+- [端到端加密设备同步架构](docs/e2ee-device-sync.md)
 
 ## IBKR Gateway
 

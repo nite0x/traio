@@ -40,7 +40,7 @@ func main() {
 
 	cfg := settingsMgr.Get()
 
-	brokers := runtime.BuildBrokers(cfg)
+	brokers := runtime.BuildBrokers(cfg, st)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 
@@ -52,6 +52,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	brokers.Portfolio.StartPositionSync(ctx, 0)
 
 	go func() {
 		if err := brokers.StartGateway(ctx); err != nil {

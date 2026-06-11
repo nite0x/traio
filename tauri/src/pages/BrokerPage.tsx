@@ -27,6 +27,11 @@ export default function BrokerPage() {
     queryFn: api.ibkr.status,
     refetchInterval: 8_000,
   });
+  const { data: schwab, isLoading: schwabLoading } = useQuery({
+    queryKey: ["schwab-status"],
+    queryFn: api.schwab.status,
+    refetchInterval: 8_000,
+  });
 
   const inv = () => qc.invalidateQueries({ queryKey: ["ibkr-status"] });
 
@@ -45,6 +50,41 @@ export default function BrokerPage() {
       </div>
 
       {toast && <Toast message={toast.msg} type={toast.type} />}
+
+      <Card className="broker-card">
+        <SectionTitle title="Charles Schwab" />
+        <div style={{ height: 20 }} />
+        {schwabLoading ? (
+          <div className="broker-loading">加载中…</div>
+        ) : (
+          <div className="broker-info-grid">
+            <BrokerRow label="认证状态">
+              <StatusPill
+                label={schwab?.authenticated ? "已认证" : "未认证"}
+                variant={schwab?.authenticated ? "up" : "warn"}
+              />
+            </BrokerRow>
+            <BrokerRow label="实时行情">
+              <StatusPill
+                label={schwab?.stream.connected ? "已连接" : "等待订阅"}
+                variant={schwab?.stream.connected ? "up" : "muted"}
+              />
+            </BrokerRow>
+            <BrokerRow label="订阅股票">
+              <span className="mono text-2" style={{ fontSize: 13 }}>
+                {schwab?.stream.symbols ?? 0}
+              </span>
+            </BrokerRow>
+            {schwab?.stream.error && (
+              <BrokerRow label="最近错误">
+                <span className="mono down" style={{ fontSize: 12 }}>
+                  {schwab.stream.error}
+                </span>
+              </BrokerRow>
+            )}
+          </div>
+        )}
+      </Card>
 
       <Card className="broker-card">
         <SectionTitle title="Interactive Brokers Gateway" />

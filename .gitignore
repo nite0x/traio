@@ -53,6 +53,7 @@ third_party/clientportal.gw/*
 
 # Logs
 *.log
+*.pid
 
 # Tauri desktop
 tauri/node_modules/

@@ -10,6 +10,7 @@ BIN_DIR ?= bin
 # ── Go 后端 ─────────────────────────────────────────────────────────────────
 
 server:
+	@lsof -ti :38180 | xargs kill -9 2>/dev/null || true
 	go run ./cmd/server
 
 tui:
@@ -39,8 +40,12 @@ test:
 	go test ./...
 
 # ── Tauri 桌面端 ─────────────────────────────────────────────────────────────
-# 开发模式：先启动 server（make server），再运行此命令
+# 开发模式：自动启动 Go server，并在 Tauri 退出时停止 server
 tauri-dev: build-server
+	@lsof -ti :38180 | xargs kill -9 2>/dev/null || true
+	@TRAIO_RUNTIME_DIR="$(HOME)/Library/Application Support/Traio" bin/traio-server & \
+	server_pid=$$!; \
+	trap 'kill $$server_pid 2>/dev/null || true' EXIT INT TERM; \
 	cd tauri && npm run tauri dev
 
 # 正式构建 .app / .dmg（macOS）

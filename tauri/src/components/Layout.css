@@ -28,13 +28,13 @@
   position: relative;
 }
 
-/* Transparent drag bar — full width, sits above content, leaves traffic lights alone */
+/* Drag bar — only covers the sidebar header, never overlaps content buttons */
 .titlebar-drag {
   position: fixed;
   top: 0;
-  left: 80px;
-  right: 0;
-  height: 52px;
+  left: 0;
+  width: var(--sidebar-w);
+  height: 72px;
   z-index: 9999;
   cursor: default;
 }

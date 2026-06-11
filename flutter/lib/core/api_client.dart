@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -34,7 +35,8 @@ class TraioApiClient {
   Future<List<WatchlistGroup>> watchlistGroups() async {
     final res = await _dio.get('/watchlist/groups');
     return (res.data as List<dynamic>)
-        .map((e) => WatchlistGroup.fromJson(Map<String, dynamic>.from(e as Map)))
+        .map(
+            (e) => WatchlistGroup.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
 
@@ -45,7 +47,8 @@ class TraioApiClient {
         .toList();
   }
 
-  Future<WatchlistItem> addWatchlistItem(int groupId, Instrument instrument) async {
+  Future<WatchlistItem> addWatchlistItem(
+      int groupId, Instrument instrument) async {
     final res = await _dio.post('/watchlist/groups/$groupId/items',
         data: instrument.toJson());
     return WatchlistItem.fromJson(Map<String, dynamic>.from(res.data as Map));
@@ -71,6 +74,41 @@ class TraioApiClient {
     return (res.data as List<dynamic>)
         .map((e) => Quote.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
+  }
+
+  Stream<Quote> streamQuotes(Iterable<String> symbols) async* {
+    final keys = symbols
+        .map((symbol) => symbol.trim().toUpperCase())
+        .where((symbol) => symbol.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    if (keys.isEmpty) return;
+
+    final httpBase = _dio.options.baseUrl.replaceFirst(RegExp(r'/api/v1$'), '');
+    final wsBase = httpBase.replaceFirst(RegExp(r'^http'), 'ws');
+    final uri = Uri.parse('$wsBase/api/v1/ws')
+        .replace(queryParameters: {'symbols': keys.join(',')});
+
+    while (true) {
+      WebSocket? socket;
+      try {
+        socket = await WebSocket.connect(uri.toString());
+        await for (final raw in socket) {
+          final message = jsonDecode(raw.toString()) as Map<String, dynamic>;
+          if (message['type'] != 'quote') continue;
+          yield Quote.fromJson(
+              Map<String, dynamic>.from(message['quote'] as Map));
+        }
+      } catch (_) {
+        // Reconnect below after a short delay.
+      } finally {
+        if (socket != null) {
+          await socket.close();
+        }
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
   }
 
   Future<Map<String, dynamic>> getSettings() async {

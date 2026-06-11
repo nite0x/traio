@@ -68,6 +68,10 @@ class _MobileWatchlistItems extends ConsumerWidget {
                 style: TraioTheme.mono(context, color: TraioTheme.textMuted)),
           );
         }
+        final quotes = ref.watch(liveQuotesProvider(groupId)).maybeWhen(
+              data: (value) => value,
+              orElse: () => <String, Quote>{},
+            );
         return Column(
           children: rows
               .map((item) => ListTile(
@@ -78,6 +82,10 @@ class _MobileWatchlistItems extends ConsumerWidget {
                         : Text(item.name,
                             style: TraioTheme.mono(context,
                                 color: TraioTheme.textMuted)),
+                    trailing: Text(
+                      quotes[item.symbol]?.last.toStringAsFixed(2) ?? '—',
+                      style: TraioTheme.mono(context),
+                    ),
                   ))
               .toList(),
         );
@@ -103,4 +111,16 @@ final watchlistGroupsProvider =
 final watchlistItemsProvider =
     FutureProvider.family<List<WatchlistItem>, int>((ref, groupId) async {
   return ref.read(apiClientProvider).watchlistItems(groupId);
+});
+
+final liveQuotesProvider =
+    StreamProvider.family<Map<String, Quote>, int>((ref, groupId) async* {
+  final client = ref.read(apiClientProvider);
+  final items = await client.watchlistItems(groupId);
+  final quotes = <String, Quote>{};
+  await for (final quote
+      in client.streamQuotes(items.map((item) => item.symbol))) {
+    quotes[quote.symbol] = quote;
+    yield Map<String, Quote>.from(quotes);
+  }
 });

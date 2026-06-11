@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import { api, Position } from "../api/client";
 import { fmt } from "../utils/fmt";
+import { useLiveQuotes } from "../hooks/useLiveQuotes";
 import { KpiCard, Spinner, EmptyState } from "../components/ui";
 import "./TodayPage.css";
 
@@ -139,12 +140,13 @@ export default function TodayPage() {
     refetchInterval: 15_000,
   });
 
-  const conids = positions.map((p) => p.conid).filter(Boolean);
+  const symbols = positions.map((position) => position.symbol).filter(Boolean);
+  useLiveQuotes(symbols);
   const { data: quotes = [] } = useQuery({
-    queryKey: ["quotes", conids.join(",")],
-    queryFn: () => (conids.length ? api.quotes.byConIds(conids) : Promise.resolve([])),
-    enabled: conids.length > 0,
-    refetchInterval: 5_000,
+    queryKey: ["quotes-symbols", symbols.join(",")],
+    queryFn: () => (symbols.length ? api.quotes.bySymbols(symbols) : Promise.resolve([])),
+    enabled: symbols.length > 0,
+    refetchInterval: 30_000,
   });
 
   if (posLoading) return <Spinner />;

@@ -15,7 +15,7 @@ snaptrade:
 schwab:
   client_id: ""
   client_secret: ""
-  redirect_uri: "https://127.0.0.1:8182"
+  redirect_uri: "https://127.0.0.1:8182/callback"
 
 ibkr:
   sub_account: ""

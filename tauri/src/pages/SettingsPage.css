@@ -16,6 +16,38 @@
   gap: 8px;
 }
 
+.settings-form {
+  display: grid;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 7px;
+}
+
+.settings-field__label {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-field__hint {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.settings-callback {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.settings-callback__input {
+  flex: 1;
+}
+
 .settings-json-error {
   padding: 8px 12px;
   border-radius: var(--r-sm);
@@ -42,3 +74,15 @@
 .settings-textarea:focus { border-color: var(--accent); }
 .settings-textarea--error { border-color: var(--down); }
 .settings-textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 760px) {
+  .settings-card__header,
+  .settings-callback {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-card__actions {
+    flex-wrap: wrap;
+  }
+}
