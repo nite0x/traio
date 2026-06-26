@@ -97,6 +97,14 @@ export interface IBKRStatus {
   session_age_seconds: number;
 }
 
+export interface AlpacaStatus {
+  configured: boolean;
+  account_id?: string;
+  equity?: number;
+  currency?: string;
+  error?: string;
+}
+
 export interface Settings {
   [key: string]: unknown;
 }
@@ -174,6 +182,10 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ callback_url: callbackUrl }),
       }),
+  },
+
+  alpaca: {
+    status: () => request<AlpacaStatus>("/api/v1/alpaca/status"),
   },
 
   instruments: {

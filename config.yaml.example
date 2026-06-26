@@ -3,7 +3,7 @@
 
 server:
   host: "127.0.0.1"
-  port: 38180
+  port: 38180  # 打包应用；本地开发默认 38181
 
 database:
   path: "./data/traio.db"
@@ -16,6 +16,11 @@ schwab:
   client_id: ""
   client_secret: ""
   redirect_uri: "https://127.0.0.1:8182/callback"
+
+alpaca:
+  api_key: ""
+  api_secret: ""
+  base_url: "https://paper-api.alpaca.markets"
 
 ibkr:
   sub_account: ""

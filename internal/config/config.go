@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -12,12 +13,18 @@ type Config struct {
 	Database  DatabaseConfig  `json:"database" yaml:"database"`
 	SnapTrade SnapTradeConfig `json:"snaptrade" yaml:"snaptrade"`
 	Schwab    SchwabConfig    `json:"schwab" yaml:"schwab"`
+	Alpaca    AlpacaConfig    `json:"alpaca" yaml:"alpaca"`
 	IBKR      IBKRConfig      `json:"ibkr" yaml:"ibkr"`
 	Finnhub   FinnhubConfig   `json:"finnhub" yaml:"finnhub"`
 	Claude    ClaudeConfig    `json:"claude" yaml:"claude"`
 }
 
-const DefaultServerPort = 38180
+const (
+	// DefaultServerPort is used by the packaged desktop app and MCP clients.
+	DefaultServerPort = 38180
+	// DevServerPort is used for local development (go run, make server, tauri dev).
+	DevServerPort = 38181
+)
 
 type DatabaseConfig struct {
 	Path string `json:"path" yaml:"path"`
@@ -32,6 +39,13 @@ type SchwabConfig struct {
 	ClientID     string `json:"client_id" yaml:"client_id"`
 	ClientSecret string `json:"client_secret" yaml:"client_secret"`
 	RedirectURI  string `json:"redirect_uri" yaml:"redirect_uri"`
+}
+
+type AlpacaConfig struct {
+	APIKey    string `json:"api_key" yaml:"api_key"`
+	APISecret string `json:"api_secret" yaml:"api_secret"`
+	// BaseURL is the trading API root, e.g. https://paper-api.alpaca.markets
+	BaseURL string `json:"base_url" yaml:"base_url"`
 }
 
 type IBKRConfig struct {
@@ -78,6 +92,9 @@ func Default(baseDir string) Config {
 		Schwab: SchwabConfig{
 			RedirectURI: "https://127.0.0.1:8182/callback",
 		},
+		Alpaca: AlpacaConfig{
+			BaseURL: "https://paper-api.alpaca.markets",
+		},
 		IBKR: IBKRConfig{
 			GatewayDir:        filepath.Join(baseDir, "ibkr-gateway"),
 			BundledGatewayDir: bundledGW,
@@ -103,10 +120,21 @@ func (c *Config) Normalize(baseDir string) {
 	if c.Schwab.RedirectURI == "" || c.Schwab.RedirectURI == "https://127.0.0.1:8182" {
 		c.Schwab.RedirectURI = "https://127.0.0.1:8182/callback"
 	}
+	c.Alpaca.Normalize()
 	if c.Claude.Model == "" {
 		c.Claude.Model = "claude-sonnet-4-20250514"
 	}
 	c.IBKR.normalize(baseDir)
+}
+
+func (c *AlpacaConfig) Normalize() {
+	base := strings.TrimSpace(c.BaseURL)
+	if base == "" {
+		base = "https://paper-api.alpaca.markets"
+	}
+	base = strings.TrimRight(base, "/")
+	base = strings.TrimSuffix(base, "/v2")
+	c.BaseURL = base
 }
 
 func (c *IBKRConfig) normalize(baseDir string) {
@@ -145,6 +173,31 @@ func (c *IBKRConfig) resolvePath(p *string, baseDir string) {
 		return
 	}
 	*p = filepath.Join(baseDir, *p)
+}
+
+// ResolveServerPort picks the HTTP listen port for traio-server.
+// TRAIO_SERVER_PORT overrides; embedded .app binaries use DefaultServerPort;
+// everything else (go run, dev sidecar) uses DevServerPort.
+func ResolveServerPort() int {
+	if v := os.Getenv("TRAIO_SERVER_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	if IsEmbedded() {
+		return DefaultServerPort
+	}
+	return DevServerPort
+}
+
+// LocalAPIURL builds a loopback base URL for the given port.
+func LocalAPIURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// ResolveServerAPIURL is the API base URL for the running traio-server instance.
+func ResolveServerAPIURL() string {
+	return LocalAPIURL(ResolveServerPort())
 }
 
 // ResolveRuntimeDir is the writable data root (App Support when embedded in .app).

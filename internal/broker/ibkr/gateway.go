@@ -218,9 +218,21 @@ func (g *GatewayManager) Status() GatewayStatus {
 	return status
 }
 
-// Reconnect manually triggers a full gateway restart cycle.
+// Restart triggers a full gateway restart cycle without opening the login page.
+func (g *GatewayManager) Restart() {
+	g.restart()
+}
+
+// Reconnect manually triggers a full gateway restart cycle and opens the login
+// page when manual authentication is required.
 func (g *GatewayManager) Reconnect() error {
 	g.restart()
+	if g.hasCredentials() || g.isAuthenticated() {
+		return nil
+	}
+	loginURL := g.config.GatewayURL + "/sso/Login"
+	log.Printf("[IBKR] opening browser for manual login at %s", loginURL)
+	openBrowser(loginURL)
 	return nil
 }
 
@@ -345,9 +357,7 @@ func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
 	}
 
 	if !g.hasCredentials() {
-		loginURL := g.config.GatewayURL + "/sso/Login"
-		log.Printf("[IBKR] credentials not configured — opening browser for manual login at %s", loginURL)
-		openBrowser(loginURL)
+		log.Printf("[IBKR] credentials not configured — complete login at %s/sso/Login", g.config.GatewayURL)
 		return nil
 	}
 
@@ -388,6 +398,11 @@ func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
 func (g *GatewayManager) isOnline() bool {
 	_, online := g.fetchTickle()
 	return online
+}
+
+func (g *GatewayManager) isAuthenticated() bool {
+	tickle, online := g.fetchTickle()
+	return online && tickleAuthenticated(tickle)
 }
 
 func (g *GatewayManager) isHealthy() bool {

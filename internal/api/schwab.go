@@ -38,7 +38,7 @@ type schwabExchangeRequest struct {
 	CallbackURL string `json:"callback_url"`
 }
 
-func schwabOAuthExchange(client *schwab.Client, portfolioSvc *portfolio.Service) gin.HandlerFunc {
+func schwabOAuthExchange(client *schwab.Client, positions *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if client == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab is not available"})
@@ -66,8 +66,8 @@ func schwabOAuthExchange(client *schwab.Client, portfolioSvc *portfolio.Service)
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		if portfolioSvc != nil {
-			portfolioSvc.InvalidatePositions()
+		if positions != nil {
+			positions.Invalidate()
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
 	}

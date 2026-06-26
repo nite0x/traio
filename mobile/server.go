@@ -63,13 +63,16 @@ func StartServer(dataDir string) (int, error) {
 	cfg := settingsMgr.Get()
 
 	brokers := runtime.BuildBrokers(cfg, st) // iOS: Schwab-only, gateway == nil
+	positions := runtime.BuildPositionSync(st, brokers)
+	accountEquity := runtime.BuildAccountEquity(brokers)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 	syncCtx := context.Background()
-	brokers.Portfolio.StartPositionSync(syncCtx, 0)
+	positions.StartBackground(syncCtx, 0)
 
 	settingsMgr.OnApply(func(updated config.Config) {
 		brokers.ApplyConfig(updated)
+		positions.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
 		aiSvc.SetConfig(updated.Claude)
 	})
@@ -78,11 +81,13 @@ func StartServer(dataDir string) (int, error) {
 		Store:       st,
 		Settings:    settingsMgr,
 		Schwab:      brokers.Schwab,
+		Alpaca:      brokers.Alpaca,
 		IBKR:        brokers.Gateway, // nil on iOS; /ibkr/* routes degrade gracefully
 		Instruments: brokers.Instruments,
 		Quotes:      brokers.Quotes,
 		Candles:     brokers.Candles,
-		Portfolio:   brokers.Portfolio,
+		Positions:   positions,
+		Account:     accountEquity,
 		News:        newsSvc,
 		AI:          aiSvc,
 	}

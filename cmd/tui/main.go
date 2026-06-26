@@ -1,10 +1,11 @@
+//go:build !ios
+
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nite/traio/internal/config"
@@ -12,7 +13,7 @@ import (
 )
 
 func main() {
-	apiURL := flag.String("api", "http://127.0.0.1:"+strconv.Itoa(config.DefaultServerPort), "traio API base URL")
+	apiURL := flag.String("api", config.LocalAPIURL(config.DevServerPort), "traio API base URL")
 	flag.Parse()
 
 	_ = apiURL // wired in phase 2

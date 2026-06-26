@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nite/traio/internal/account"
 	"github.com/nite/traio/internal/ai"
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/broker/alpaca"
 	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/portfolio"
@@ -23,11 +25,13 @@ type Deps struct {
 	Store       *store.Store
 	Settings    *settings.Manager
 	Schwab      *schwab.Client
+	Alpaca      *alpaca.Client
 	IBKR        broker.GatewayController
 	Instruments broker.InstrumentProvider
 	Quotes      broker.BatchMarketDataProvider
 	Candles     broker.CandleProvider
-	Portfolio   *portfolio.Service
+	Positions   *portfolio.SyncService
+	Account     *account.Service
 	News        *news.Service
 	AI          *ai.Service
 }
@@ -64,21 +68,22 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
 		v1.GET("/quotes/:symbol/history", getHistory(deps.Store, deps.Instruments, deps.Candles))
-		v1.GET("/positions", listPositions(deps.Portfolio))
-		v1.GET("/positions/sync-status", positionSyncStatus(deps.Portfolio))
-		v1.POST("/positions/sync", syncPositions(deps.Portfolio))
-		v1.GET("/account/equity", accountEquity(deps.Portfolio))
+		v1.GET("/positions", listPositions(deps.Positions))
+		v1.GET("/positions/sync-status", positionSyncStatus(deps.Positions))
+		v1.POST("/positions/sync", syncPositions(deps.Positions))
+		v1.GET("/account/equity", accountEquity(deps.Account))
 		v1.GET("/news/:symbol", getNews(deps.News))
-		v1.POST("/orders", placeOrder(deps.Portfolio))
+		v1.POST("/orders", placeOrder())
 		v1.GET("/ws", wsQuotes(deps.Schwab))
 		v1.GET("/schwab/status", schwabStatus(deps.Schwab))
 		v1.GET("/schwab/oauth/url", schwabOAuthURL(deps.Schwab))
-		v1.POST("/schwab/oauth/exchange", schwabOAuthExchange(deps.Schwab, deps.Portfolio))
+		v1.POST("/schwab/oauth/exchange", schwabOAuthExchange(deps.Schwab, deps.Positions))
+		v1.GET("/alpaca/status", alpacaStatus(deps.Alpaca))
 
 		v1.GET("/ibkr/gateway/status", ibkrGatewayStatus(deps.IBKR))
-		v1.POST("/ibkr/gateway/start", ibkrGatewayStart(deps.IBKR, deps.Portfolio))
-		v1.POST("/ibkr/gateway/stop", ibkrGatewayStop(deps.IBKR, deps.Portfolio))
-		v1.POST("/ibkr/gateway/reconnect", ibkrGatewayReconnect(deps.IBKR, deps.Portfolio))
+		v1.POST("/ibkr/gateway/start", ibkrGatewayStart(deps.IBKR, deps.Positions))
+		v1.POST("/ibkr/gateway/stop", ibkrGatewayStop(deps.IBKR, deps.Positions))
+		v1.POST("/ibkr/gateway/reconnect", ibkrGatewayReconnect(deps.IBKR, deps.Positions))
 
 		v1.GET("/server/status", serverStatus(serverCtrl))
 		v1.POST("/server/shutdown", serverShutdown(serverCtrl))
@@ -324,7 +329,7 @@ func preferredInstrument(symbol string, results []broker.Instrument) (broker.Ins
 	return results[0], true
 }
 
-func listPositions(svc *portfolio.Service) gin.HandlerFunc {
+func listPositions(svc *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		pos, err := svc.AllPositions(c.Request.Context())
 		if err != nil {
@@ -335,13 +340,13 @@ func listPositions(svc *portfolio.Service) gin.HandlerFunc {
 	}
 }
 
-func syncPositions(svc *portfolio.Service) gin.HandlerFunc {
+func syncPositions(svc *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if svc == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "position sync is not available"})
 			return
 		}
-		if err := svc.SyncPositions(c.Request.Context()); err != nil {
+		if err := svc.Sync(c.Request.Context()); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -349,13 +354,13 @@ func syncPositions(svc *portfolio.Service) gin.HandlerFunc {
 	}
 }
 
-func positionSyncStatus(svc *portfolio.Service) gin.HandlerFunc {
+func positionSyncStatus(svc *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if svc == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "position sync is not available"})
 			return
 		}
-		statuses, err := svc.PositionSyncs(c.Request.Context())
+		statuses, err := svc.SyncStatus(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -364,13 +369,13 @@ func positionSyncStatus(svc *portfolio.Service) gin.HandlerFunc {
 	}
 }
 
-func accountEquity(svc *portfolio.Service) gin.HandlerFunc {
+func accountEquity(svc *account.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if svc == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio service is not available"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account equity is not available"})
 			return
 		}
-		points, summary, err := svc.AccountTimeline(c.Request.Context())
+		points, summary, err := svc.Timeline(c.Request.Context())
 		if err != nil && len(points) == 0 && summary.NetLiquidation == 0 {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
@@ -398,7 +403,7 @@ func getNews(svc *news.Service) gin.HandlerFunc {
 	}
 }
 
-func placeOrder(svc *portfolio.Service) gin.HandlerFunc {
+func placeOrder() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "place order not implemented"})
 	}
@@ -502,28 +507,28 @@ func ibkrGatewayStatus(gw broker.GatewayController) gin.HandlerFunc {
 	}
 }
 
-func ibkrGatewayReconnect(gw broker.GatewayController, portfolioSvc *portfolio.Service) gin.HandlerFunc {
+func ibkrGatewayReconnect(gw broker.GatewayController, positions *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gw == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
 			return
 		}
-		if portfolioSvc != nil {
-			portfolioSvc.InvalidatePositions()
+		if positions != nil {
+			positions.Invalidate()
 		}
 		go gw.Reconnect()
 		c.JSON(http.StatusAccepted, gin.H{"status": "reconnecting"})
 	}
 }
 
-func ibkrGatewayStart(gw broker.GatewayController, portfolioSvc *portfolio.Service) gin.HandlerFunc {
+func ibkrGatewayStart(gw broker.GatewayController, positions *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gw == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
 			return
 		}
-		if portfolioSvc != nil {
-			portfolioSvc.InvalidatePositions()
+		if positions != nil {
+			positions.Invalidate()
 		}
 		go func() {
 			if err := gw.StartGateway(context.Background()); err != nil {
@@ -534,14 +539,14 @@ func ibkrGatewayStart(gw broker.GatewayController, portfolioSvc *portfolio.Servi
 	}
 }
 
-func ibkrGatewayStop(gw broker.GatewayController, portfolioSvc *portfolio.Service) gin.HandlerFunc {
+func ibkrGatewayStop(gw broker.GatewayController, positions *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gw == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
 			return
 		}
-		if portfolioSvc != nil {
-			portfolioSvc.InvalidatePositions()
+		if positions != nil {
+			positions.Invalidate()
 		}
 		keepSession := c.Query("keep_session") == "true"
 		go gw.StopGateway(keepSession)

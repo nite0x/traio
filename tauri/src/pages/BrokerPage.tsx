@@ -37,7 +37,7 @@ export default function BrokerPage() {
 
   const startMut     = useMutation({ mutationFn: api.ibkr.start,     onSuccess: () => { inv(); show("Gateway 启动中…"); },      onError: (e) => show(String(e), "error") });
   const stopMut      = useMutation({ mutationFn: api.ibkr.stop,      onSuccess: () => { inv(); show("Gateway 已停止"); },        onError: (e) => show(String(e), "error") });
-  const reconnectMut = useMutation({ mutationFn: api.ibkr.reconnect, onSuccess: () => { inv(); show("重连指令已发送，等待连接…"); }, onError: (e) => show(String(e), "error") });
+  const reconnectMut = useMutation({ mutationFn: api.ibkr.reconnect, onSuccess: () => { inv(); show("重连中，正在打开登录页…"); }, onError: (e) => show(String(e), "error") });
 
   const busy = startMut.isPending || stopMut.isPending || reconnectMut.isPending;
 
@@ -160,9 +160,9 @@ export default function BrokerPage() {
         <SectionTitle title="手动登录" />
         <div style={{ height: 12 }} />
         <p className="broker-help-text text-2">
-          启动 Gateway 后，在浏览器打开{" "}
+          Gateway 运行但未认证时，点击上方「重连」会自动打开登录页{" "}
           <code className="mono">https://localhost:5680/sso/Login</code>
-          {" "}完成 IBKR 账号认证。认证成功后本页面状态将自动更新。
+          。认证成功后本页面状态将自动更新。
         </p>
       </Card>
     </div>

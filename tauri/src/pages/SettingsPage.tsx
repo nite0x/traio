@@ -18,12 +18,33 @@ const emptySchwabSettings: SchwabSettings = {
   redirect_uri: "https://127.0.0.1:8182/callback",
 };
 
+interface AlpacaSettings {
+  api_key: string;
+  api_secret: string;
+  base_url: string;
+}
+
+const emptyAlpacaSettings: AlpacaSettings = {
+  api_key: "",
+  api_secret: "",
+  base_url: "https://paper-api.alpaca.markets",
+};
+
 function readSchwabSettings(settings: Settings): SchwabSettings {
   const schwab = (settings.schwab ?? {}) as Partial<SchwabSettings>;
   return {
     client_id: schwab.client_id ?? "",
     client_secret: schwab.client_secret ?? "",
     redirect_uri: schwab.redirect_uri ?? emptySchwabSettings.redirect_uri,
+  };
+}
+
+function readAlpacaSettings(settings: Settings): AlpacaSettings {
+  const alpaca = (settings.alpaca ?? {}) as Partial<AlpacaSettings>;
+  return {
+    api_key: alpaca.api_key ?? "",
+    api_secret: alpaca.api_secret ?? "",
+    base_url: alpaca.base_url ?? emptyAlpacaSettings.base_url,
   };
 }
 
@@ -34,6 +55,11 @@ export default function SettingsPage() {
     queryFn: api.schwab.status,
     refetchInterval: 5_000,
   });
+  const { data: alpaca, refetch: refetchAlpaca } = useQuery({
+    queryKey: ["alpaca-status"],
+    queryFn: api.alpaca.status,
+    refetchInterval: 5_000,
+  });
   const { data, isLoading } = useQuery({
     queryKey: ["settings"],
     queryFn: api.settings.get,
@@ -41,6 +67,7 @@ export default function SettingsPage() {
 
   const [draft, setDraft] = useState("");
   const [schwabSettings, setSchwabSettings] = useState<SchwabSettings>(emptySchwabSettings);
+  const [alpacaSettings, setAlpacaSettings] = useState<AlpacaSettings>(emptyAlpacaSettings);
   const [schwabCallback, setSchwabCallback] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -49,6 +76,7 @@ export default function SettingsPage() {
     if (data) {
       setDraft(JSON.stringify(data, null, 2));
       setSchwabSettings(readSchwabSettings(data));
+      setAlpacaSettings(readAlpacaSettings(data));
     }
   }, [data]);
 
@@ -58,6 +86,8 @@ export default function SettingsPage() {
       queryClient.setQueryData(["settings"], saved);
       setDraft(JSON.stringify(saved, null, 2));
       setSchwabSettings(readSchwabSettings(saved));
+      setAlpacaSettings(readAlpacaSettings(saved));
+      void refetchAlpaca();
       setToastMsg({ msg: "设置已保存", type: "success" });
       setTimeout(() => setToastMsg(null), 2500);
     },
@@ -72,6 +102,14 @@ export default function SettingsPage() {
     saveMut.mutate({
       ...data,
       schwab: schwabSettings,
+    });
+  };
+
+  const saveAlpacaSettings = () => {
+    if (!data) return;
+    saveMut.mutate({
+      ...data,
+      alpaca: alpacaSettings,
     });
   };
 
@@ -245,6 +283,78 @@ export default function SettingsPage() {
         {schwab?.stream.error && (
           <div className="settings-json-error" style={{ marginTop: 12 }}>
             {schwab.stream.error}
+          </div>
+        )}
+      </Card>
+
+      <Card className="settings-card">
+        <div className="settings-card__header">
+          <SectionTitle
+            title="Alpaca Paper"
+            hint={alpaca?.configured
+              ? `已连接 · 账户 ${alpaca.account_id ?? "—"} · 净值 ${alpaca.equity?.toLocaleString() ?? "—"} ${alpaca.currency ?? ""}`
+              : "填写 Paper API Key 与 Secret 后保存"}
+          />
+          <div className="settings-card__actions">
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Save size={13} />}
+              loading={saveMut.isPending}
+              disabled={isLoading || !alpacaSettings.api_key.trim() || !alpacaSettings.api_secret.trim()}
+              onClick={saveAlpacaSettings}
+            >
+              保存 Alpaca 配置
+            </Button>
+          </div>
+        </div>
+
+        <div className="settings-form">
+          <label className="settings-field">
+            <span className="settings-field__label">API Key</span>
+            <Input
+              className="mono"
+              value={alpacaSettings.api_key}
+              onChange={(event) => setAlpacaSettings({
+                ...alpacaSettings,
+                api_key: event.target.value,
+              })}
+              placeholder="Alpaca Paper API Key ID"
+            />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field__label">API Secret</span>
+            <Input
+              className="mono"
+              type="password"
+              autoComplete="off"
+              value={alpacaSettings.api_secret}
+              onChange={(event) => setAlpacaSettings({
+                ...alpacaSettings,
+                api_secret: event.target.value,
+              })}
+              placeholder="Alpaca Paper API Secret"
+            />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field__label">Endpoint</span>
+            <Input
+              className="mono"
+              value={alpacaSettings.base_url}
+              onChange={(event) => setAlpacaSettings({
+                ...alpacaSettings,
+                base_url: event.target.value,
+              })}
+              placeholder="https://paper-api.alpaca.markets"
+            />
+            <span className="settings-field__hint">
+              Paper 默认 https://paper-api.alpaca.markets；实盘用 https://api.alpaca.markets
+            </span>
+          </label>
+        </div>
+        {alpaca?.error && (
+          <div className="settings-json-error" style={{ marginTop: 12 }}>
+            {alpaca.error}
           </div>
         )}
       </Card>

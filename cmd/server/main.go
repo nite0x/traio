@@ -1,3 +1,5 @@
+//go:build !ios
+
 package main
 
 import (
@@ -41,18 +43,21 @@ func main() {
 	cfg := settingsMgr.Get()
 
 	brokers := runtime.BuildBrokers(cfg, st)
+	positions := runtime.BuildPositionSync(st, brokers)
+	accountEquity := runtime.BuildAccountEquity(brokers)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 
 	settingsMgr.OnApply(func(updated config.Config) {
 		brokers.ApplyConfig(updated)
+		positions.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
 		aiSvc.SetConfig(updated.Claude)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	brokers.Portfolio.StartPositionSync(ctx, 0)
+	positions.StartBackground(ctx, 0)
 
 	go func() {
 		if err := brokers.StartGateway(ctx); err != nil {
@@ -68,18 +73,20 @@ func main() {
 		Store:       st,
 		Settings:    settingsMgr,
 		Schwab:      brokers.Schwab,
+		Alpaca:      brokers.Alpaca,
 		IBKR:        brokers.Gateway,
 		Instruments: brokers.Instruments,
 		Quotes:      brokers.Quotes,
 		Candles:     brokers.Candles,
-		Portfolio:   brokers.Portfolio,
+		Positions:   positions,
+		Account:     accountEquity,
 		News:        newsSvc,
 		AI:          aiSvc,
 	}
 
 	router := api.NewRouter(deps, api.ServerControl{
 		StartedAt: startedAt,
-		APIURL:    fmt.Sprintf("http://127.0.0.1:%d", config.DefaultServerPort),
+		APIURL:    config.ResolveServerAPIURL(),
 		Shutdown: func() {
 			quit <- syscall.SIGTERM
 		},
@@ -89,8 +96,9 @@ func main() {
 		log.Printf("write pid: %v", err)
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", config.DefaultServerPort)
-	apiURL := "http://" + addr
+	port := config.ResolveServerPort()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	apiURL := config.LocalAPIURL(port)
 	srv := &http.Server{Addr: addr, Handler: router}
 	go func() {
 		log.Printf("traio server listening on %s", apiURL)

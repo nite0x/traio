@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/nite/traio/internal/account"
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/broker/alpaca"
 	"github.com/nite/traio/internal/broker/ibkr"
 	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/broker/snaptrade"
@@ -15,10 +17,10 @@ import (
 	"github.com/nite/traio/internal/store"
 )
 
-// Brokers bundles the per-build broker dependencies handed to the API layer.
+// Brokers bundles broker clients and capability interfaces for the API layer.
 type Brokers struct {
 	Schwab      *schwab.Client
-	Portfolio   *portfolio.Service
+	Alpaca      *alpaca.Client
 	Gateway     broker.GatewayController  // nil on builds without IBKR
 	Instruments broker.InstrumentProvider // nil on builds without IBKR
 	Quotes      broker.BatchMarketDataProvider
@@ -26,12 +28,11 @@ type Brokers struct {
 
 	snap    *snaptrade.Client
 	ibkr    *ibkr.Client
+	alpaca  *alpaca.Client
 	gateway *ibkr.GatewayManager
 }
 
 // gatewayAdapter wraps *ibkr.GatewayManager to satisfy api.GatewayController.
-// It only adapts Status (concrete GatewayStatus -> any); the other methods
-// match the interface directly.
 type gatewayAdapter struct{ m *ibkr.GatewayManager }
 
 func (g gatewayAdapter) Status() any                            { return g.m.Status() }
@@ -42,26 +43,39 @@ func (g gatewayAdapter) Reconnect()                             { _ = g.m.Reconn
 // BuildBrokers constructs the full desktop broker set, including IBKR.
 func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
 	schwabClient := newSchwabClient(cfg.Schwab, st)
+	alpacaClient := alpaca.New(cfg.Alpaca)
 	snapClient := snaptrade.New(cfg.SnapTrade)
 	ibkrClient := ibkr.New(cfg.IBKR)
 	gatewayMgr := ibkr.NewGatewayManager(cfg.IBKR)
 
 	return Brokers{
-		Schwab: schwabClient,
-		Portfolio: portfolio.New(
-			st,
-			portfolio.Source{Name: "SNAPTRADE", Provider: snapClient},
-			portfolio.Source{Name: "SCHWAB", Provider: schwabClient},
-			portfolio.Source{Name: "IBKR", Provider: ibkrClient},
-		),
+		Schwab:      schwabClient,
+		Alpaca:      alpacaClient,
 		Gateway:     gatewayAdapter{m: gatewayMgr},
 		Instruments: ibkrClient,
 		Quotes:      ibkrClient,
 		Candles:     ibkrClient,
+		snap:        snapClient,
+		ibkr:        ibkrClient,
+		alpaca:      alpacaClient,
+		gateway:     gatewayMgr,
+	}
+}
 
-		snap:    snapClient,
-		ibkr:    ibkrClient,
-		gateway: gatewayMgr,
+func (b Brokers) PositionSources() []portfolio.Source {
+	return []portfolio.Source{
+		{Name: "SNAPTRADE", Provider: b.snap},
+		{Name: "SCHWAB", Provider: b.Schwab},
+		{Name: "ALPACA", Provider: b.alpaca},
+		{Name: "IBKR", Provider: b.ibkr},
+	}
+}
+
+func (b Brokers) AccountSources() []account.Source {
+	return []account.Source{
+		{Name: "IBKR", Provider: b.ibkr},
+		{Name: "SCHWAB", Provider: b.Schwab},
+		{Name: "ALPACA", Provider: b.alpaca},
 	}
 }
 
@@ -87,14 +101,14 @@ func newSchwabClient(cfg config.SchwabConfig, st *store.Store) *schwab.Client {
 	return client
 }
 
-// ApplyConfig pushes updated config into the live clients (desktop OnApply).
+// ApplyConfig pushes updated config into the live broker clients.
 func (b Brokers) ApplyConfig(updated config.Config) {
-	b.Portfolio.InvalidatePositions()
 	b.Schwab.SetConfig(updated.Schwab)
+	b.alpaca.SetConfig(updated.Alpaca)
 	b.snap.SetConfig(updated.SnapTrade)
 	b.ibkr.SetConfig(updated.IBKR)
 	b.gateway.UpdateConfig(updated.IBKR)
-	go b.gateway.Reconnect()
+	go b.gateway.Restart()
 }
 
 // StartGateway launches the IBKR gateway background loop (desktop only).

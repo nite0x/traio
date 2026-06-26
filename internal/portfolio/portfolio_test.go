@@ -44,23 +44,23 @@ func (f *fakeProvider) callCount() int {
 	return f.calls
 }
 
-func newTestService(t *testing.T, sources ...Source) *Service {
+func newTestSyncService(t *testing.T, sources ...Source) *SyncService {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "traio.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(st, sources...)
+	return NewSyncService(st, sources...)
 }
 
 func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
 	provider := &fakeProvider{positions: []broker.Position{{
 		Symbol: "AAPL", Quantity: 2, MarketValue: 400, Account: "U1",
 	}}}
-	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
+	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
 
-	if err := svc.SyncPositions(context.Background()); err != nil {
+	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("sync positions: %v", err)
 	}
 	first, err := svc.AllPositions(context.Background())
@@ -85,13 +85,13 @@ func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
 
 func TestSyncReplacesOneBrokerProjection(t *testing.T) {
 	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 2}}}
-	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
+	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
 
-	if err := svc.SyncPositions(context.Background()); err != nil {
+	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	provider.setResult([]broker.Position{{Symbol: "MSFT", Quantity: 3}}, nil)
-	if err := svc.SyncPositions(context.Background()); err != nil {
+	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 
@@ -106,13 +106,13 @@ func TestSyncReplacesOneBrokerProjection(t *testing.T) {
 
 func TestFailedSyncKeepsLastSuccessfulProjection(t *testing.T) {
 	provider := &fakeProvider{positions: []broker.Position{{Symbol: "NVDA", Quantity: 3}}}
-	svc := newTestService(t, Source{Name: "IBKR", Provider: provider})
+	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
 
-	if err := svc.SyncPositions(context.Background()); err != nil {
+	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("prime projection: %v", err)
 	}
 	provider.setResult(nil, errors.New("gateway restarting"))
-	if err := svc.SyncPositions(context.Background()); err == nil {
+	if err := svc.Sync(context.Background()); err == nil {
 		t.Fatal("expected sync error")
 	}
 
@@ -128,12 +128,12 @@ func TestFailedSyncKeepsLastSuccessfulProjection(t *testing.T) {
 func TestSyncKeepsSuccessfulBrokerWhenAnotherFails(t *testing.T) {
 	failing := &fakeProvider{err: errors.New("not authenticated")}
 	successful := &fakeProvider{positions: []broker.Position{{Symbol: "BTCUSD", Quantity: 1}}}
-	svc := newTestService(t,
+	svc := newTestSyncService(t,
 		Source{Name: "IBKR", Provider: failing},
 		Source{Name: "BINANCE", Provider: successful},
 	)
 
-	if err := svc.SyncPositions(context.Background()); err != nil {
+	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("expected partial sync success, got %v", err)
 	}
 	positions, err := svc.AllPositions(context.Background())

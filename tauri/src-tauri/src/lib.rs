@@ -1,14 +1,26 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+mod backend;
+
+use tauri::RunEvent;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .plugin(tauri_plugin_shell::init())
+        .manage(backend::BackendChild(std::sync::Mutex::new(None)))
+        .manage(backend::BackendOwned(std::sync::Mutex::new(false)))
+        .setup(|app| {
+            if let Err(err) = backend::ensure_started(app.handle()) {
+                eprintln!("[traio] backend: {err}");
+            }
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        if matches!(event, RunEvent::Exit) && cfg!(debug_assertions) {
+            backend::shutdown_owned(app);
+        }
+    });
 }

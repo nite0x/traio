@@ -22,6 +22,7 @@ EOF
 
 stop_server() {
   curl -fsS -X POST "http://127.0.0.1:38180/api/v1/server/shutdown" >/dev/null 2>&1 || true
+  curl -fsS -X POST "http://127.0.0.1:38181/api/v1/server/shutdown" >/dev/null 2>&1 || true
   sleep 0.5
   if [[ -f "${RUNTIME_DIR}/traio-server.pid" ]]; then
     kill "$(tr -d '[:space:]' < "${RUNTIME_DIR}/traio-server.pid")" 2>/dev/null || true
