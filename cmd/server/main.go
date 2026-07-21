@@ -44,12 +44,14 @@ func main() {
 
 	brokers := runtime.BuildBrokers(cfg, st)
 	positions := runtime.BuildPositionSync(st, brokers)
+	positions.SetSyncConfig(cfg.PositionSync)
 	accountEquity := runtime.BuildAccountEquity(brokers)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 
 	settingsMgr.OnApply(func(updated config.Config) {
 		brokers.ApplyConfig(updated)
+		positions.SetSyncConfig(updated.PositionSync)
 		positions.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
 		aiSvc.SetConfig(updated.Claude)

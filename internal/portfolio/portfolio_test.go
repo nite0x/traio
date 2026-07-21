@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
 )
 
@@ -141,6 +142,49 @@ func TestSyncKeepsSuccessfulBrokerWhenAnotherFails(t *testing.T) {
 		t.Fatalf("read positions: %v", err)
 	}
 	if len(positions) != 1 || positions[0].Broker != "BINANCE" {
+		t.Fatalf("unexpected positions: %#v", positions)
+	}
+}
+
+func TestSyncSkipsWhenMasterDisabled(t *testing.T) {
+	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 1}}}
+	svc := newTestSyncService(t, Source{Name: "SCHWAB", Provider: provider})
+	svc.SetSyncConfig(config.PositionSyncConfig{Enabled: false, Brokers: config.PositionSyncBrokers{Schwab: true}})
+
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if provider.callCount() != 0 {
+		t.Fatalf("expected no provider calls when master off, got %d", provider.callCount())
+	}
+}
+
+func TestSyncSkipsDisabledBroker(t *testing.T) {
+	schwab := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 1}}}
+	alpaca := &fakeProvider{positions: []broker.Position{{Symbol: "TSLA", Quantity: 2}}}
+	svc := newTestSyncService(t,
+		Source{Name: "SCHWAB", Provider: schwab},
+		Source{Name: "ALPACA", Provider: alpaca},
+	)
+	svc.SetSyncConfig(config.PositionSyncConfig{
+		Enabled: true,
+		Brokers: config.PositionSyncBrokers{Schwab: true, Alpaca: false},
+	})
+
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if schwab.callCount() != 1 {
+		t.Fatalf("expected SCHWAB synced once, got %d", schwab.callCount())
+	}
+	if alpaca.callCount() != 0 {
+		t.Fatalf("expected ALPACA skipped, got %d calls", alpaca.callCount())
+	}
+	positions, err := svc.AllPositions(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(positions) != 1 || positions[0].Broker != "SCHWAB" {
 		t.Fatalf("unexpected positions: %#v", positions)
 	}
 }

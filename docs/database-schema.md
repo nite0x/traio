@@ -18,7 +18,7 @@ Traio 使用 **SQLite** 作为本地持久化存储，默认路径为 `{baseDir}
 | `oauth_tokens` | OAuth 访问令牌（按 provider 存储） |
 | `app_settings` | 应用配置（单行 JSON） |
 | `broker_accounts` | 券商账户投影 |
-| `broker_positions` | 券商持仓投影 |
+| `broker_asset_positions` | 券商资产持仓投影 |
 | `broker_position_syncs` | 券商持仓同步状态 |
 | `candle_cache` | K 线数据缓存 |
 
@@ -29,7 +29,7 @@ Traio 使用 **SQLite** 作为本地持久化存储，默认路径为 `{baseDir}
 ```mermaid
 erDiagram
     watchlist_groups ||--o{ watchlist_items : "group_id"
-    broker_accounts ||--o{ broker_positions : "broker, account"
+    broker_accounts ||--o{ broker_asset_positions : "broker, account"
 
     watchlist_groups {
         INTEGER id PK
@@ -76,18 +76,25 @@ erDiagram
         TEXT synced_at
     }
 
-    broker_positions {
+    broker_asset_positions {
         TEXT broker PK
         TEXT account PK
-        TEXT symbol PK
-        INTEGER conid PK
+        TEXT asset_type
+        TEXT asset_key PK
+        TEXT symbol
+        TEXT name
+        INTEGER conid
+        TEXT currency
         REAL quantity
         REAL avg_cost
         REAL market_price
         REAL market_value
         REAL unrealized_pnl
         REAL realized_pnl
-        TEXT currency
+        REAL cost_basis
+        REAL day_pnl
+        REAL day_pnl_pct
+        TEXT raw_payload
         TEXT synced_at
     }
 
@@ -201,36 +208,47 @@ OAuth 令牌存储，按 provider 维度单行保存。
 
 ---
 
-## broker_positions
+## broker_asset_positions
 
-券商持仓投影。每次成功同步时，先按 broker 删除旧持仓再全量写入。
+券商资产持仓投影。现金、股票、期权、加密货币等都可以作为资产行存储；同一资产在不同券商或不同账户中通过 `(broker, account, asset_key)` 独立记录。
 
 | 列名 | 类型 | 约束 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `broker` | TEXT | PRIMARY KEY（复合） | — | 券商名称 |
 | `account` | TEXT | PRIMARY KEY（复合） | `''` | 账户 ID |
-| `symbol` | TEXT | PRIMARY KEY（复合） | — | 标的代码（大写） |
-| `conid` | INTEGER | PRIMARY KEY（复合） | `0` | 合约 ID |
-| `quantity` | REAL | NOT NULL | — | 持仓数量 |
-| `avg_cost` | REAL | NOT NULL | `0` | 平均成本 |
-| `market_price` | REAL | NOT NULL | `0` | 市价 |
-| `market_value` | REAL | NOT NULL | `0` | 市值 |
-| `unrealized_pnl` | REAL | NOT NULL | `0` | 未实现盈亏 |
-| `realized_pnl` | REAL | NOT NULL | `0` | 已实现盈亏 |
+| `asset_type` | TEXT | NOT NULL | — | 资产类型，如 `cash`、`security` |
+| `asset_key` | TEXT | PRIMARY KEY（复合） | — | 稳定资产标识，如 `cash:USD`、`security:conid:265598` |
+| `symbol` | TEXT | NOT NULL | `''` | 展示/查询代码 |
+| `name` | TEXT | NOT NULL | `''` | 资产名称 |
+| `conid` | INTEGER | — | `NULL` | 合约 ID；无则为空 |
 | `currency` | TEXT | NOT NULL | `''` | 计价货币 |
+| `quantity` | REAL | NOT NULL | — | 持有数量或现金余额 |
+| `avg_cost` | REAL | — | `NULL` | 平均成本；现金等不适用时为空 |
+| `market_price` | REAL | — | `NULL` | 市价 |
+| `market_value` | REAL | NOT NULL | `0` | 市值 |
+| `unrealized_pnl` | REAL | — | `NULL` | 未实现盈亏；不适用时为空 |
+| `realized_pnl` | REAL | — | `NULL` | 已实现盈亏；不适用时为空 |
+| `cost_basis` | REAL | — | `NULL` | 成本基础 |
+| `day_pnl` | REAL | — | `NULL` | 当日盈亏 |
+| `day_pnl_pct` | REAL | — | `NULL` | 当日盈亏比例 |
+| `raw_payload` | TEXT | — | `NULL` | 券商原始 JSON，便于排查字段差异 |
 | `synced_at` | TEXT | NOT NULL | — | 同步时间（RFC3339 UTC） |
 
-**主键：** `(broker, account, symbol, conid)`
+**主键：** `(broker, account, asset_key)`
 
 **外键：** `(broker, account)` → `broker_accounts(broker, account)` ON DELETE CASCADE
 
 **索引：**
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_broker_positions_symbol ON broker_positions (symbol);
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol
+    ON broker_asset_positions (symbol);
+
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key
+    ON broker_asset_positions (asset_key);
 ```
 
-**对应 Go 类型：** `broker.Position`
+**对应 Go 类型：** `store.BrokerAssetPosition`
 
 ---
 
@@ -344,26 +362,36 @@ CREATE TABLE IF NOT EXISTS broker_accounts (
     PRIMARY KEY (broker, account)
 );
 
-CREATE TABLE IF NOT EXISTS broker_positions (
+CREATE TABLE IF NOT EXISTS broker_asset_positions (
     broker TEXT NOT NULL,
     account TEXT NOT NULL DEFAULT '',
-    symbol TEXT NOT NULL,
-    conid INTEGER NOT NULL DEFAULT 0,
-    quantity REAL NOT NULL,
-    avg_cost REAL NOT NULL DEFAULT 0,
-    market_price REAL NOT NULL DEFAULT 0,
-    market_value REAL NOT NULL DEFAULT 0,
-    unrealized_pnl REAL NOT NULL DEFAULT 0,
-    realized_pnl REAL NOT NULL DEFAULT 0,
+    asset_type TEXT NOT NULL,
+    asset_key TEXT NOT NULL,
+    symbol TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    conid INTEGER,
     currency TEXT NOT NULL DEFAULT '',
+    quantity REAL NOT NULL,
+    avg_cost REAL,
+    market_price REAL,
+    market_value REAL NOT NULL DEFAULT 0,
+    unrealized_pnl REAL,
+    realized_pnl REAL,
+    cost_basis REAL,
+    day_pnl REAL,
+    day_pnl_pct REAL,
+    raw_payload TEXT,
     synced_at TEXT NOT NULL,
-    PRIMARY KEY (broker, account, symbol, conid),
+    PRIMARY KEY (broker, account, asset_key),
     FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
         ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_broker_positions_symbol
-    ON broker_positions (symbol);
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol
+    ON broker_asset_positions (symbol);
+
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key
+    ON broker_asset_positions (asset_key);
 
 CREATE TABLE IF NOT EXISTS broker_position_syncs (
     broker TEXT PRIMARY KEY,

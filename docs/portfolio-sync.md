@@ -14,7 +14,7 @@ IBKR / Schwab / Alpaca / Binance
  portfolio.SyncPositions
             |
             v
- SQLite broker_accounts / broker_positions
+ SQLite broker_accounts / broker_asset_positions
             |
             v
  GET /api/v1/positions
