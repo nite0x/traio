@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/nite/traio/internal/broker"
-	"github.com/nite/traio/internal/store" 
+	"github.com/nite/traio/internal/config"
+	"github.com/nite/traio/internal/store"
 )
 
 const DefaultPositionSyncInterval = 30 * time.Second
@@ -26,6 +27,9 @@ type SyncService struct {
 	sources []Source
 	syncNow chan struct{}
 	syncMu  sync.Mutex
+
+	cfgMu sync.RWMutex
+	cfg   config.PositionSyncConfig
 }
 
 func NewSyncService(st *store.Store, sources ...Source) *SyncService {
@@ -33,7 +37,29 @@ func NewSyncService(st *store.Store, sources ...Source) *SyncService {
 		store:   st,
 		sources: sources,
 		syncNow: make(chan struct{}, 1),
+		cfg: config.PositionSyncConfig{
+			Enabled: true,
+			Brokers: config.PositionSyncBrokers{
+				Schwab:    true,
+				Alpaca:    true,
+				IBKR:      true,
+				SnapTrade: true,
+			},
+		},
 	}
+}
+
+// SetSyncConfig updates which brokers may sync. Safe for concurrent use.
+func (s *SyncService) SetSyncConfig(cfg config.PositionSyncConfig) {
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
+}
+
+func (s *SyncService) syncConfig() config.PositionSyncConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
 }
 
 // StartBackground runs an immediate sync and then refreshes on an interval or request.
@@ -66,14 +92,20 @@ func (s *SyncService) Invalidate() {
 	}
 }
 
-// Sync refreshes each broker projection independently.
+// Sync refreshes each enabled broker projection independently.
 // A failed source keeps its previous successful projection readable.
+// When the master switch is off, Sync is a no-op.
 func (s *SyncService) Sync(ctx context.Context) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
 	if s.store == nil {
 		return fmt.Errorf("position store is not available")
+	}
+
+	cfg := s.syncConfig()
+	if !cfg.Enabled {
+		return nil
 	}
 
 	var errs []string
@@ -84,6 +116,9 @@ func (s *SyncService) Sync(ctx context.Context) error {
 		}
 		name := strings.ToUpper(strings.TrimSpace(source.Name))
 		if name == "" {
+			continue
+		}
+		if !cfg.BrokerEnabled(name) {
 			continue
 		}
 		positions, err := source.Provider.ListPositions(ctx)

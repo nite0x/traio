@@ -52,3 +52,30 @@ func TestNormalizeAlpacaBaseURL(t *testing.T) {
 		t.Fatalf("base URL: got %q, want %q", got, want)
 	}
 }
+
+func TestPositionSyncBrokerEnabled(t *testing.T) {
+	cfg := PositionSyncConfig{
+		Enabled: true,
+		Brokers: PositionSyncBrokers{Schwab: true, Alpaca: false, IBKR: true},
+	}
+	if !cfg.BrokerEnabled("SCHWAB") {
+		t.Fatal("expected SCHWAB enabled")
+	}
+	if cfg.BrokerEnabled("ALPACA") {
+		t.Fatal("expected ALPACA disabled")
+	}
+	cfg.Enabled = false
+	if cfg.BrokerEnabled("SCHWAB") {
+		t.Fatal("master switch off should disable all brokers")
+	}
+}
+
+func TestDefaultPositionSyncEnabled(t *testing.T) {
+	cfg := Default(t.TempDir())
+	if !cfg.PositionSync.Enabled {
+		t.Fatal("expected position sync enabled by default")
+	}
+	if !cfg.PositionSync.Brokers.Schwab || !cfg.PositionSync.Brokers.Alpaca || !cfg.PositionSync.Brokers.IBKR {
+		t.Fatalf("expected all brokers enabled by default: %#v", cfg.PositionSync.Brokers)
+	}
+}

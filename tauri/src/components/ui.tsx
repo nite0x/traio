@@ -174,6 +174,43 @@ export function Toast({ message, type = "info" }: ToastProps) {
   return <div className={`toast toast--${type}`}>{message}</div>;
 }
 
+// ── Toggle ───────────────────────────────────────────────────────────────────
+
+interface ToggleProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+  hint?: string;
+  id?: string;
+}
+
+export function Toggle({ checked, onChange, disabled, label, hint, id }: ToggleProps) {
+  const control = (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      className={`toggle${checked ? " toggle--on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="toggle__thumb" />
+    </button>
+  );
+  if (!label) return control;
+  return (
+    <div className={`toggle-row${disabled ? " toggle-row--disabled" : ""}`}>
+      <div className="toggle-row__text">
+        <span className="toggle-row__label">{label}</span>
+        {hint && <span className="toggle-row__hint">{hint}</span>}
+      </div>
+      {control}
+    </div>
+  );
+}
+
 // ── Input ────────────────────────────────────────────────────────────────────
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {

@@ -5,12 +5,10 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'embedded_backend.dart';
+import 'backend_provider.dart';
 
 final dioProvider = Provider<Dio>((ref) {
-  final baseUrl = EmbeddedBackend.isStarted
-      ? EmbeddedBackend.apiBaseUrl
-      : 'http://127.0.0.1:38180';
+  final baseUrl = ref.watch(embeddedBackendProvider).requireValue;
   final dio = Dio(BaseOptions(
     baseUrl: '$baseUrl/api/v1',
     connectTimeout: const Duration(seconds: 10),

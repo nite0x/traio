@@ -101,6 +101,12 @@ fn runtime_dir() -> String {
         }
     }
 
+    if cfg!(debug_assertions) {
+        if let Some(project_dir) = project_runtime_dir() {
+            return project_dir;
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -123,4 +129,16 @@ fn runtime_dir() -> String {
     }
 
     "traio-data".to_string()
+}
+
+fn project_runtime_dir() -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("go.mod").exists() {
+            return Some(dir.to_string_lossy().into_owned());
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }

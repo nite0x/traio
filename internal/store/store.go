@@ -94,26 +94,36 @@ CREATE TABLE IF NOT EXISTS app_settings (
 		PRIMARY KEY (broker, account)
 	);
 
-	CREATE TABLE IF NOT EXISTS broker_positions (
+	CREATE TABLE IF NOT EXISTS broker_asset_positions (
 		broker TEXT NOT NULL,
 		account TEXT NOT NULL DEFAULT '',
-		symbol TEXT NOT NULL,
-		conid INTEGER NOT NULL DEFAULT 0,
-		quantity REAL NOT NULL,
-		avg_cost REAL NOT NULL DEFAULT 0,
-		market_price REAL NOT NULL DEFAULT 0,
-		market_value REAL NOT NULL DEFAULT 0,
-		unrealized_pnl REAL NOT NULL DEFAULT 0,
-		realized_pnl REAL NOT NULL DEFAULT 0,
+		asset_type TEXT NOT NULL,
+		asset_key TEXT NOT NULL,
+		symbol TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL DEFAULT '',
+		conid INTEGER,
 		currency TEXT NOT NULL DEFAULT '',
+		quantity REAL NOT NULL,
+		avg_cost REAL,
+		market_price REAL,
+		market_value REAL NOT NULL DEFAULT 0,
+		unrealized_pnl REAL,
+		realized_pnl REAL,
+		cost_basis REAL,
+		day_pnl REAL,
+		day_pnl_pct REAL,
+		raw_payload TEXT,
 		synced_at TEXT NOT NULL,
-		PRIMARY KEY (broker, account, symbol, conid),
+		PRIMARY KEY (broker, account, asset_key),
 		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
 			ON DELETE CASCADE
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_broker_positions_symbol
-		ON broker_positions (symbol);
+	CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol
+		ON broker_asset_positions (symbol);
+
+	CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key
+		ON broker_asset_positions (asset_key);
 
 	CREATE TABLE IF NOT EXISTS broker_position_syncs (
 		broker TEXT PRIMARY KEY,
@@ -131,8 +141,57 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	if err := s.ensureCandleCache(); err != nil {
 		return err
 	}
+	if err := s.migrateLegacyBrokerPositions(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0);
+	`)
+	return err
+}
+
+func (s *Store) migrateLegacyBrokerPositions() error {
+	var legacyTable string
+	if err := s.db.QueryRow(`
+		SELECT name
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'broker_positions'
+	`).Scan(&legacyTable); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO broker_asset_positions (
+			broker, account, asset_type, asset_key, symbol, conid, currency,
+			quantity, avg_cost, market_price, market_value, unrealized_pnl,
+			realized_pnl, synced_at
+		)
+		SELECT
+			broker,
+			account,
+			'security',
+			CASE
+				WHEN conid <> 0 THEN 'security:conid:' || conid
+				ELSE 'security:symbol:' || symbol
+			END,
+			symbol,
+			conid,
+			currency,
+			quantity,
+			avg_cost,
+			market_price,
+			market_value,
+			unrealized_pnl,
+			realized_pnl,
+			synced_at
+		FROM broker_positions
+		WHERE symbol <> '';
+
+		DROP INDEX IF EXISTS idx_broker_positions_symbol;
+		DROP TABLE IF EXISTS broker_positions;
 	`)
 	return err
 }
