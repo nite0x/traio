@@ -89,9 +89,31 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	CREATE TABLE IF NOT EXISTS broker_accounts (
 		broker TEXT NOT NULL,
 		account TEXT NOT NULL DEFAULT '',
+		display_name TEXT NOT NULL DEFAULT '',
+		account_type TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '',
 		currency TEXT NOT NULL DEFAULT '',
 		synced_at TEXT NOT NULL,
 		PRIMARY KEY (broker, account)
+	);
+
+	CREATE TABLE IF NOT EXISTS broker_account_balances (
+		broker TEXT NOT NULL,
+		account TEXT NOT NULL DEFAULT '',
+		currency TEXT NOT NULL DEFAULT '',
+		net_liquidation REAL NOT NULL DEFAULT 0,
+		total_cash_value REAL NOT NULL DEFAULT 0,
+		gross_position_value REAL NOT NULL DEFAULT 0,
+		buying_power REAL NOT NULL DEFAULT 0,
+		unrealized_pnl REAL NOT NULL DEFAULT 0,
+		realized_pnl REAL NOT NULL DEFAULT 0,
+		settled_cash REAL NOT NULL DEFAULT 0,
+		exchange_rate REAL NOT NULL DEFAULT 0,
+		is_base_currency INTEGER NOT NULL DEFAULT 0,
+		synced_at TEXT NOT NULL,
+		PRIMARY KEY (broker, account, currency),
+		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
+			ON DELETE CASCADE
 	);
 
 	CREATE TABLE IF NOT EXISTS broker_asset_positions (
@@ -125,11 +147,29 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key
 		ON broker_asset_positions (asset_key);
 
-	CREATE TABLE IF NOT EXISTS broker_position_syncs (
-		broker TEXT PRIMARY KEY,
+	CREATE TABLE IF NOT EXISTS broker_account_performance (
+		broker TEXT NOT NULL,
+		account TEXT NOT NULL DEFAULT '',
+		daily_pnl REAL NOT NULL DEFAULT 0,
+		net_liquidation REAL NOT NULL DEFAULT 0,
+		unrealized_pnl REAL NOT NULL DEFAULT 0,
+		excess_liquidity REAL NOT NULL DEFAULT 0,
+		market_value REAL NOT NULL DEFAULT 0,
+		synced_at TEXT NOT NULL,
+		PRIMARY KEY (broker, account),
+		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
+			ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS broker_sync_status (
+		broker TEXT NOT NULL,
+		account TEXT NOT NULL DEFAULT '',
+		data_type TEXT NOT NULL,
 		synced_at TEXT NOT NULL DEFAULT '',
 		last_attempt_at TEXT NOT NULL,
-		last_error TEXT NOT NULL DEFAULT ''
+		last_error TEXT NOT NULL DEFAULT '',
+		item_count INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (broker, account, data_type)
 	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
@@ -141,57 +181,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	if err := s.ensureCandleCache(); err != nil {
 		return err
 	}
-	if err := s.migrateLegacyBrokerPositions(); err != nil {
-		return err
-	}
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0);
-	`)
-	return err
-}
-
-func (s *Store) migrateLegacyBrokerPositions() error {
-	var legacyTable string
-	if err := s.db.QueryRow(`
-		SELECT name
-		FROM sqlite_master
-		WHERE type = 'table' AND name = 'broker_positions'
-	`).Scan(&legacyTable); err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
-	}
-
-	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO broker_asset_positions (
-			broker, account, asset_type, asset_key, symbol, conid, currency,
-			quantity, avg_cost, market_price, market_value, unrealized_pnl,
-			realized_pnl, synced_at
-		)
-		SELECT
-			broker,
-			account,
-			'security',
-			CASE
-				WHEN conid <> 0 THEN 'security:conid:' || conid
-				ELSE 'security:symbol:' || symbol
-			END,
-			symbol,
-			conid,
-			currency,
-			quantity,
-			avg_cost,
-			market_price,
-			market_value,
-			unrealized_pnl,
-			realized_pnl,
-			synced_at
-		FROM broker_positions
-		WHERE symbol <> '';
-
-		DROP INDEX IF EXISTS idx_broker_positions_symbol;
-		DROP TABLE IF EXISTS broker_positions;
 	`)
 	return err
 }

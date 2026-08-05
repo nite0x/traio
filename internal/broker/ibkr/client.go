@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nite/traio/internal/broker"
@@ -24,6 +25,10 @@ import (
 type Client struct {
 	cfg        config.IBKRConfig
 	httpClient *http.Client
+
+	pnlMu        sync.Mutex
+	pnlFetchedAt time.Time
+	pnlSnapshot  map[string]dailyPnLEntry
 }
 
 func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, error) {
@@ -31,7 +36,10 @@ func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, err
 	if err != nil {
 		return broker.AccountSummary{}, fmt.Errorf("ibkr: resolve account: %w", err)
 	}
+	return c.accountSummary(ctx, accountID)
+}
 
+func (c *Client) accountSummary(ctx context.Context, accountID string) (broker.AccountSummary, error) {
 	u := fmt.Sprintf("%s/v1/api/portfolio/%s/summary", c.cfg.GatewayURL, accountID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -218,6 +226,10 @@ func New(cfg config.IBKRConfig) *Client {
 
 func (c *Client) SetConfig(cfg config.IBKRConfig) {
 	c.cfg = cfg
+	c.pnlMu.Lock()
+	c.pnlFetchedAt = time.Time{}
+	c.pnlSnapshot = nil
+	c.pnlMu.Unlock()
 }
 
 // GetQuotesByConID fetches quote snapshots for multiple IBKR contracts.
@@ -474,69 +486,55 @@ func (c *Client) SearchInstruments(ctx context.Context, query string) ([]broker.
 	return out, nil
 }
 
-// ListPositions fetches all positions from the IBKR gateway.
-// It first resolves the account ID from the gateway, then fetches positions.
-func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
-	accountID, err := c.resolveAccountID(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr: resolve account: %w", err)
+// ListAccountPositions fetches every page of positions for one account.
+func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]broker.Position, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, fmt.Errorf("ibkr: account ID is required")
 	}
 
-	url := fmt.Sprintf("%s/v1/api/portfolio/%s/positions/0", c.cfg.GatewayURL, accountID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr: positions request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("ibkr: gateway not authenticated")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ibkr: positions status %d", resp.StatusCode)
-	}
-
-	var raw []struct {
-		ConID         int64   `json:"conid"`
-		AccountID     string  `json:"acctId"`
-		ContractDesc  string  `json:"contractDesc"`
-		Position      float64 `json:"position"`
-		MktPrice      float64 `json:"mktPrice"`
-		MktValue      float64 `json:"mktValue"`
-		AvgCost       float64 `json:"avgCost"`
-		UnrealizedPnl float64 `json:"unrealizedPnl"`
-		RealizedPnl   float64 `json:"realizedPnl"`
-		Currency      string  `json:"currency"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("ibkr: decode positions: %w", err)
-	}
-
-	out := make([]broker.Position, 0, len(raw))
-	for _, p := range raw {
-		if p.ContractDesc == "" || p.Position == 0 {
-			continue
+	out := []broker.Position{}
+	for page := 0; page < 1000; page++ {
+		path := fmt.Sprintf("/portfolio/%s/positions/%d", url.PathEscape(accountID), page)
+		var raw []struct {
+			ConID         int64   `json:"conid"`
+			AccountID     string  `json:"acctId"`
+			ContractDesc  string  `json:"contractDesc"`
+			Position      float64 `json:"position"`
+			MktPrice      float64 `json:"mktPrice"`
+			MktValue      float64 `json:"mktValue"`
+			AvgCost       float64 `json:"avgCost"`
+			UnrealizedPnl float64 `json:"unrealizedPnl"`
+			RealizedPnl   float64 `json:"realizedPnl"`
+			Currency      string  `json:"currency"`
 		}
-		out = append(out, broker.Position{
-			Symbol:      p.ContractDesc,
-			ConID:       p.ConID,
-			Quantity:    p.Position,
-			AvgCost:     p.AvgCost,
-			MarketPrice: p.MktPrice,
-			MarketValue: p.MktValue,
-			Unrealized:  p.UnrealizedPnl,
-			Realized:    p.RealizedPnl,
-			Currency:    p.Currency,
-			Account:     firstNonEmpty(p.AccountID, accountID),
-			Broker:      "IBKR",
-		})
+		if err := c.getGatewayJSON(ctx, path, "positions", &raw); err != nil {
+			return nil, err
+		}
+
+		for _, p := range raw {
+			if p.ContractDesc == "" || p.Position == 0 {
+				continue
+			}
+			out = append(out, broker.Position{
+				Symbol:      p.ContractDesc,
+				ConID:       p.ConID,
+				Quantity:    p.Position,
+				AvgCost:     p.AvgCost,
+				MarketPrice: p.MktPrice,
+				MarketValue: p.MktValue,
+				Unrealized:  p.UnrealizedPnl,
+				Realized:    p.RealizedPnl,
+				Currency:    p.Currency,
+				Account:     firstNonEmpty(p.AccountID, accountID),
+				Broker:      "IBKR",
+			})
+		}
+		if len(raw) < 100 {
+			return out, nil
+		}
 	}
-	return out, nil
+	return nil, fmt.Errorf("ibkr: positions exceeded pagination limit")
 }
 
 // resolveAccountID returns the configured sub-account or fetches it from the gateway.
@@ -544,28 +542,23 @@ func (c *Client) resolveAccountID(ctx context.Context) (string, error) {
 	if c.cfg.SubAccount != "" {
 		return c.cfg.SubAccount, nil
 	}
-
-	url := c.cfg.GatewayURL + "/v1/api/portfolio/accounts"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	accountIDs, err := c.listAccountIDs(ctx)
 	if err != nil {
 		return "", err
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	return accountIDs[0], nil
+}
 
-	var accounts []struct {
-		AccountID string `json:"accountId"`
+func (c *Client) listAccountIDs(ctx context.Context) ([]string, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&accounts); err != nil {
-		return "", err
+	accountIDs := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		accountIDs = append(accountIDs, account.ID)
 	}
-	if len(accounts) == 0 {
-		return "", fmt.Errorf("no accounts returned")
-	}
-	return accounts[0].AccountID, nil
+	return accountIDs, nil
 }
 
 func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (string, error) {

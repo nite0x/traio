@@ -43,28 +43,30 @@ func main() {
 	cfg := settingsMgr.Get()
 
 	brokers := runtime.BuildBrokers(cfg, st)
-	positions := runtime.BuildPositionSync(st, brokers)
-	positions.SetSyncConfig(cfg.PositionSync)
+	brokerSync := runtime.BuildBrokerSync(st, brokers)
+	brokerSync.SetSyncConfig(cfg.BrokerSync)
 	accountEquity := runtime.BuildAccountEquity(brokers)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 
 	settingsMgr.OnApply(func(updated config.Config) {
 		brokers.ApplyConfig(updated)
-		positions.SetSyncConfig(updated.PositionSync)
-		positions.Invalidate()
+		brokerSync.SetSyncConfig(updated.BrokerSync)
+		brokerSync.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
 		aiSvc.SetConfig(updated.Claude)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	positions.StartBackground(ctx, 0)
+	brokerSync.StartBackground(ctx, 0)
 
 	go func() {
 		if err := brokers.StartGateway(ctx); err != nil {
 			log.Printf("ibkr gateway: %v", err)
+			return
 		}
+		brokerSync.Invalidate()
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -80,7 +82,7 @@ func main() {
 		Instruments: brokers.Instruments,
 		Quotes:      brokers.Quotes,
 		Candles:     brokers.Candles,
-		Positions:   positions,
+		BrokerSync:  brokerSync,
 		Account:     accountEquity,
 		News:        newsSvc,
 		AI:          aiSvc,

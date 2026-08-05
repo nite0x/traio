@@ -9,7 +9,7 @@ import (
 // Source identifies one broker adapter that can supply account equity data.
 type Source struct {
 	Name     string
-	Provider broker.AccountProvider
+	Provider broker.AccountEquityProvider
 }
 
 // Service loads account equity directly from broker APIs until a SQLite projection exists.

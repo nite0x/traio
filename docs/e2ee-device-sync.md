@@ -44,8 +44,8 @@ go run ./cmd/cloud-server  # 云端密文同步服务
 其他已授权设备
 ```
 
-现有券商持仓同步仍然先写入本地 SQLite，再由设备同步模块选取允许同步的数据上传。
-详见 [portfolio-sync.md](portfolio-sync.md)。
+现有券商账户同步仍然先写入本地 SQLite，再由设备同步模块选取允许同步的数据上传。
+详见 [broker-sync.md](broker-sync.md)。
 
 ## 推荐目录结构
 

@@ -10,28 +10,19 @@ import (
 
 // Config holds all Traio runtime settings (persisted in SQLite, editable via UI).
 type Config struct {
-	Database     DatabaseConfig     `json:"database" yaml:"database"`
-	PositionSync PositionSyncConfig `json:"position_sync" yaml:"position_sync"`
-	SnapTrade    SnapTradeConfig    `json:"snaptrade" yaml:"snaptrade"`
-	Schwab       SchwabConfig       `json:"schwab" yaml:"schwab"`
-	Alpaca       AlpacaConfig       `json:"alpaca" yaml:"alpaca"`
-	IBKR         IBKRConfig         `json:"ibkr" yaml:"ibkr"`
-	Finnhub      FinnhubConfig      `json:"finnhub" yaml:"finnhub"`
-	Claude       ClaudeConfig       `json:"claude" yaml:"claude"`
+	Database   DatabaseConfig   `json:"database" yaml:"database"`
+	BrokerSync BrokerSyncConfig `json:"broker_sync" yaml:"broker_sync"`
+	SnapTrade  SnapTradeConfig  `json:"snaptrade" yaml:"snaptrade"`
+	Schwab     SchwabConfig     `json:"schwab" yaml:"schwab"`
+	Alpaca     AlpacaConfig     `json:"alpaca" yaml:"alpaca"`
+	IBKR       IBKRConfig       `json:"ibkr" yaml:"ibkr"`
+	Finnhub    FinnhubConfig    `json:"finnhub" yaml:"finnhub"`
+	Claude     ClaudeConfig     `json:"claude" yaml:"claude"`
 }
 
-// PositionSyncConfig controls background (and API) position projection sync.
-// Sync runs only when Enabled is true; each broker also needs its own switch on.
-type PositionSyncConfig struct {
-	Enabled bool                   `json:"enabled" yaml:"enabled"`
-	Brokers PositionSyncBrokers    `json:"brokers" yaml:"brokers"`
-}
-
-type PositionSyncBrokers struct {
-	Schwab    bool `json:"schwab" yaml:"schwab"`
-	Alpaca    bool `json:"alpaca" yaml:"alpaca"`
-	IBKR      bool `json:"ibkr" yaml:"ibkr"`
-	SnapTrade bool `json:"snaptrade" yaml:"snaptrade"`
+// BrokerSyncConfig controls the IBKR account projection synchronization loop.
+type BrokerSyncConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 const (
@@ -103,16 +94,8 @@ func Default(baseDir string) Config {
 		Database: DatabaseConfig{
 			Path: filepath.Join(baseDir, "data", "traio.db"),
 		},
-		PositionSync: PositionSyncConfig{
-			Enabled: true,
-			Brokers: PositionSyncBrokers{
-				Schwab:    true,
-				Alpaca:    true,
-				IBKR:      true,
-				SnapTrade: true,
-			},
-		},
-		SnapTrade: SnapTradeConfig{},
+		BrokerSync: BrokerSyncConfig{Enabled: true},
+		SnapTrade:  SnapTradeConfig{},
 		Schwab: SchwabConfig{
 			RedirectURI: "https://127.0.0.1:8182/callback",
 		},
@@ -149,26 +132,6 @@ func (c *Config) Normalize(baseDir string) {
 		c.Claude.Model = "claude-sonnet-4-20250514"
 	}
 	c.IBKR.normalize(baseDir)
-}
-
-// BrokerEnabled reports whether the named broker should be synced.
-// Requires the master Enabled switch and the broker's own switch.
-func (c PositionSyncConfig) BrokerEnabled(name string) bool {
-	if !c.Enabled {
-		return false
-	}
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "SCHWAB":
-		return c.Brokers.Schwab
-	case "ALPACA":
-		return c.Brokers.Alpaca
-	case "IBKR":
-		return c.Brokers.IBKR
-	case "SNAPTRADE":
-		return c.Brokers.SnapTrade
-	default:
-		return true
-	}
 }
 
 func (c *AlpacaConfig) Normalize() {

@@ -1,6 +1,8 @@
 package ibkr
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestAccountValuePrefersAmountWhenValueNull(t *testing.T) {
 	raw := map[string]any{

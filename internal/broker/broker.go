@@ -91,14 +91,10 @@ type InstrumentProvider interface {
 	SearchInstruments(ctx context.Context, query string) ([]Instrument, error)
 }
 
-// PortfolioProvider returns positions and submits orders.
-type PortfolioProvider interface {
-	ListPositions(ctx context.Context) ([]Position, error)
-	PlaceOrder(ctx context.Context, req OrderRequest) (string, error)
-}
-
-// AccountProvider returns historical and real-time account equity data.
-type AccountProvider interface {
+// AccountEquityProvider returns historical and real-time account equity data.
+// It is kept separate from AccountProvider because timeline data is not part of
+// the minimum IBKR account-access contract.
+type AccountEquityProvider interface {
 	AccountSummary(ctx context.Context) (AccountSummary, error)
 	HistoricalEquity(ctx context.Context) ([]AccountEquityPoint, error)
 }

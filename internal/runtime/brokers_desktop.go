@@ -21,6 +21,7 @@ import (
 type Brokers struct {
 	Schwab      *schwab.Client
 	Alpaca      *alpaca.Client
+	IBKR        broker.Broker
 	Gateway     broker.GatewayController  // nil on builds without IBKR
 	Instruments broker.InstrumentProvider // nil on builds without IBKR
 	Quotes      broker.BatchMarketDataProvider
@@ -45,12 +46,14 @@ func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
 	schwabClient := newSchwabClient(cfg.Schwab, st)
 	alpacaClient := alpaca.New(cfg.Alpaca)
 	snapClient := snaptrade.New(cfg.SnapTrade)
-	ibkrClient := ibkr.New(cfg.IBKR)
-	gatewayMgr := ibkr.NewGatewayManager(cfg.IBKR)
+	ibkrBroker := ibkr.NewBroker(cfg.IBKR)
+	ibkrClient := ibkrBroker.Client()
+	gatewayMgr := ibkrBroker.Gateway()
 
 	return Brokers{
 		Schwab:      schwabClient,
 		Alpaca:      alpacaClient,
+		IBKR:        ibkrBroker,
 		Gateway:     gatewayAdapter{m: gatewayMgr},
 		Instruments: ibkrClient,
 		Quotes:      ibkrClient,
@@ -62,12 +65,9 @@ func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
 	}
 }
 
-func (b Brokers) PositionSources() []portfolio.Source {
+func (b Brokers) SyncSources() []portfolio.Source {
 	return []portfolio.Source{
-		{Name: "SNAPTRADE", Provider: b.snap},
-		{Name: "SCHWAB", Provider: b.Schwab},
-		{Name: "ALPACA", Provider: b.alpaca},
-		{Name: "IBKR", Provider: b.ibkr},
+		{Name: "IBKR", Broker: b.IBKR},
 	}
 }
 

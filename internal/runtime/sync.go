@@ -6,9 +6,9 @@ import (
 	"github.com/nite/traio/internal/store"
 )
 
-// BuildPositionSync constructs the position projection sync service from registered broker sources.
-func BuildPositionSync(st *store.Store, b Brokers) *portfolio.SyncService {
-	return portfolio.NewSyncService(st, b.PositionSources()...)
+// BuildBrokerSync constructs the IBKR account projection sync service.
+func BuildBrokerSync(st *store.Store, b Brokers) *portfolio.SyncService {
+	return portfolio.NewSyncService(st, b.SyncSources()...)
 }
 
 // BuildAccountEquity constructs the live account equity service from registered broker sources.

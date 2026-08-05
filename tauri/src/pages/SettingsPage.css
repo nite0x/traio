@@ -28,14 +28,6 @@
   padding-top: 4px;
 }
 
-.settings-sync-list--nested {
-  margin-left: 2px;
-  padding: 12px 14px;
-  border-radius: var(--r-sm);
-  background: var(--surface-sunk);
-  border: 1px solid var(--border);
-}
-
 .settings-field {
   display: grid;
   gap: 7px;

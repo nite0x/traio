@@ -21,6 +21,7 @@ import (
 type Brokers struct {
 	Schwab      *schwab.Client
 	Alpaca      *alpaca.Client
+	IBKR        broker.Broker             // always nil on iOS
 	Gateway     broker.GatewayController  // always nil on iOS
 	Instruments broker.InstrumentProvider // always nil on iOS
 	Quotes      broker.BatchMarketDataProvider
@@ -40,6 +41,7 @@ func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
 	return Brokers{
 		Schwab:      schwabClient,
 		Alpaca:      alpacaClient,
+		IBKR:        nil,
 		Gateway:     nil,
 		Instruments: nil,
 		Quotes:      nil,
@@ -50,12 +52,8 @@ func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
 	}
 }
 
-func (b Brokers) PositionSources() []portfolio.Source {
-	return []portfolio.Source{
-		{Name: "SNAPTRADE", Provider: b.snap},
-		{Name: "SCHWAB", Provider: b.Schwab},
-		{Name: "ALPACA", Provider: b.alpaca},
-	}
+func (b Brokers) SyncSources() []portfolio.Source {
+	return nil
 }
 
 func (b Brokers) AccountSources() []account.Source {

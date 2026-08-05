@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nite/traio/internal/broker/schwab"
-	"github.com/nite/traio/internal/portfolio"
 )
 
 func schwabStatus(client *schwab.Client) gin.HandlerFunc {
@@ -38,7 +37,7 @@ type schwabExchangeRequest struct {
 	CallbackURL string `json:"callback_url"`
 }
 
-func schwabOAuthExchange(client *schwab.Client, positions *portfolio.SyncService) gin.HandlerFunc {
+func schwabOAuthExchange(client *schwab.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if client == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab is not available"})
@@ -65,9 +64,6 @@ func schwabOAuthExchange(client *schwab.Client, positions *portfolio.SyncService
 		if _, err := client.ExchangeCodeForToken(c.Request.Context(), code); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
-		}
-		if positions != nil {
-			positions.Invalidate()
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
 	}

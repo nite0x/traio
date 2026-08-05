@@ -123,7 +123,7 @@ OAuth token 保存在本地 SQLite `oauth_tokens` 表中，并在过期前自动
 
 ## 架构文档
 
-- [券商持仓同步架构](docs/portfolio-sync.md)
+- [券商账户同步架构](docs/broker-sync.md)
 - [端到端加密设备同步架构](docs/e2ee-device-sync.md)
 
 ## IBKR Gateway

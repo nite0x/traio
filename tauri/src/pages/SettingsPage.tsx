@@ -30,26 +30,12 @@ const emptyAlpacaSettings: AlpacaSettings = {
   base_url: "https://paper-api.alpaca.markets",
 };
 
-interface PositionSyncBrokers {
-  schwab: boolean;
-  alpaca: boolean;
-  ibkr: boolean;
-  snaptrade: boolean;
-}
-
-interface PositionSyncSettings {
+interface BrokerSyncSettings {
   enabled: boolean;
-  brokers: PositionSyncBrokers;
 }
 
-const emptyPositionSync: PositionSyncSettings = {
+const emptyBrokerSync: BrokerSyncSettings = {
   enabled: true,
-  brokers: {
-    schwab: true,
-    alpaca: true,
-    ibkr: true,
-    snaptrade: true,
-  },
 };
 
 function readSchwabSettings(settings: Settings): SchwabSettings {
@@ -70,18 +56,10 @@ function readAlpacaSettings(settings: Settings): AlpacaSettings {
   };
 }
 
-function readPositionSync(settings: Settings): PositionSyncSettings {
-  const raw = (settings.position_sync ?? {}) as Partial<PositionSyncSettings> & {
-    brokers?: Partial<PositionSyncBrokers>;
-  };
+function readBrokerSync(settings: Settings): BrokerSyncSettings {
+  const raw = (settings.broker_sync ?? {}) as Partial<BrokerSyncSettings>;
   return {
-    enabled: raw.enabled ?? emptyPositionSync.enabled,
-    brokers: {
-      schwab: raw.brokers?.schwab ?? emptyPositionSync.brokers.schwab,
-      alpaca: raw.brokers?.alpaca ?? emptyPositionSync.brokers.alpaca,
-      ibkr: raw.brokers?.ibkr ?? emptyPositionSync.brokers.ibkr,
-      snaptrade: raw.brokers?.snaptrade ?? emptyPositionSync.brokers.snaptrade,
-    },
+    enabled: raw.enabled ?? emptyBrokerSync.enabled,
   };
 }
 
@@ -105,7 +83,7 @@ export default function SettingsPage() {
   const [draft, setDraft] = useState("");
   const [schwabSettings, setSchwabSettings] = useState<SchwabSettings>(emptySchwabSettings);
   const [alpacaSettings, setAlpacaSettings] = useState<AlpacaSettings>(emptyAlpacaSettings);
-  const [positionSync, setPositionSync] = useState<PositionSyncSettings>(emptyPositionSync);
+  const [brokerSync, setBrokerSync] = useState<BrokerSyncSettings>(emptyBrokerSync);
   const [schwabCallback, setSchwabCallback] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -115,7 +93,7 @@ export default function SettingsPage() {
       setDraft(JSON.stringify(data, null, 2));
       setSchwabSettings(readSchwabSettings(data));
       setAlpacaSettings(readAlpacaSettings(data));
-      setPositionSync(readPositionSync(data));
+      setBrokerSync(readBrokerSync(data));
     }
   }, [data]);
 
@@ -126,7 +104,7 @@ export default function SettingsPage() {
       setDraft(JSON.stringify(saved, null, 2));
       setSchwabSettings(readSchwabSettings(saved));
       setAlpacaSettings(readAlpacaSettings(saved));
-      setPositionSync(readPositionSync(saved));
+      setBrokerSync(readBrokerSync(saved));
       void refetchAlpaca();
       setToastMsg({ msg: "设置已保存", type: "success" });
       setTimeout(() => setToastMsg(null), 2500);
@@ -137,11 +115,11 @@ export default function SettingsPage() {
     },
   });
 
-  const savePositionSync = (next: PositionSyncSettings) => {
+  const saveBrokerSync = (next: BrokerSyncSettings) => {
     if (!data) return;
     saveMut.mutate({
       ...data,
-      position_sync: next,
+      broker_sync: next,
     });
   };
 
@@ -150,7 +128,7 @@ export default function SettingsPage() {
     saveMut.mutate({
       ...data,
       schwab: schwabSettings,
-      position_sync: positionSync,
+      broker_sync: brokerSync,
     });
   };
 
@@ -159,7 +137,7 @@ export default function SettingsPage() {
     saveMut.mutate({
       ...data,
       alpaca: alpacaSettings,
-      position_sync: positionSync,
+      broker_sync: brokerSync,
     });
   };
 
@@ -179,7 +157,7 @@ export default function SettingsPage() {
       const saved = await api.settings.put({
         ...data,
         schwab: schwabSettings,
-        position_sync: positionSync,
+        broker_sync: brokerSync,
       });
       queryClient.setQueryData(["settings"], saved);
       setDraft(JSON.stringify(saved, null, 2));
@@ -232,64 +210,22 @@ export default function SettingsPage() {
       <Card className="settings-card">
         <div className="settings-card__header">
           <SectionTitle
-            title="持仓自动同步"
-            hint={positionSync.enabled
-              ? "总开关已开启 · 仅同步下方勾选的券商"
-              : "总开关关闭时不会自动同步任何券商"}
+            title="IBKR 账户自动同步"
+            hint={brokerSync.enabled
+              ? "账户、现金、持仓与当日表现会定时独立同步"
+              : "自动同步已关闭"}
           />
         </div>
 
         <div className="settings-sync-list">
           <Toggle
             id="sync-master"
-            checked={positionSync.enabled}
+            checked={brokerSync.enabled}
             disabled={isLoading || !data || saveMut.isPending}
             label="启用自动同步"
             hint="关闭后后台定时同步与手动触发同步都会跳过"
-            onChange={(enabled) => savePositionSync({ ...positionSync, enabled })}
+            onChange={(enabled) => saveBrokerSync({ ...brokerSync, enabled })}
           />
-          <div className={`settings-sync-list settings-sync-list--nested${!positionSync.enabled ? " toggle-row--disabled" : ""}`}>
-            <Toggle
-              id="sync-schwab"
-              checked={positionSync.brokers.schwab}
-              disabled={isLoading || !data || saveMut.isPending || !positionSync.enabled}
-              label="Schwab"
-              onChange={(schwab) => savePositionSync({
-                ...positionSync,
-                brokers: { ...positionSync.brokers, schwab },
-              })}
-            />
-            <Toggle
-              id="sync-alpaca"
-              checked={positionSync.brokers.alpaca}
-              disabled={isLoading || !data || saveMut.isPending || !positionSync.enabled}
-              label="Alpaca"
-              onChange={(alpaca) => savePositionSync({
-                ...positionSync,
-                brokers: { ...positionSync.brokers, alpaca },
-              })}
-            />
-            <Toggle
-              id="sync-ibkr"
-              checked={positionSync.brokers.ibkr}
-              disabled={isLoading || !data || saveMut.isPending || !positionSync.enabled}
-              label="IBKR"
-              onChange={(ibkr) => savePositionSync({
-                ...positionSync,
-                brokers: { ...positionSync.brokers, ibkr },
-              })}
-            />
-            <Toggle
-              id="sync-snaptrade"
-              checked={positionSync.brokers.snaptrade}
-              disabled={isLoading || !data || saveMut.isPending || !positionSync.enabled}
-              label="SnapTrade"
-              onChange={(snaptrade) => savePositionSync({
-                ...positionSync,
-                brokers: { ...positionSync.brokers, snaptrade },
-              })}
-            />
-          </div>
         </div>
       </Card>
 

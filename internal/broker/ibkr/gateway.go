@@ -74,6 +74,13 @@ func NewGatewayManager(cfg config.IBKRConfig) *GatewayManager {
 	}
 }
 
+// LoginURL returns the local Client Portal Gateway login page.
+func (g *GatewayManager) LoginURL() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return strings.TrimRight(g.config.GatewayURL, "/") + "/sso/Login"
+}
+
 // UpdateConfig replaces IBKR settings and should be followed by Reconnect().
 func (g *GatewayManager) UpdateConfig(cfg config.IBKRConfig) {
 	g.mu.Lock()

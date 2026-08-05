@@ -2,48 +2,12 @@ package portfolio
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
-	"sync"
 	"testing"
 
-	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
 )
-
-type fakeProvider struct {
-	mu        sync.Mutex
-	calls     int
-	positions []broker.Position
-	err       error
-}
-
-func (f *fakeProvider) ListPositions(context.Context) ([]broker.Position, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	out := make([]broker.Position, len(f.positions))
-	copy(out, f.positions)
-	return out, f.err
-}
-
-func (f *fakeProvider) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
-	return "", nil
-}
-
-func (f *fakeProvider) setResult(positions []broker.Position, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.positions = positions
-	f.err = err
-}
-
-func (f *fakeProvider) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
 
 func newTestSyncService(t *testing.T, sources ...Source) *SyncService {
 	t.Helper()
@@ -56,14 +20,13 @@ func newTestSyncService(t *testing.T, sources ...Source) *SyncService {
 }
 
 func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
-	provider := &fakeProvider{positions: []broker.Position{{
-		Symbol: "AAPL", Quantity: 2, MarketValue: 400, Account: "U1",
-	}}}
-	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
-
+	provider := &fakeBroker{}
+	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
 	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("sync positions: %v", err)
+		t.Fatalf("sync broker: %v", err)
 	}
+	callsAfterSync := provider.positionCalls
+
 	first, err := svc.AllPositions(context.Background())
 	if err != nil {
 		t.Fatalf("read positions: %v", err)
@@ -73,118 +36,23 @@ func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
 		t.Fatalf("read positions again: %v", err)
 	}
 
-	if provider.callCount() != 1 {
-		t.Fatalf("database reads called provider; got %d provider calls", provider.callCount())
+	if provider.positionCalls != callsAfterSync {
+		t.Fatalf("database reads called broker; got %d additional calls", provider.positionCalls-callsAfterSync)
 	}
-	if len(first) != 1 || len(second) != 1 || second[0].Broker != "IBKR" {
+	if len(first) != 2 || len(second) != 2 {
 		t.Fatalf("unexpected positions: %#v", second)
 	}
-	if got := second[0].MarketPrice; got != 200 {
-		t.Fatalf("expected derived market price 200, got %v", got)
-	}
 }
 
-func TestSyncReplacesOneBrokerProjection(t *testing.T) {
-	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 2}}}
-	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
-
-	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("first sync: %v", err)
-	}
-	provider.setResult([]broker.Position{{Symbol: "MSFT", Quantity: 3}}, nil)
-	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("second sync: %v", err)
-	}
-
-	positions, err := svc.AllPositions(context.Background())
-	if err != nil {
-		t.Fatalf("read positions: %v", err)
-	}
-	if len(positions) != 1 || positions[0].Symbol != "MSFT" {
-		t.Fatalf("expected replaced projection, got %#v", positions)
-	}
-}
-
-func TestFailedSyncKeepsLastSuccessfulProjection(t *testing.T) {
-	provider := &fakeProvider{positions: []broker.Position{{Symbol: "NVDA", Quantity: 3}}}
-	svc := newTestSyncService(t, Source{Name: "IBKR", Provider: provider})
-
-	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("prime projection: %v", err)
-	}
-	provider.setResult(nil, errors.New("gateway restarting"))
-	if err := svc.Sync(context.Background()); err == nil {
-		t.Fatal("expected sync error")
-	}
-
-	positions, err := svc.AllPositions(context.Background())
-	if err != nil {
-		t.Fatalf("read stale projection: %v", err)
-	}
-	if len(positions) != 1 || positions[0].Symbol != "NVDA" {
-		t.Fatalf("expected previous projection, got %#v", positions)
-	}
-}
-
-func TestSyncKeepsSuccessfulBrokerWhenAnotherFails(t *testing.T) {
-	failing := &fakeProvider{err: errors.New("not authenticated")}
-	successful := &fakeProvider{positions: []broker.Position{{Symbol: "BTCUSD", Quantity: 1}}}
-	svc := newTestSyncService(t,
-		Source{Name: "IBKR", Provider: failing},
-		Source{Name: "BINANCE", Provider: successful},
-	)
-
-	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("expected partial sync success, got %v", err)
-	}
-	positions, err := svc.AllPositions(context.Background())
-	if err != nil {
-		t.Fatalf("read positions: %v", err)
-	}
-	if len(positions) != 1 || positions[0].Broker != "BINANCE" {
-		t.Fatalf("unexpected positions: %#v", positions)
-	}
-}
-
-func TestSyncSkipsWhenMasterDisabled(t *testing.T) {
-	provider := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 1}}}
-	svc := newTestSyncService(t, Source{Name: "SCHWAB", Provider: provider})
-	svc.SetSyncConfig(config.PositionSyncConfig{Enabled: false, Brokers: config.PositionSyncBrokers{Schwab: true}})
+func TestSyncSkipsWhenDisabled(t *testing.T) {
+	provider := &fakeBroker{}
+	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
+	svc.SetSyncConfig(config.BrokerSyncConfig{Enabled: false})
 
 	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if provider.callCount() != 0 {
-		t.Fatalf("expected no provider calls when master off, got %d", provider.callCount())
-	}
-}
-
-func TestSyncSkipsDisabledBroker(t *testing.T) {
-	schwab := &fakeProvider{positions: []broker.Position{{Symbol: "AAPL", Quantity: 1}}}
-	alpaca := &fakeProvider{positions: []broker.Position{{Symbol: "TSLA", Quantity: 2}}}
-	svc := newTestSyncService(t,
-		Source{Name: "SCHWAB", Provider: schwab},
-		Source{Name: "ALPACA", Provider: alpaca},
-	)
-	svc.SetSyncConfig(config.PositionSyncConfig{
-		Enabled: true,
-		Brokers: config.PositionSyncBrokers{Schwab: true, Alpaca: false},
-	})
-
-	if err := svc.Sync(context.Background()); err != nil {
-		t.Fatalf("sync: %v", err)
-	}
-	if schwab.callCount() != 1 {
-		t.Fatalf("expected SCHWAB synced once, got %d", schwab.callCount())
-	}
-	if alpaca.callCount() != 0 {
-		t.Fatalf("expected ALPACA skipped, got %d calls", alpaca.callCount())
-	}
-	positions, err := svc.AllPositions(context.Background())
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if len(positions) != 1 || positions[0].Broker != "SCHWAB" {
-		t.Fatalf("unexpected positions: %#v", positions)
+	if provider.listAccountCalls != 0 {
+		t.Fatalf("expected no broker calls when sync is disabled, got %d", provider.listAccountCalls)
 	}
 }

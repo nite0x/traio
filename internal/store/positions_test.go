@@ -18,10 +18,14 @@ func newTestStore(t *testing.T) *Store {
 	return st
 }
 
-func TestReplaceBrokerPositionsWritesAssetProjection(t *testing.T) {
+func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 	st := newTestStore(t)
+	ctx := context.Background()
+	if err := st.ReplaceBrokerAccounts(ctx, "ibkr", []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+		t.Fatalf("replace accounts: %v", err)
+	}
 
-	err := st.ReplaceBrokerPositions(context.Background(), "ibkr", []broker.Position{{
+	err := st.ReplaceBrokerAccountPositions(ctx, "ibkr", "U1", []broker.Position{{
 		Symbol:      "aapl",
 		ConID:       265598,
 		Quantity:    2,
@@ -30,7 +34,6 @@ func TestReplaceBrokerPositionsWritesAssetProjection(t *testing.T) {
 		MarketValue: 360,
 		Unrealized:  60,
 		Currency:    "usd",
-		Account:     "U1",
 	}})
 	if err != nil {
 		t.Fatalf("replace positions: %v", err)
@@ -51,6 +54,45 @@ func TestReplaceBrokerPositionsWritesAssetProjection(t *testing.T) {
 	}
 	if symbol != "AAPL" || currency != "USD" || avgCost != 150 || unrealized != 60 {
 		t.Fatalf("unexpected asset row: symbol=%s currency=%s avgCost=%v unrealized=%v", symbol, currency, avgCost, unrealized)
+	}
+}
+
+func TestBrokerAccountBalancesBelongToAccount(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.db.Exec(`
+		INSERT INTO broker_accounts (broker, account, currency, synced_at)
+		VALUES ('IBKR', 'U1', 'USD', '2026-01-01T00:00:00Z');
+		INSERT INTO broker_account_balances (
+			broker, account, currency, net_liquidation, total_cash_value,
+			gross_position_value, buying_power, unrealized_pnl, realized_pnl, synced_at
+		) VALUES (
+			'IBKR', 'U1', 'USD', 1250, 500, 750, 1000, 150, 25, '2026-01-01T00:00:00Z'
+		);
+	`); err != nil {
+		t.Fatalf("seed account balance: %v", err)
+	}
+
+	var netLiquidation, cashValue float64
+	if err := st.db.QueryRow(`
+		SELECT net_liquidation, total_cash_value
+		FROM broker_account_balances
+		WHERE broker = 'IBKR' AND account = 'U1' AND currency = 'USD'
+	`).Scan(&netLiquidation, &cashValue); err != nil {
+		t.Fatalf("read account balance: %v", err)
+	}
+	if netLiquidation != 1250 || cashValue != 500 {
+		t.Fatalf("unexpected account balance: net_liquidation=%v total_cash_value=%v", netLiquidation, cashValue)
+	}
+
+	if _, err := st.db.Exec(`DELETE FROM broker_accounts WHERE broker = 'IBKR' AND account = 'U1'`); err != nil {
+		t.Fatalf("delete broker account: %v", err)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM broker_account_balances`).Scan(&count); err != nil {
+		t.Fatalf("count account balances: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected account balance to cascade-delete, got %d rows", count)
 	}
 }
 
