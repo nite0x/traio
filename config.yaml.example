@@ -24,8 +24,6 @@ alpaca:
 
 ibkr:
   sub_account: ""
-  password: ""
-  totp_secret: ""
   gateway_dir: ""
   bundled_gateway_dir: "./third_party/clientportal.gw"
   gateway_port: 5680

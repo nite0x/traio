@@ -1,10 +1,14 @@
 package ibkr
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nite/traio/internal/config"
 )
@@ -115,5 +119,80 @@ func TestPatchGatewayConf_DenyUnchanged(t *testing.T) {
 	// deny block must be untouched.
 	if !strings.Contains(string(data), "- 212.90.324.10") {
 		t.Fatalf("deny block was modified:\n%s", data)
+	}
+}
+
+func TestTickleSendsEmptyJSONObject(t *testing.T) {
+	var body string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/api/tickle" {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"authenticated":true}`))
+	}))
+	defer server.Close()
+
+	manager := NewGatewayManager(config.IBKRConfig{GatewayURL: server.URL})
+	manager.tickle()
+	if body != "{}" {
+		t.Fatalf("expected tickle body {}, got %q", body)
+	}
+}
+
+func TestSecureRuntimePermissionsAndLogRetention(t *testing.T) {
+	gatewayDir := t.TempDir()
+	for _, dir := range []string{"root", "logs", ".vertx/cache"} {
+		if err := os.MkdirAll(filepath.Join(gatewayDir, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{"root/conf.yaml", "root/vertx.jks", "gateway.pid", ".vertx/cache/vertx.jks"} {
+		if err := os.WriteFile(filepath.Join(gatewayDir, file), []byte("test"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldLog := filepath.Join(gatewayDir, "logs", "gw.old.log")
+	newLog := filepath.Join(gatewayDir, "logs", "gw.current.log")
+	for _, file := range []string{oldLog, newLog} {
+		if err := os.WriteFile(file, []byte("sensitive"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Now().Add(-gatewayLogRetention - time.Hour)
+	if err := os.Chtimes(oldLog, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewGatewayManager(config.IBKRConfig{GatewayDir: gatewayDir})
+	if err := manager.secureRuntimePermissions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldLog); !os.IsNotExist(err) {
+		t.Fatalf("expected expired log to be removed, got %v", err)
+	}
+	for _, path := range []string{gatewayDir, filepath.Join(gatewayDir, "logs"), filepath.Join(gatewayDir, ".vertx")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("expected %s mode 0700, got %o", path, got)
+		}
+	}
+	for _, path := range []string{filepath.Join(gatewayDir, "root", "conf.yaml"), newLog, filepath.Join(gatewayDir, ".vertx/cache/vertx.jks")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("expected %s mode 0600, got %o", path, got)
+		}
 	}
 }

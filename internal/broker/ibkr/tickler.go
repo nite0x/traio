@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,21 +28,15 @@ func (g *GatewayManager) tickle() {
 	resp, err := g.httpClient.Post(
 		g.config.GatewayURL+"/v1/api/tickle",
 		"application/json",
-		nil,
+		strings.NewReader("{}"),
 	)
 	if err != nil {
 		log.Printf("[IBKR] tickle failed: %v", err)
-		if g.hasCredentials() {
-			go g.EnsureAuthenticated(g.ctx)
-		}
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[IBKR] tickle status %d", resp.StatusCode)
-		if g.hasCredentials() {
-			go g.EnsureAuthenticated(g.ctx)
-		}
 	}
 }
 
@@ -55,9 +50,14 @@ func (g *GatewayManager) StartHealthMonitor(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if err := g.secureRuntimePermissions(); err != nil {
+					g.audit("gateway.permissions", "error", err.Error())
+				}
 				if !g.isHealthy() {
 					log.Println("[IBKR] gateway unhealthy, restarting...")
-					g.restart()
+					if err := g.restart(); err != nil {
+						log.Printf("[IBKR] restart failed: %v", err)
+					}
 				}
 			}
 		}

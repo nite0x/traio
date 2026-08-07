@@ -1,5 +1,3 @@
-//go:build !ios
-
 package main
 
 import (
@@ -27,6 +25,16 @@ func main() {
 	flag.Parse()
 
 	baseDir := config.ResolveRuntimeDir()
+	instanceLock, err := runtime.AcquireInstanceLock(baseDir)
+	if err != nil {
+		log.Fatalf("instance lock: %v", err)
+	}
+	defer instanceLock.Close()
+
+	apiToken, err := runtime.LoadOrCreateAPIToken(baseDir)
+	if err != nil {
+		log.Fatalf("API token: %v", err)
+	}
 	bootstrapDB := filepath.Join(baseDir, "data", "traio.db")
 
 	st, err := store.Open(bootstrapDB)
@@ -86,6 +94,7 @@ func main() {
 		Account:     accountEquity,
 		News:        newsSvc,
 		AI:          aiSvc,
+		APIToken:    apiToken,
 	}
 
 	router := api.NewRouter(deps, api.ServerControl{

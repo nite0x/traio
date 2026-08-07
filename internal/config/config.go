@@ -56,8 +56,6 @@ type AlpacaConfig struct {
 
 type IBKRConfig struct {
 	SubAccount        string `json:"sub_account" yaml:"sub_account"`
-	Password          string `json:"password" yaml:"password"`
-	TOTPSecret        string `json:"totp_secret" yaml:"totp_secret"`
 	FlexToken         string `json:"flex_token" yaml:"flex_token"`
 	FlexQueryID       string `json:"flex_query_id" yaml:"flex_query_id"`
 	FlexBaseURL       string `json:"flex_base_url" yaml:"flex_base_url"`
@@ -67,8 +65,8 @@ type IBKRConfig struct {
 	GatewayURL        string `json:"gateway_url" yaml:"gateway_url"`
 	DownloadProxy     string `json:"download_proxy" yaml:"download_proxy"`
 	// GatewayProxyHost overrides the IBKR API endpoint in conf.yaml.
-	// Use "https://paper-api.ibkr.com" for paper trading.
-	// Defaults to "https://api.ibkr.com" when empty.
+	// Keep the official https://api.ibkr.com default unless IBKR documents
+	// another endpoint for the account type in use.
 	GatewayProxyHost string `json:"gateway_proxy_host" yaml:"gateway_proxy_host"`
 	// GatewayAllowIPs is the IP whitelist written into conf.yaml ips.allow.
 	// Defaults to ["127.0.0.1"] when empty.

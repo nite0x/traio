@@ -16,6 +16,7 @@
 
 # Config (local secrets)
 config.yaml
+api-token
 
 # SQLite
 *.db
@@ -31,18 +32,6 @@ config.yaml
 *.swo
 .DS_Store
 
-# Flutter
-flutter/.dart_tool/
-flutter/.packages
-flutter/.flutter-plugins
-flutter/.flutter-plugins-dependencies
-flutter/build/
-flutter/.pub-cache/
-flutter/.pub/
-flutter/**/doc/api/
-flutter/**/*.iml
-flutter/**/GeneratedPluginRegistrant.*
-
 # Docker
 .env
 
@@ -54,8 +43,3 @@ third_party/clientportal.gw/*
 # Logs
 *.log
 *.pid
-
-# Tauri desktop
-tauri/node_modules/
-tauri/dist/
-tauri/src-tauri/target/

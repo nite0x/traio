@@ -46,10 +46,33 @@ func (m *Manager) Load(ctx context.Context) error {
 		return err
 	}
 	cfg.Normalize(m.baseDir)
+	if hasDeprecatedIBKRCredentials(data) {
+		cleaned, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		if err := m.store.SaveSettings(ctx, cleaned); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	m.cfg = cfg
 	m.mu.Unlock()
 	return nil
+}
+
+func hasDeprecatedIBKRCredentials(data []byte) bool {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	var ibkr map[string]json.RawMessage
+	if err := json.Unmarshal(root["ibkr"], &ibkr); err != nil {
+		return false
+	}
+	_, hasPassword := ibkr["password"]
+	_, hasTOTP := ibkr["totp_secret"]
+	return hasPassword || hasTOTP
 }
 
 func (m *Manager) Get() config.Config {

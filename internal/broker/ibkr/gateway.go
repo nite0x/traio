@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/nite/traio/internal/config"
 )
 
@@ -32,9 +35,26 @@ func pidFile(gatewayDir string) string {
 }
 
 const (
-	gatewayDownloadURL = "https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
-	startupTimeout     = 30 * time.Second
+	gatewayDownloadURL  = "https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
+	startupTimeout      = 30 * time.Second
+	gatewayLogRetention = 14 * 24 * time.Hour
 )
+
+const (
+	gatewayStateStopped      = "stopped"
+	gatewayStateDetached     = "detached"
+	gatewayStateInstalling   = "installing"
+	gatewayStateStarting     = "starting"
+	gatewayStateAuthRequired = "authentication_required"
+	gatewayStateRunning      = "running"
+	gatewayStateStopping     = "stopping"
+	gatewayStateRestarting   = "restarting"
+	gatewayStateUpgrading    = "upgrading"
+	gatewayStateRollingBack  = "rolling_back"
+	gatewayStateError        = "error"
+)
+
+var errManualAuthRequired = errors.New("manual authentication required")
 
 // GatewayStatus is the public gateway state exposed via REST API.
 type GatewayStatus struct {
@@ -42,9 +62,16 @@ type GatewayStatus struct {
 	Authenticated     bool   `json:"authenticated"`
 	Account           string `json:"account"`
 	SessionAgeSeconds int64  `json:"session_age_seconds"`
-	LoginMode         string `json:"login_mode"` // auto | manual
+	LoginMode         string `json:"login_mode"` // manual
 	LoginURL          string `json:"login_url,omitempty"`
 	AuthMessage       string `json:"auth_message,omitempty"`
+	State             string `json:"state"`
+	LastError         string `json:"last_error,omitempty"`
+	StateUpdatedAt    string `json:"state_updated_at,omitempty"`
+	InstalledVersion  string `json:"installed_version,omitempty"`
+	PinnedVersion     string `json:"pinned_version,omitempty"`
+	InstallVerified   bool   `json:"install_verified"`
+	RollbackAvailable bool   `json:"rollback_available"`
 }
 
 // GatewayManager manages IBKR Client Portal Gateway lifecycle.
@@ -54,23 +81,28 @@ type GatewayManager struct {
 	httpClient *http.Client
 
 	mu              sync.Mutex
+	opMu            sync.Mutex
+	auditMu         sync.Mutex
 	ctx             context.Context
 	cancel          context.CancelFunc
 	authenticatedAt time.Time
 	account         string
 	monitorsStarted bool
 	restarting      atomic.Bool
+	state           string
+	lastError       string
+	stateUpdatedAt  time.Time
+	processLock     *flock.Flock
+	release         gatewayRelease
 }
 
 func NewGatewayManager(cfg config.IBKRConfig) *GatewayManager {
 	return &GatewayManager{
-		config: cfg,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // local self-signed gateway cert
-			},
-		},
+		config:         cfg,
+		httpClient:     newGatewayHTTPClient(cfg.GatewayURL, 10*time.Second),
+		state:          gatewayStateStopped,
+		stateUpdatedAt: time.Now().UTC(),
+		release:        officialGatewayRelease,
 	}
 }
 
@@ -81,15 +113,106 @@ func (g *GatewayManager) LoginURL() string {
 	return strings.TrimRight(g.config.GatewayURL, "/") + "/sso/Login"
 }
 
+func (g *GatewayManager) acquireProcessLock() error {
+	g.mu.Lock()
+	if g.processLock != nil {
+		g.mu.Unlock()
+		return nil
+	}
+	gatewayDir := g.config.GatewayDir
+	g.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(gatewayDir), 0o700); err != nil {
+		return err
+	}
+	lockPath := gatewayDir + ".manager.lock"
+	lock := flock.New(lockPath, flock.SetPermissions(0o600))
+	locked, err := lock.TryLock()
+	if err != nil {
+		return fmt.Errorf("lock gateway manager: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("another process is already managing gateway directory %s", gatewayDir)
+	}
+	if err := os.Chmod(lockPath, 0o600); err != nil {
+		_ = lock.Unlock()
+		return fmt.Errorf("secure gateway manager lock: %w", err)
+	}
+	g.mu.Lock()
+	g.processLock = lock
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *GatewayManager) releaseProcessLock() {
+	g.mu.Lock()
+	lock := g.processLock
+	g.processLock = nil
+	g.mu.Unlock()
+	if lock != nil {
+		_ = lock.Unlock()
+	}
+}
+
+func (g *GatewayManager) setLifecycle(state string, err error) {
+	g.mu.Lock()
+	g.state = state
+	if err == nil {
+		g.lastError = ""
+	} else {
+		g.lastError = sanitizeAuditValue(err.Error())
+	}
+	g.stateUpdatedAt = time.Now().UTC()
+	g.mu.Unlock()
+}
+
+func (g *GatewayManager) failLifecycle(event string, err error) error {
+	g.setLifecycle(gatewayStateError, err)
+	g.audit(event, "error", err.Error())
+	return err
+}
+
 // UpdateConfig replaces IBKR settings and should be followed by Reconnect().
 func (g *GatewayManager) UpdateConfig(cfg config.IBKRConfig) {
 	g.mu.Lock()
 	g.config = cfg
+	g.httpClient = newGatewayHTTPClient(cfg.GatewayURL, 10*time.Second)
 	g.mu.Unlock()
+}
+
+// Reconfigure safely stops the process using the old paths, releases the old
+// manager lock, applies new settings, and starts under the new ownership scope.
+func (g *GatewayManager) Reconfigure(cfg config.IBKRConfig) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+	g.cancelMonitoring()
+	if err := g.stopProcess(); err != nil {
+		return g.failLifecycle("gateway.reconfigure", err)
+	}
+	g.releaseProcessLock()
+	g.mu.Lock()
+	g.config = cfg
+	g.httpClient = newGatewayHTTPClient(cfg.GatewayURL, 10*time.Second)
+	g.mu.Unlock()
+	g.resetSession()
+	if err := g.startLocked(context.Background()); err != nil {
+		return g.failLifecycle("gateway.reconfigure", err)
+	}
+	g.audit("gateway.reconfigure", "success", "configuration applied")
+	return nil
 }
 
 // Start ensures gateway is installed, running, authenticated, and monitored.
 func (g *GatewayManager) Start(ctx context.Context) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+	return g.startLocked(ctx)
+}
+
+func (g *GatewayManager) startLocked(ctx context.Context) error {
+	if err := g.acquireProcessLock(); err != nil {
+		return g.failLifecycle("gateway.lock", err)
+	}
 	g.mu.Lock()
 	if g.cancel != nil {
 		g.cancel()
@@ -98,14 +221,25 @@ func (g *GatewayManager) Start(ctx context.Context) error {
 	runCtx := g.ctx
 	g.mu.Unlock()
 
-	if err := g.EnsureInstalled(); err != nil {
-		return fmt.Errorf("ensure installed: %w", err)
+	g.setLifecycle(gatewayStateInstalling, nil)
+	if err := g.EnsureInstalled(ctx); err != nil {
+		return g.failLifecycle("gateway.install", fmt.Errorf("ensure installed: %w", err))
 	}
+	g.setLifecycle(gatewayStateStarting, nil)
 	if err := g.EnsureRunning(runCtx); err != nil {
-		return fmt.Errorf("ensure running: %w", err)
+		return g.failLifecycle("gateway.start", fmt.Errorf("ensure running: %w", err))
 	}
 	if err := g.EnsureAuthenticated(runCtx); err != nil {
-		log.Printf("[IBKR] authentication pending: %v", err)
+		if errors.Is(err, errManualAuthRequired) {
+			g.setLifecycle(gatewayStateAuthRequired, nil)
+			g.audit("gateway.authentication", "required", "manual browser login required")
+			log.Printf("[IBKR] authentication pending: %v", err)
+		} else {
+			return g.failLifecycle("gateway.authentication", err)
+		}
+	} else {
+		g.setLifecycle(gatewayStateRunning, nil)
+		g.audit("gateway.start", "success", "gateway online")
 	}
 
 	g.mu.Lock()
@@ -120,42 +254,23 @@ func (g *GatewayManager) Start(ctx context.Context) error {
 
 // Stop shuts down background tasks and kills the gateway process.
 func (g *GatewayManager) Stop() {
-	g.StopGateway(false)
+	if err := g.StopGateway(false); err != nil {
+		log.Printf("[IBKR] stop failed: %v", err)
+	}
 }
 
 // StartGateway ensures the IBKR gateway process is running and monitored.
 func (g *GatewayManager) StartGateway(ctx context.Context) error {
-	g.mu.Lock()
-	if g.ctx == nil || g.cancel == nil {
-		g.ctx, g.cancel = context.WithCancel(ctx)
-	}
-	runCtx := g.ctx
-	g.mu.Unlock()
-
-	if err := g.EnsureInstalled(); err != nil {
-		return fmt.Errorf("ensure installed: %w", err)
-	}
-	if err := g.EnsureRunning(runCtx); err != nil {
-		return fmt.Errorf("ensure running: %w", err)
-	}
-	if err := g.EnsureAuthenticated(runCtx); err != nil {
-		log.Printf("[IBKR] authentication pending: %v", err)
-	}
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !g.monitorsStarted {
-		g.StartTickler(runCtx)
-		g.StartHealthMonitor(runCtx)
-		g.monitorsStarted = true
-	}
-	return nil
+	return g.Start(ctx)
 }
 
 // StopGateway stops monitoring and optionally kills the gateway process.
 // When keepSession is true, the Java process keeps running (session preserved);
 // traio simply detaches. When false, the process is killed.
-func (g *GatewayManager) StopGateway(keepSession bool) {
+func (g *GatewayManager) StopGateway(keepSession bool) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+	g.setLifecycle(gatewayStateStopping, nil)
 	g.mu.Lock()
 	if g.cancel != nil {
 		g.cancel()
@@ -170,25 +285,49 @@ func (g *GatewayManager) StopGateway(keepSession bool) {
 		g.cmd = nil
 		g.mu.Unlock()
 		log.Println("[IBKR] detached from gateway (session preserved)")
-		return
+		g.releaseProcessLock()
+		g.setLifecycle(gatewayStateDetached, nil)
+		g.audit("gateway.stop", "detached", "session preserved")
+		return nil
 	}
 
-	g.stopProcess()
-	killProcessOnPort(g.config.GatewayPort)
-	_ = os.Remove(pidFile(g.config.GatewayDir))
+	if err := g.stopProcess(); err != nil {
+		return g.failLifecycle("gateway.stop", err)
+	}
+	g.releaseProcessLock()
 	g.resetSession()
+	g.setLifecycle(gatewayStateStopped, nil)
+	g.audit("gateway.stop", "success", "gateway process stopped")
+	return nil
 }
 
 func (g *GatewayManager) Status() GatewayStatus {
+	g.mu.Lock()
+	account := g.account
+	state := g.state
+	lastError := g.lastError
+	stateUpdatedAt := g.stateUpdatedAt
+	gatewayURL := g.config.GatewayURL
+	gatewayDir := g.config.GatewayDir
+	pinnedVersion := g.release.Version
+	g.mu.Unlock()
+
 	tickle, online := g.fetchTickle()
 	status := GatewayStatus{
-		Running:   online,
-		Account:   g.account,
-		LoginMode: g.loginMode(),
+		Running:        online,
+		Account:        account,
+		LoginMode:      g.loginMode(),
+		State:          state,
+		LastError:      lastError,
+		StateUpdatedAt: stateUpdatedAt.Format(time.RFC3339),
+		PinnedVersion:  pinnedVersion,
 	}
-	if !g.hasCredentials() {
-		status.LoginURL = g.config.GatewayURL + "/sso/Login"
+	status.LoginURL = gatewayURL + "/sso/Login"
+	if manifest, err := readInstallManifest(gatewayDir); err == nil {
+		status.InstalledVersion = manifest.Version
+		status.InstallVerified = manifest.Verified
 	}
+	status.RollbackAvailable = gatewayInstalled(rollbackGatewayDir(gatewayDir))
 	if tickle != nil {
 		status.Authenticated = tickleAuthenticated(tickle)
 		if acct := tickleAccount(tickle); acct != "" {
@@ -220,6 +359,14 @@ func (g *GatewayManager) Status() GatewayStatus {
 		if status.Account != "" {
 			g.account = status.Account
 		}
+		if g.state == gatewayStateAuthRequired || g.state == gatewayStateStarting {
+			g.state = gatewayStateRunning
+			g.lastError = ""
+			g.stateUpdatedAt = time.Now().UTC()
+			status.State = g.state
+			status.LastError = ""
+			status.StateUpdatedAt = g.stateUpdatedAt.Format(time.RFC3339)
+		}
 		g.mu.Unlock()
 	}
 	return status
@@ -233,8 +380,10 @@ func (g *GatewayManager) Restart() {
 // Reconnect manually triggers a full gateway restart cycle and opens the login
 // page when manual authentication is required.
 func (g *GatewayManager) Reconnect() error {
-	g.restart()
-	if g.hasCredentials() || g.isAuthenticated() {
+	if err := g.restart(); err != nil {
+		return err
+	}
+	if g.isAuthenticated() {
 		return nil
 	}
 	loginURL := g.config.GatewayURL + "/sso/Login"
@@ -243,71 +392,230 @@ func (g *GatewayManager) Reconnect() error {
 	return nil
 }
 
-func (g *GatewayManager) EnsureInstalled() error {
+// Upgrade installs the pinned, SHA-256 verified Gateway release. The current
+// installation is retained as a rollback candidate until the next upgrade.
+func (g *GatewayManager) Upgrade(ctx context.Context) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+	if err := g.acquireProcessLock(); err != nil {
+		return g.failLifecycle("gateway.upgrade", err)
+	}
+
+	g.setLifecycle(gatewayStateUpgrading, nil)
+	g.audit("gateway.upgrade", "started", "target="+g.release.Version)
+	wasRunning := g.isOnline()
+	g.cancelMonitoring()
+	if err := g.stopProcess(); err != nil {
+		return g.failLifecycle("gateway.upgrade", err)
+	}
+	if err := g.installVerifiedRelease(ctx); err != nil {
+		if wasRunning {
+			_ = g.startLocked(context.WithoutCancel(ctx))
+		}
+		return g.failLifecycle("gateway.upgrade", err)
+	}
+	if err := g.startLocked(context.WithoutCancel(ctx)); err != nil {
+		startErr := err
+		_ = g.stopProcess()
+		if rollbackErr := g.swapWithRollback(); rollbackErr != nil {
+			return g.failLifecycle("gateway.upgrade", fmt.Errorf("new gateway failed: %v; rollback failed: %w", startErr, rollbackErr))
+		}
+		if restoreErr := g.startLocked(context.Background()); restoreErr != nil {
+			return g.failLifecycle("gateway.upgrade", fmt.Errorf("new gateway failed: %v; previous gateway restored but failed to start: %w", startErr, restoreErr))
+		}
+		warning := fmt.Errorf("upgrade failed and previous gateway was restored: %w", startErr)
+		g.setLifecycle(gatewayStateRunning, warning)
+		g.audit("gateway.upgrade", "rolled_back", warning.Error())
+		return warning
+	}
+	g.audit("gateway.upgrade", "success", "version="+g.release.Version)
+	return nil
+}
+
+// Rollback swaps the active installation with the retained previous version.
+// The replaced version remains available, so another rollback acts as a
+// controlled roll-forward.
+func (g *GatewayManager) Rollback(ctx context.Context) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+	if err := g.acquireProcessLock(); err != nil {
+		return g.failLifecycle("gateway.rollback", err)
+	}
+	g.setLifecycle(gatewayStateRollingBack, nil)
+	g.audit("gateway.rollback", "started", "manual rollback requested")
+	g.cancelMonitoring()
+	if err := g.stopProcess(); err != nil {
+		return g.failLifecycle("gateway.rollback", err)
+	}
+	if err := g.swapWithRollback(); err != nil {
+		return g.failLifecycle("gateway.rollback", err)
+	}
+	if err := g.startLocked(context.WithoutCancel(ctx)); err != nil {
+		startErr := err
+		_ = g.stopProcess()
+		if swapErr := g.swapWithRollback(); swapErr != nil {
+			return g.failLifecycle("gateway.rollback", fmt.Errorf("rollback version failed to start: %v; restore failed: %w", startErr, swapErr))
+		}
+		_ = g.startLocked(context.Background())
+		return g.failLifecycle("gateway.rollback", fmt.Errorf("rollback version failed to start: %w", startErr))
+	}
+	g.audit("gateway.rollback", "success", "previous gateway activated")
+	return nil
+}
+
+func (g *GatewayManager) cancelMonitoring() {
+	g.mu.Lock()
+	if g.cancel != nil {
+		g.cancel()
+		g.cancel = nil
+	}
+	g.ctx = nil
+	g.monitorsStarted = false
+	g.mu.Unlock()
+}
+
+func (g *GatewayManager) EnsureInstalled(ctx context.Context) error {
 	if gatewayInstalled(g.config.GatewayDir) {
-		return g.ensureGatewayConf()
+		if err := g.adoptLegacyInstall(); err != nil {
+			return err
+		}
+		if err := g.ensureGatewayConf(); err != nil {
+			return err
+		}
+		return g.secureRuntimePermissions()
 	}
 
 	if g.config.BundledGatewayDir != "" && gatewayInstalled(g.config.BundledGatewayDir) {
 		log.Printf("[IBKR] installing gateway from bundled dir %s", g.config.BundledGatewayDir)
-		if err := os.MkdirAll(g.config.GatewayDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir gateway dir: %w", err)
+		if err := g.installBundledAtomic(g.config.BundledGatewayDir); err != nil {
+			return err
 		}
-		if err := copyDir(g.config.BundledGatewayDir, g.config.GatewayDir); err != nil {
-			return fmt.Errorf("copy bundled gateway: %w", err)
-		}
-		if err := g.ensureGatewayConf(); err != nil {
-			return fmt.Errorf("configure gateway port: %w", err)
-		}
+		g.audit("gateway.install", "success", "installed from application bundle")
 		log.Printf("[IBKR] gateway installed at %s", g.config.GatewayDir)
 		return nil
 	}
 
-	log.Printf("[IBKR] downloading gateway to %s", g.config.GatewayDir)
-	if err := os.MkdirAll(g.config.GatewayDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir gateway dir: %w", err)
+	log.Printf("[IBKR] downloading verified gateway release %s", g.release.Version)
+	if err := g.installVerifiedRelease(ctx); err != nil {
+		return err
 	}
-
-	zipPath := filepath.Join(g.config.GatewayDir, "clientportal.gw.zip")
-	if err := downloadFile(gatewayDownloadURL, zipPath, g.config.DownloadProxy); err != nil {
-		return fmt.Errorf("download gateway: %w", err)
-	}
-	defer os.Remove(zipPath)
-
-	if err := unzip(zipPath, g.config.GatewayDir); err != nil {
-		return fmt.Errorf("unzip gateway: %w", err)
-	}
-	if err := g.ensureGatewayConf(); err != nil {
-		return fmt.Errorf("configure gateway port: %w", err)
-	}
+	g.audit("gateway.install", "success", "installed verified release "+g.release.Version)
 	log.Printf("[IBKR] gateway installed at %s", g.config.GatewayDir)
 	return nil
 }
 
 func (g *GatewayManager) ensureGatewayConf() error {
 	confFile := filepath.Join(g.config.GatewayDir, "root", "conf.yaml")
-	return patchGatewayConf(confFile, g.config)
+	if err := patchGatewayConf(confFile, g.config); err != nil {
+		return err
+	}
+	return os.Chmod(confFile, 0o600)
+}
+
+// secureRuntimePermissions limits Gateway state to the current OS user. The
+// IBKR distribution itself remains executable, while configuration, PID,
+// certificates, caches and logs are treated as sensitive runtime data.
+func (g *GatewayManager) secureRuntimePermissions() error {
+	return secureGatewayRuntime(g.config.GatewayDir)
+}
+
+func secureGatewayRuntime(gatewayDir string) error {
+	if err := os.Chmod(gatewayDir, 0o700); err != nil {
+		return err
+	}
+
+	sensitiveFiles := []string{
+		filepath.Join(gatewayDir, "root", "conf.yaml"),
+		filepath.Join(gatewayDir, "root", "vertx.jks"),
+		pidFile(gatewayDir),
+		installManifestPath(gatewayDir),
+	}
+	for _, path := range sensitiveFiles {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	for _, dir := range []string{
+		filepath.Join(gatewayDir, "logs"),
+		filepath.Join(gatewayDir, ".vertx"),
+	} {
+		if err := secureDataTree(dir); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	return pruneGatewayLogs(filepath.Join(gatewayDir, "logs"), time.Now().Add(-gatewayLogRetention))
+}
+
+func secureDataTree(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return os.Chmod(path, 0o600)
+	})
+}
+
+func pruneGatewayLogs(logDir string, before time.Time) error {
+	entries, err := os.ReadDir(logDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(before) {
+			if err := os.Remove(filepath.Join(logDir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 	if g.isOnline() {
+		pid, err := readPIDFile(pidFile(g.config.GatewayDir))
+		if err != nil || !processAlive(pid) || !g.gatewayProcessMatches(pid) {
+			return fmt.Errorf("gateway is online but is not owned by Traio; refusing to manage it")
+		}
 		return nil
 	}
 
 	// Reuse an already-running gateway process that survived a traio restart.
 	if pid, err := readPIDFile(pidFile(g.config.GatewayDir)); err == nil {
 		if processAlive(pid) {
+			if !g.gatewayProcessMatches(pid) {
+				return fmt.Errorf("gateway PID file points to unrecognized process %d; refusing to manage it", pid)
+			}
 			log.Printf("[IBKR] reusing existing gateway process (pid=%d)", pid)
 			if g.waitUntilOnline(ctx) {
 				return nil
 			}
-			// Process alive but not responding — fall through to restart.
+			if err := terminateProcess(pid); err != nil {
+				return fmt.Errorf("stop unresponsive gateway process %d: %w", pid, err)
+			}
+			_ = os.Remove(pidFile(g.config.GatewayDir))
 		}
 	}
 
-	// No usable process; kill anything squatting on the port and start fresh.
-	killProcessOnPort(g.config.GatewayPort)
-	time.Sleep(time.Second)
+	// Never terminate an arbitrary process merely because it occupies the
+	// configured port. The operator must resolve that conflict explicitly.
+	if portInUse(g.config.GatewayPort) {
+		return fmt.Errorf("gateway port %d is occupied by an unowned process", g.config.GatewayPort)
+	}
 
 	if !gatewayInstalled(g.config.GatewayDir) {
 		return fmt.Errorf("gateway not installed at %s", g.config.GatewayDir)
@@ -339,13 +647,25 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 	// Detach: gateway lives beyond traio's context.
 	pid := cmd.Process.Pid
 	if err := writePIDFile(pidFile(g.config.GatewayDir), pid); err != nil {
-		log.Printf("[IBKR] warning: could not write pid file: %v", err)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("write gateway pid file: %w", err)
 	}
-	go func() { _ = cmd.Wait() }()
 
 	g.mu.Lock()
 	g.cmd = cmd
 	g.mu.Unlock()
+	go func() {
+		_ = cmd.Wait()
+		g.mu.Lock()
+		if g.cmd == cmd {
+			g.cmd = nil
+		}
+		g.mu.Unlock()
+		if recordedPID, err := readPIDFile(pidFile(g.config.GatewayDir)); err == nil && recordedPID == pid {
+			_ = os.Remove(pidFile(g.config.GatewayDir))
+		}
+	}()
 
 	log.Printf("[IBKR] gateway process started (pid=%d)", pid)
 	if !g.waitUntilOnline(ctx) {
@@ -355,16 +675,12 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 }
 
 func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
+	_ = ctx
 	// Always check tickle first — the gateway session may still be alive from a
 	// previous traio run, in which case we must not open the browser unnecessarily.
 	if tickle, online := g.fetchTickle(); online && tickleAuthenticated(tickle) {
 		g.markAuthenticated(tickleAccount(tickle))
 		log.Printf("[IBKR] session already authenticated (account=%s)", tickleAccount(tickle))
-		return nil
-	}
-
-	if !g.hasCredentials() {
-		log.Printf("[IBKR] credentials not configured — complete login at %s/sso/Login", g.config.GatewayURL)
 		return nil
 	}
 
@@ -377,29 +693,7 @@ func (g *GatewayManager) EnsureAuthenticated(ctx context.Context) error {
 		return nil
 	}
 
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	log.Println("[IBKR] session not authenticated, starting auto login")
-	if err := g.autoLogin(ctx); err != nil {
-		return fmt.Errorf("auto login: %w", err)
-	}
-
-	deadline := time.Now().Add(startupTimeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-		tickle, online = g.fetchTickle()
-		if online && tickleAuthenticated(tickle) {
-			g.markAuthenticated(tickleAccount(tickle))
-			log.Println("[IBKR] authentication successful")
-			return nil
-		}
-	}
-	return fmt.Errorf("authentication not confirmed within %s", startupTimeout)
+	return fmt.Errorf("%w at %s/sso/Login", errManualAuthRequired, g.config.GatewayURL)
 }
 
 func (g *GatewayManager) isOnline() bool {
@@ -416,12 +710,9 @@ func (g *GatewayManager) isHealthy() bool {
 	if !g.isOnline() {
 		return false
 	}
-	// Manual login mode: gateway online is enough; user authenticates in browser.
-	if !g.hasCredentials() {
-		return true
-	}
-	tickle, _ := g.fetchTickle()
-	return tickleAuthenticated(tickle)
+	// Authentication is user-driven and should not cause a healthy local Java
+	// process to restart continuously while it is waiting for browser login.
+	return true
 }
 
 func (g *GatewayManager) fetchTickle() (map[string]interface{}, bool) {
@@ -503,17 +794,27 @@ func (g *GatewayManager) waitUntilOnline(ctx context.Context) bool {
 	return false
 }
 
-func (g *GatewayManager) hasCredentials() bool {
-	return g.config.SubAccount != "" &&
-		g.config.Password != "" &&
-		g.config.TOTPSecret != ""
+func (g *GatewayManager) loginMode() string {
+	return "manual"
 }
 
-func (g *GatewayManager) loginMode() string {
-	if g.hasCredentials() {
-		return "auto"
+func newGatewayHTTPClient(gatewayURL string, timeout time.Duration) *http.Client {
+	transport := &http.Transport{}
+	if parsed, err := url.Parse(gatewayURL); err == nil && isLoopbackHost(parsed.Hostname()) {
+		// IBKR ships a self-signed certificate for the local Gateway. Certificate
+		// verification is relaxed only for a loopback destination.
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
-	return "manual"
+	return &http.Client{Timeout: timeout, Transport: transport}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (g *GatewayManager) markAuthenticated(account string) {
@@ -534,72 +835,119 @@ func (g *GatewayManager) resetSession() {
 	g.mu.Unlock()
 }
 
-func (g *GatewayManager) stopProcess() {
+func (g *GatewayManager) stopProcess() error {
 	g.mu.Lock()
 	cmd := g.cmd
 	g.cmd = nil
+	gatewayDir := g.config.GatewayDir
 	g.mu.Unlock()
 
-	if cmd == nil || cmd.Process == nil {
-		return
+	if cmd != nil && cmd.Process != nil {
+		if err := cmd.Process.Kill(); err != nil && processAlive(cmd.Process.Pid) {
+			return err
+		}
+		_ = os.Remove(pidFile(gatewayDir))
+		log.Println("[IBKR] gateway process stopped")
+		return nil
 	}
-	_ = cmd.Process.Kill()
-	_, _ = cmd.Process.Wait()
-	log.Println("[IBKR] gateway process stopped")
-}
 
-func killProcessOnPort(port int) {
-	if port <= 0 {
-		return
-	}
-	out, err := exec.Command("lsof", "-ti", fmt.Sprintf(":%d", port)).Output()
+	pid, err := readPIDFile(pidFile(gatewayDir))
 	if err != nil {
-		return
+		return nil
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			continue
-		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			continue
-		}
-		_ = proc.Kill()
-		log.Printf("[IBKR] killed process %d on port %d", pid, port)
+	if !processAlive(pid) {
+		_ = os.Remove(pidFile(gatewayDir))
+		return nil
 	}
+	if !g.gatewayProcessMatches(pid) {
+		return fmt.Errorf("PID %d is not a validated gateway process", pid)
+	}
+	if err := terminateProcess(pid); err != nil {
+		return err
+	}
+	_ = os.Remove(pidFile(gatewayDir))
+	log.Printf("[IBKR] gateway process stopped (pid=%d)", pid)
+	return nil
 }
 
-func (g *GatewayManager) restart() {
+// gatewayProcessMatches validates both the command line and working directory
+// before Traio adopts or terminates a PID loaded from disk.
+func (g *GatewayManager) gatewayProcessMatches(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return false
+	}
+	command := strings.ToLower(string(out))
+	if !strings.Contains(command, "clientportal.gw") &&
+		!strings.Contains(command, "root/run.jar") &&
+		!strings.Contains(command, "bin/run.sh") {
+		return false
+	}
+
+	cwdOutput, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(cwdOutput), "\n") {
+		if !strings.HasPrefix(line, "n") {
+			continue
+		}
+		cwd, cwdErr := filepath.EvalSymlinks(strings.TrimPrefix(line, "n"))
+		gatewayDir, dirErr := filepath.EvalSymlinks(g.config.GatewayDir)
+		return cwdErr == nil && dirErr == nil && filepath.Clean(cwd) == filepath.Clean(gatewayDir)
+	}
+	return false
+}
+
+func terminateProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Kill()
+}
+
+func portInUse(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func (g *GatewayManager) restart() error {
 	if !g.restarting.CompareAndSwap(false, true) {
-		return
+		return fmt.Errorf("gateway restart already in progress")
 	}
 	defer g.restarting.Store(false)
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
 
 	log.Println("[IBKR] gateway restarting...")
+	g.setLifecycle(gatewayStateRestarting, nil)
+	g.audit("gateway.restart", "started", "health or reconnect requested")
 	g.resetSession()
-	g.stopProcess()
-
-	time.Sleep(3 * time.Second)
-
 	g.mu.Lock()
 	parent := context.Background()
 	if g.ctx != nil {
 		parent = context.WithoutCancel(g.ctx)
 	}
-	g.monitorsStarted = false
-	if g.cancel != nil {
-		g.cancel()
-	}
 	g.mu.Unlock()
-
-	if err := g.Start(parent); err != nil {
-		log.Printf("[IBKR] restart failed: %v", err)
+	g.cancelMonitoring()
+	if err := g.stopProcess(); err != nil {
+		return g.failLifecycle("gateway.restart", err)
 	}
+
+	time.Sleep(3 * time.Second)
+	if err := g.startLocked(parent); err != nil {
+		return g.failLifecycle("gateway.restart", err)
+	}
+	g.audit("gateway.restart", "success", "gateway restarted")
+	return nil
 }
 
 func tickleAuthenticated(result map[string]interface{}) bool {
@@ -683,7 +1031,7 @@ func patchGatewayConf(confFile string, cfg config.IBKRConfig) error {
 		})
 	}
 
-	return os.WriteFile(confFile, []byte(content), 0o644)
+	return os.WriteFile(confFile, []byte(content), 0o600)
 }
 
 // patchListenPort is kept for backward compatibility with existing tests.
@@ -700,12 +1048,15 @@ func patchListenPort(confFile string, port int) error {
 		indent := re.FindStringSubmatch(line)[1]
 		return indent + fmt.Sprintf("listenPort: %d", port)
 	})
-	return os.WriteFile(confFile, []byte(updated), 0o644)
+	return os.WriteFile(confFile, []byte(updated), 0o600)
 }
 
 // writePIDFile atomically writes pid to path.
 func writePIDFile(path string, pid int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644)
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // readPIDFile reads a PID from path.
@@ -725,41 +1076,6 @@ func processAlive(pid int) bool {
 	}
 	// os.FindProcess always succeeds on Unix; send signal 0 to test liveness.
 	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-func downloadFile(urlStr, dest, proxyURL string) error {
-	client := &http.Client{Timeout: 5 * time.Minute}
-	if proxyURL != "" {
-		u, err := url.Parse(proxyURL)
-		if err != nil {
-			return fmt.Errorf("parse download proxy: %w", err)
-		}
-		client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
-	} else if p := os.Getenv("HTTPS_PROXY"); p != "" {
-		if u, err := url.Parse(p); err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
-		}
-	} else if p := os.Getenv("HTTP_PROXY"); p != "" {
-		if u, err := url.Parse(p); err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
-		}
-	}
-
-	resp, err := client.Get(urlStr)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download status %d", resp.StatusCode)
-	}
-	out, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
-	return err
 }
 
 func gatewayInstalled(dir string) bool {
@@ -806,7 +1122,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return err
 	}

@@ -1,5 +1,3 @@
-//go:build !ios
-
 package main
 
 import (
@@ -18,7 +16,13 @@ import (
 )
 
 func main() {
-	apiBase := runtime.ResolveAPIBase(config.ResolveRuntimeDir())
+	runtimeDir := config.ResolveRuntimeDir()
+	apiBase := runtime.ResolveAPIBase(runtimeDir)
+	apiToken, err := runtime.ReadAPIToken(runtimeDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "traio-mcp: API token: %v\n", err)
+		os.Exit(1)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	s := server.NewMCPServer("traio", "0.1.0")
@@ -26,28 +30,28 @@ func main() {
 	s.AddTool(mcp.NewTool("traio_health",
 		mcp.WithDescription("Check Traio backend health"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/health")
+		body, err := getJSON(client, apiBase+"/health", "")
 		return textResult(body, err)
 	})
 
 	s.AddTool(mcp.NewTool("traio_ibkr_gateway_status",
 		mcp.WithDescription("Get IBKR Client Portal Gateway status"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/ibkr/gateway/status")
+		body, err := getJSON(client, apiBase+"/api/v1/ibkr/gateway/status", apiToken)
 		return textResult(body, err)
 	})
 
 	s.AddTool(mcp.NewTool("traio_settings_get",
 		mcp.WithDescription("Get all Traio settings (API keys included)"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/settings")
+		body, err := getJSON(client, apiBase+"/api/v1/settings", apiToken)
 		return textResult(body, err)
 	})
 
 	s.AddTool(mcp.NewTool("traio_watchlist_groups",
 		mcp.WithDescription("List watchlist groups"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/watchlist/groups")
+		body, err := getJSON(client, apiBase+"/api/v1/watchlist/groups", apiToken)
 		return textResult(body, err)
 	})
 
@@ -59,14 +63,14 @@ func main() {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		body, err := getJSON(client, apiBase+"/api/v1/quotes/"+symbol)
+		body, err := getJSON(client, apiBase+"/api/v1/quotes/"+symbol, apiToken)
 		return textResult(body, err)
 	})
 
 	s.AddTool(mcp.NewTool("traio_positions",
 		mcp.WithDescription("List portfolio positions"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/positions")
+		body, err := getJSON(client, apiBase+"/api/v1/positions", apiToken)
 		return textResult(body, err)
 	})
 
@@ -76,8 +80,15 @@ func main() {
 	}
 }
 
-func getJSON(client *http.Client, url string) (string, error) {
-	resp, err := client.Get(url)
+func getJSON(client *http.Client, url, token string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

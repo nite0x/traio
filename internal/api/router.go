@@ -2,9 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"fmt"
-	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,11 +35,20 @@ type Deps struct {
 	Account     *account.Service
 	News        *news.Service
 	AI          *ai.Service
+	APIToken    string
 }
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "http://localhost:1420")
+		origin := c.GetHeader("Origin")
+		if origin != "" && !allowedOrigin(origin) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin is not allowed"})
+			return
+		}
+		if origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if c.Request.Method == "OPTIONS" {
@@ -49,6 +59,66 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func allowedOrigin(origin string) bool {
+	switch origin {
+	case "http://localhost:1420", "http://127.0.0.1:1420", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
+		return true
+	default:
+		return false
+	}
+}
+
+func localAPIMiddleware(token string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if token == "" || c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		host, _, err := net.SplitHostPort(c.Request.Host)
+		if err != nil {
+			host = c.Request.Host
+		}
+		if !isLoopbackAPIHost(host) {
+			c.AbortWithStatusJSON(http.StatusMisdirectedRequest, gin.H{"error": "local API host required"})
+			return
+		}
+
+		// The browser login entry is a side-effect-free redirect. All data and
+		// control endpoints require the runtime token. WebSockets cannot attach
+		// an Authorization header, so only that route accepts it as a subprotocol.
+		if c.Request.Method == http.MethodGet && c.FullPath() == "/api/v1/ibkr/gateway/login" {
+			c.Next()
+			return
+		}
+		candidate := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		if c.FullPath() == "/api/v1/ws" && candidate == "" {
+			candidate = websocketToken(c.GetHeader("Sec-WebSocket-Protocol"))
+		}
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid API token"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func websocketToken(header string) string {
+	parts := strings.Split(header, ",")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "traio" {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func isLoopbackAPIHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(strings.ToLower(host)), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger(), corsMiddleware())
@@ -57,7 +127,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
 	})
 
-	v1 := r.Group("/api/v1")
+	v1 := r.Group("/api/v1", localAPIMiddleware(deps.APIToken))
 	{
 		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Store))
 		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Store))
@@ -81,9 +151,12 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/alpaca/status", alpacaStatus(deps.Alpaca))
 
 		v1.GET("/ibkr/gateway/status", ibkrGatewayStatus(deps.IBKR))
+		v1.GET("/ibkr/gateway/login", ibkrGatewayLogin(deps.IBKR))
 		v1.POST("/ibkr/gateway/start", ibkrGatewayStart(deps.IBKR, deps.BrokerSync))
 		v1.POST("/ibkr/gateway/stop", ibkrGatewayStop(deps.IBKR, deps.BrokerSync))
 		v1.POST("/ibkr/gateway/reconnect", ibkrGatewayReconnect(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/upgrade", ibkrGatewayUpgrade(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/rollback", ibkrGatewayRollback(deps.IBKR, deps.BrokerSync))
 
 		v1.GET("/server/status", serverStatus(serverCtrl))
 		v1.POST("/server/shutdown", serverShutdown(serverCtrl))
@@ -507,6 +580,24 @@ func ibkrGatewayStatus(gw broker.GatewayController) gin.HandlerFunc {
 	}
 }
 
+// ibkrGatewayLogin is a browser entry point for manual IBKR authentication.
+// Credentials and 2FA stay on the Gateway-hosted IBKR page; Traio only makes
+// sure the local Gateway is available before redirecting the browser to it.
+func ibkrGatewayLogin(gw broker.GatewayController) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if gw == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
+			return
+		}
+		loginURL := strings.TrimSpace(gw.LoginURL())
+		if loginURL == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway login URL is not available"})
+			return
+		}
+		c.Redirect(http.StatusFound, loginURL)
+	}
+}
+
 func ibkrGatewayReconnect(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gw == nil {
@@ -516,8 +607,11 @@ func ibkrGatewayReconnect(gw broker.GatewayController, brokerSync *portfolio.Syn
 		if brokerSync != nil {
 			brokerSync.Invalidate()
 		}
-		go gw.Reconnect()
-		c.JSON(http.StatusAccepted, gin.H{"status": "reconnecting"})
+		if err := gw.Reconnect(); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "reconnected"})
 	}
 }
 
@@ -530,12 +624,11 @@ func ibkrGatewayStart(gw broker.GatewayController, brokerSync *portfolio.SyncSer
 		if brokerSync != nil {
 			brokerSync.Invalidate()
 		}
-		go func() {
-			if err := gw.StartGateway(context.Background()); err != nil {
-				log.Printf("[IBKR] gateway start: %v", err)
-			}
-		}()
-		c.JSON(http.StatusAccepted, gin.H{"status": "starting"})
+		if err := gw.StartGateway(context.Background()); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "started"})
 	}
 }
 
@@ -549,11 +642,48 @@ func ibkrGatewayStop(gw broker.GatewayController, brokerSync *portfolio.SyncServ
 			brokerSync.Invalidate()
 		}
 		keepSession := c.Query("keep_session") == "true"
-		go gw.StopGateway(keepSession)
+		if err := gw.StopGateway(keepSession); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		status := "stopped"
 		if keepSession {
 			status = "detached"
 		}
-		c.JSON(http.StatusAccepted, gin.H{"status": status})
+		c.JSON(http.StatusOK, gin.H{"status": status})
+	}
+}
+
+func ibkrGatewayUpgrade(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if gw == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
+			return
+		}
+		if brokerSync != nil {
+			brokerSync.Invalidate()
+		}
+		if err := gw.Upgrade(c.Request.Context()); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "upgraded"})
+	}
+}
+
+func ibkrGatewayRollback(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if gw == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
+			return
+		}
+		if brokerSync != nil {
+			brokerSync.Invalidate()
+		}
+		if err := gw.Rollback(c.Request.Context()); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "rolled_back"})
 	}
 }

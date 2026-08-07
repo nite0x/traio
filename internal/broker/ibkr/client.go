@@ -3,7 +3,6 @@ package ibkr
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -214,18 +213,14 @@ func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string
 
 func New(cfg config.IBKRConfig) *Client {
 	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-			},
-		},
+		cfg:        cfg,
+		httpClient: newGatewayHTTPClient(cfg.GatewayURL, 15*time.Second),
 	}
 }
 
 func (c *Client) SetConfig(cfg config.IBKRConfig) {
 	c.cfg = cfg
+	c.httpClient = newGatewayHTTPClient(cfg.GatewayURL, 15*time.Second)
 	c.pnlMu.Lock()
 	c.pnlFetchedAt = time.Time{}
 	c.pnlSnapshot = nil

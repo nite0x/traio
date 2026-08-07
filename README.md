@@ -1,18 +1,23 @@
-# Traio
+# Traio Service
 
-面向有技术背景的美股交易者的个人交易终端：自选、行情、K 线、指标、资讯、下单、持仓。
+Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、数据存储以及本地 API。
+
+## 仓库边界
+
+- `cmd/server` 和 `internal/` 是服务核心。
+- `cmd/mcp` 是服务的开源 MCP 适配器，不被服务核心反向依赖。
+- `docs/` 保存服务架构、API 规格和接入文档。
+- Tauri 桌面客户端位于独立的 `traio-desktop` 仓库；移动客户端位于独立的 `traio-app` 仓库。
+- 本地数据库、配置、编译产物和 IBKR Gateway 安装目录均已忽略，不属于 Git 仓库内容。
 
 ## 架构
 
 | 层 | 技术栈 | 职责 |
 |----|--------|------|
 | **Go 后端** | Gin + SQLite + gorilla/websocket | REST API / WebSocket / 券商集成 / 数据存储 |
-| **Tauri 桌面端** | React + TypeScript + Tauri | macOS / Windows / Linux 桌面应用 |
-| **Flutter 移动端** | Flutter + Riverpod | iOS / Android 移动应用（Go backend 内嵌为 gomobile xcframework） |
-| **TUI** | Bubbletea | 终端调试客户端 |
 | **MCP** | — | 外部工具接入（Claude 等） |
 
-> **重要：** `flutter/` 目录仅用于移动端（iOS / Android）。桌面端由 `tauri/` 承载，两者不混用。
+`traio-desktop` 会将这里的 `cmd/server` 编译为 Tauri sidecar。
 
 ## 快速开始
 
@@ -20,49 +25,13 @@
 
 ```bash
 make deps
-make server        # 启动 Go 后端，监听 http://127.0.0.1:38180
-make tui           # 另开终端，用 TUI 访问同一个 server
-```
-
-### Tauri 桌面端开发
-
-```bash
-make tauri-dev     # 自动构建并启动 Go 后端，再启动 Tauri 桌面应用
-```
-
-构建发布包：
-
-```bash
-make tauri-build   # 输出 tauri/src-tauri/target/release/bundle/
-```
-
-### Flutter 移动端开发
-
-首次初始化 Flutter 项目（仅在 `ios/` / `android/` 目录不存在时需要）：
-
-```bash
-cd flutter
-flutter create . --org com.traio --project-name traio
-flutter pub get
-```
-
-运行 iOS 模拟器：
-
-```bash
-cd flutter && flutter run -d ios
-```
-
-构建 iOS gomobile xcframework（需要完整 Xcode）：
-
-```bash
-make ios-framework
+make server        # 启动 Go 后端，监听 http://127.0.0.1:38181
 ```
 
 ### 测试
 
 ```bash
 make test          # Go 单元测试
-cd flutter && flutter test   # Flutter widget 测试
 ```
 
 ## 目录结构
@@ -71,25 +40,15 @@ cd flutter && flutter test   # Flutter widget 测试
 traio/
 ├── cmd/
 │   ├── server/        Go 后端入口
-│   ├── tui/           Bubbletea 终端
 │   └── mcp/           MCP 工具入口
 ├── internal/          业务逻辑、券商封装、存储
-├── mobile/            gomobile 绑定层（供 Flutter iOS 内嵌）
-├── tui/               终端 UI 组件
-├── tauri/             桌面端（React + TypeScript + Tauri）
-│   ├── src/           前端源码
-│   └── src-tauri/     Rust/Tauri 壳
-├── flutter/           移动端（iOS / Android）
-│   └── lib/
-│       ├── core/      API client、主题、内嵌 backend 接口
-│       └── mobile/    移动端页面与组件
 ├── bin/               编译产物（.gitignore）
 └── docs/              文档
 ```
 
 ## 后端 API
 
-Go 后端固定监听 `127.0.0.1:38180`。
+开发模式默认监听 `127.0.0.1:38181`；桌面发布版默认使用 `127.0.0.1:38180`。可通过 `TRAIO_SERVER_PORT` 覆盖。
 
 ```
 GET  /health
@@ -142,7 +101,6 @@ Interactive Brokers 需要本地运行 Gateway。有三种方式提供：
 
 ## 技术栈
 
-- **后端**：Go、Gin、SQLite（modernc）、gorilla/websocket、Bubbletea
-- **桌面端**：React、TypeScript、Vite、Tauri、React Router、TanStack Query、Recharts
-- **移动端**：Flutter、Riverpod、Dio、gomobile
+- **服务核心**：Go、Gin、SQLite（modernc）、gorilla/websocket
+- **辅助工具**：MCP stdio server
 - **数据源**：Schwab、SnapTrade、IBKR CPAPI、Finnhub、EDGAR、Claude
