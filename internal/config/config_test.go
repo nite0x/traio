@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestResolveServerPortDevDefault(t *testing.T) {
 	t.Setenv("TRAIO_SERVER_PORT", "")
@@ -57,5 +60,29 @@ func TestDefaultBrokerSyncEnabled(t *testing.T) {
 	cfg := Default(t.TempDir())
 	if !cfg.BrokerSync.Enabled {
 		t.Fatal("expected broker sync enabled by default")
+	}
+}
+
+func TestResolveBootstrapDatabaseDefaultsToSQLite(t *testing.T) {
+	t.Setenv("TRAIO_DATABASE_DRIVER", "")
+	t.Setenv("TRAIO_DATABASE_DSN", "")
+	baseDir := t.TempDir()
+
+	got := ResolveBootstrapDatabase(baseDir)
+	if got.Driver != "sqlite" {
+		t.Fatalf("driver: got %q, want sqlite", got.Driver)
+	}
+	if want := filepath.Join(baseDir, "data", "traio.db"); got.DataSource != want {
+		t.Fatalf("data source: got %q, want %q", got.DataSource, want)
+	}
+}
+
+func TestResolveBootstrapDatabaseUsesEnvironment(t *testing.T) {
+	t.Setenv("TRAIO_DATABASE_DRIVER", "postgres")
+	t.Setenv("TRAIO_DATABASE_DSN", "postgres://traio@example/traio")
+
+	got := ResolveBootstrapDatabase(t.TempDir())
+	if got.Driver != "postgres" || got.DataSource != "postgres://traio@example/traio" {
+		t.Fatalf("unexpected database config: %#v", got)
 	}
 }

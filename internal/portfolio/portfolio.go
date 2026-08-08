@@ -21,9 +21,9 @@ type Source struct {
 }
 
 // SyncService separates broker synchronization from frontend reads.
-// Sync calls broker APIs and updates SQLite; AllPositions only reads SQLite.
+// Sync calls broker APIs and updates the repository; AllPositions only reads it.
 type SyncService struct {
-	store   *store.Store
+	store   store.PortfolioRepository
 	sources []Source
 	syncNow chan struct{}
 	syncMu  sync.Mutex
@@ -32,7 +32,7 @@ type SyncService struct {
 	cfg   config.BrokerSyncConfig
 }
 
-func NewSyncService(st *store.Store, sources ...Source) *SyncService {
+func NewSyncService(st store.PortfolioRepository, sources ...Source) *SyncService {
 	return &SyncService{
 		store:   st,
 		sources: sources,

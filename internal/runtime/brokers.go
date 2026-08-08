@@ -2,7 +2,7 @@ package runtime
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 
 	"github.com/nite/traio/internal/account"
 	"github.com/nite/traio/internal/broker"
@@ -43,7 +43,7 @@ func (g gatewayAdapter) Upgrade(ctx context.Context) error      { return g.m.Upg
 func (g gatewayAdapter) Rollback(ctx context.Context) error     { return g.m.Rollback(ctx) }
 
 // BuildBrokers constructs the full desktop broker set, including IBKR.
-func BuildBrokers(cfg config.Config, st *store.Store) Brokers {
+func BuildBrokers(cfg config.Config, st store.OAuthTokenRepository) Brokers {
 	schwabClient := newSchwabClient(cfg.Schwab, st)
 	alpacaClient := alpaca.New(cfg.Alpaca)
 	snapClient := snaptrade.New(cfg.SnapTrade)
@@ -80,7 +80,7 @@ func (b Brokers) AccountSources() []account.Source {
 	}
 }
 
-func newSchwabClient(cfg config.SchwabConfig, st *store.Store) *schwab.Client {
+func newSchwabClient(cfg config.SchwabConfig, st store.OAuthTokenRepository) *schwab.Client {
 	client := schwab.New(cfg, schwab.WithTokenHandler(func(token schwab.Token) {
 		_ = st.SaveOAuthToken(context.Background(), store.OAuthToken{
 			Provider:     "schwab",
@@ -96,7 +96,7 @@ func newSchwabClient(cfg config.SchwabConfig, st *store.Store) *schwab.Client {
 			RefreshToken: token.RefreshToken,
 			ExpiresAt:    token.ExpiresAt,
 		})
-	} else if err != sql.ErrNoRows {
+	} else if !errors.Is(err, store.ErrNotFound) {
 		// Authentication can be restored through the Schwab OAuth API.
 	}
 	return client

@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,7 +23,8 @@ import (
 )
 
 type Deps struct {
-	Store       *store.Store
+	Watchlists  store.WatchlistRepository
+	CandleCache store.CandleCacheRepository
 	Settings    *settings.Manager
 	Schwab      *schwab.Client
 	Alpaca      *alpaca.Client
@@ -129,15 +130,15 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 
 	v1 := r.Group("/api/v1", localAPIMiddleware(deps.APIToken))
 	{
-		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Store))
-		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Store))
-		v1.POST("/watchlist/groups/:group_id/items", upsertWatchlistItem(deps.Store))
-		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", deleteWatchlistItem(deps.Store))
+		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Watchlists))
+		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Watchlists))
+		v1.POST("/watchlist/groups/:group_id/items", upsertWatchlistItem(deps.Watchlists))
+		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", deleteWatchlistItem(deps.Watchlists))
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
 		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
-		v1.GET("/quotes/:symbol/history", getHistory(deps.Store, deps.Instruments, deps.Candles))
+		v1.GET("/quotes/:symbol/history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles))
 		v1.GET("/positions", listPositions(deps.BrokerSync))
 		v1.GET("/brokers/sync-status", brokerSyncStatus(deps.BrokerSync))
 		v1.POST("/brokers/sync", syncBrokers(deps.BrokerSync))
@@ -194,7 +195,7 @@ func parseGroupID(c *gin.Context) (int64, bool) {
 	return groupID, true
 }
 
-func listWatchlistGroups(st *store.Store) gin.HandlerFunc {
+func listWatchlistGroups(st store.WatchlistRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groups, err := st.ListWatchlistGroups(c.Request.Context())
 		if err != nil {
@@ -205,7 +206,7 @@ func listWatchlistGroups(st *store.Store) gin.HandlerFunc {
 	}
 }
 
-func listWatchlistItems(st *store.Store) gin.HandlerFunc {
+func listWatchlistItems(st store.WatchlistRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID, ok := parseGroupID(c)
 		if !ok {
@@ -231,7 +232,7 @@ type watchlistItemRequest struct {
 	Notes    string `json:"notes"`
 }
 
-func upsertWatchlistItem(st *store.Store) gin.HandlerFunc {
+func upsertWatchlistItem(st store.WatchlistRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID, ok := parseGroupID(c)
 		if !ok {
@@ -261,14 +262,14 @@ func upsertWatchlistItem(st *store.Store) gin.HandlerFunc {
 	}
 }
 
-func deleteWatchlistItem(st *store.Store) gin.HandlerFunc {
+func deleteWatchlistItem(st store.WatchlistRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID, ok := parseGroupID(c)
 		if !ok {
 			return
 		}
 		if err := st.DeleteWatchlistItem(c.Request.Context(), groupID, c.Param("symbol")); err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, store.ErrNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "watchlist item not found"})
 				return
 			}
@@ -494,7 +495,7 @@ var periodToBar = map[string]string{
 	"5y": "1w",
 }
 
-func getHistory(st *store.Store, instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
+func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if candles == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "candle data not available"})

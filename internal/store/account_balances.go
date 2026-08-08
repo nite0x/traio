@@ -22,7 +22,7 @@ type BrokerAccountBalance struct {
 }
 
 func (s *Store) ListBrokerAccountBalances(ctx context.Context) ([]BrokerAccountBalance, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT broker, account, currency, net_liquidation, total_cash_value,
 			gross_position_value, buying_power, unrealized_pnl, realized_pnl,
 			settled_cash, exchange_rate, is_base_currency, synced_at

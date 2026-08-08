@@ -28,7 +28,7 @@ func (s *Store) ReplaceBrokerAccounts(ctx context.Context, brokerName string, ac
 	defer tx.Rollback()
 
 	existing := map[string]struct{}{}
-	rows, err := tx.QueryContext(ctx, `SELECT account FROM broker_accounts WHERE broker = ?`, brokerName)
+	rows, err := s.txQueryContext(ctx, tx, `SELECT account FROM broker_accounts WHERE broker = ?`, brokerName)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (s *Store) ReplaceBrokerAccounts(ctx context.Context, brokerName string, ac
 			return fmt.Errorf("duplicate account %s", accountID)
 		}
 		seen[accountID] = struct{}{}
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_accounts (
 				broker, account, display_name, account_type, status, currency, synced_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -81,15 +81,15 @@ func (s *Store) ReplaceBrokerAccounts(ctx context.Context, brokerName string, ac
 		if _, stillVisible := seen[accountID]; stillVisible {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM broker_accounts WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
+		if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_accounts WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM broker_sync_status WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
+		if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_sync_status WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
 			return err
 		}
 	}
 
-	if err := recordBrokerSyncSuccessTx(ctx, tx, brokerName, "", SyncDataAccounts, len(accounts), syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, brokerName, "", SyncDataAccounts, len(accounts), syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -108,7 +108,7 @@ func (s *Store) ReplaceBrokerAccountDetails(ctx context.Context, brokerName stri
 	}
 	defer tx.Rollback()
 	syncedAt := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := s.txExecContext(ctx, tx, `
 		INSERT INTO broker_accounts (
 			broker, account, display_name, account_type, status, currency, synced_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -124,7 +124,7 @@ func (s *Store) ReplaceBrokerAccountDetails(ctx context.Context, brokerName stri
 	); err != nil {
 		return err
 	}
-	if err := recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataAccountDetails, 1, syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataAccountDetails, 1, syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -142,7 +142,7 @@ func (s *Store) ReplaceBrokerCashBalances(ctx context.Context, brokerName, accou
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM broker_account_balances WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
+	if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_account_balances WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
 		return err
 	}
 	syncedAt := time.Now().UTC().Format(time.RFC3339)
@@ -156,7 +156,7 @@ func (s *Store) ReplaceBrokerCashBalances(ctx context.Context, brokerName, accou
 		if asOf == "" {
 			asOf = syncedAt
 		}
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_account_balances (
 				broker, account, currency, total_cash_value, settled_cash,
 				exchange_rate, is_base_currency, synced_at
@@ -168,7 +168,7 @@ func (s *Store) ReplaceBrokerCashBalances(ctx context.Context, brokerName, accou
 		}
 		inserted++
 	}
-	if err := recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataCashBalances, inserted, syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataCashBalances, inserted, syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -186,7 +186,7 @@ func (s *Store) ReplaceBrokerAccountPositions(ctx context.Context, brokerName, a
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM broker_asset_positions WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
+	if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_asset_positions WHERE broker = ? AND account = ?`, brokerName, accountID); err != nil {
 		return err
 	}
 	syncedAt := time.Now().UTC().Format(time.RFC3339)
@@ -201,7 +201,7 @@ func (s *Store) ReplaceBrokerAccountPositions(ctx context.Context, brokerName, a
 			marketPrice = position.MarketValue / position.Quantity
 		}
 		assetType, assetKey := positionAssetIdentity(position)
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_asset_positions (
 				broker, account, asset_type, asset_key, symbol, conid, quantity,
 				avg_cost, market_price, market_value, unrealized_pnl, realized_pnl,
@@ -216,7 +216,7 @@ func (s *Store) ReplaceBrokerAccountPositions(ctx context.Context, brokerName, a
 		}
 		inserted++
 	}
-	if err := recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataPositions, inserted, syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataPositions, inserted, syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -239,7 +239,7 @@ func (s *Store) ReplaceBrokerAccountPerformance(ctx context.Context, brokerName 
 	if projectionAt == "" {
 		projectionAt = attemptedAt
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := s.txExecContext(ctx, tx, `
 		INSERT INTO broker_account_performance (
 			broker, account, daily_pnl, net_liquidation, unrealized_pnl,
 			excess_liquidity, market_value, synced_at
@@ -257,7 +257,7 @@ func (s *Store) ReplaceBrokerAccountPerformance(ctx context.Context, brokerName 
 	); err != nil {
 		return err
 	}
-	if err := recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataDailyPerformance, 1, attemptedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, brokerName, accountID, SyncDataDailyPerformance, 1, attemptedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -274,7 +274,7 @@ type BrokerAccount struct {
 }
 
 func (s *Store) ListBrokerAccounts(ctx context.Context) ([]BrokerAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT broker, account, display_name, account_type, status, currency, synced_at
 		FROM broker_accounts
 		ORDER BY broker, account`)
@@ -309,7 +309,7 @@ type BrokerAccountPerformance struct {
 }
 
 func (s *Store) ListBrokerAccountPerformance(ctx context.Context) ([]BrokerAccountPerformance, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT broker, account, daily_pnl, net_liquidation, unrealized_pnl,
 			excess_liquidity, market_value, synced_at
 		FROM broker_account_performance

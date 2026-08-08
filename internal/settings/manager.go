@@ -2,8 +2,8 @@ package settings
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	"github.com/nite/traio/internal/config"
@@ -14,11 +14,11 @@ type Manager struct {
 	mu      sync.RWMutex
 	cfg     config.Config
 	baseDir string
-	store   *store.Store
+	store   store.SettingsRepository
 	onApply []func(config.Config)
 }
 
-func NewManager(st *store.Store, baseDir string) *Manager {
+func NewManager(st store.SettingsRepository, baseDir string) *Manager {
 	return &Manager{
 		cfg:     config.Default(baseDir),
 		baseDir: baseDir,
@@ -34,7 +34,7 @@ func (m *Manager) Load(ctx context.Context) error {
 	cfg := config.Default(m.baseDir)
 	data, err := m.store.GetSettings(ctx)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, store.ErrNotFound) {
 			m.mu.Lock()
 			m.cfg = cfg
 			m.mu.Unlock()

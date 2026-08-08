@@ -7,7 +7,7 @@ import (
 )
 
 // BuildBrokerSync constructs the IBKR account projection sync service.
-func BuildBrokerSync(st *store.Store, b Brokers) *portfolio.SyncService {
+func BuildBrokerSync(st store.PortfolioRepository, b Brokers) *portfolio.SyncService {
 	return portfolio.NewSyncService(st, b.SyncSources()...)
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect dialect
 }
 
 func Open(path string) (*Store, error) {
@@ -39,7 +41,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("enable sqlite wal: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, dialect: dialectSQLite}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -51,13 +53,13 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) migrate() error {
+func (s *Store) migrateSQLite() error {
 	schema := `
 CREATE TABLE IF NOT EXISTS watchlist_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL UNIQUE,
 	sort_order INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS watchlist_items (
@@ -68,7 +70,7 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
 	notes TEXT NOT NULL DEFAULT '',
 	custom_fields TEXT NOT NULL DEFAULT '{}',
 	sort_order INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	UNIQUE(group_id, symbol)
 );
 
@@ -77,13 +79,13 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
 	access_token TEXT NOT NULL,
 	refresh_token TEXT,
 	expires_at TEXT,
-	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS app_settings (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	data TEXT NOT NULL,
-	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 	CREATE TABLE IF NOT EXISTS broker_accounts (
@@ -182,7 +184,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 		return err
 	}
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0);
+		INSERT INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0)
+		ON CONFLICT(id) DO NOTHING;
 	`)
 	return err
 }
@@ -234,7 +237,7 @@ func (s *Store) DB() *sql.DB {
 
 // ListWatchlistGroups returns all watchlist groups ordered by sort_order.
 func (s *Store) ListWatchlistGroups(ctx context.Context) ([]WatchlistGroup, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT id, name, sort_order FROM watchlist_groups ORDER BY sort_order, id`)
 	if err != nil {
 		return nil, err
@@ -253,7 +256,7 @@ func (s *Store) ListWatchlistGroups(ctx context.Context) ([]WatchlistGroup, erro
 
 // ListWatchlistItems returns all items in a group ordered by sort_order.
 func (s *Store) ListWatchlistItems(ctx context.Context, groupID int64) ([]WatchlistItem, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT id, group_id, symbol, conid, name, sec_type, exchange, currency, tags, notes, custom_fields, sort_order
 		FROM watchlist_items
 		WHERE group_id = ?
@@ -296,7 +299,7 @@ func (s *Store) UpsertWatchlistItem(ctx context.Context, item WatchlistItem) (Wa
 	if item.GroupID == 0 {
 		item.GroupID = 1
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execContext(ctx, `
 		INSERT INTO watchlist_items (group_id, symbol, conid, name, sec_type, exchange, currency, tags, notes, custom_fields)
 		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), '[]'), ?, COALESCE(NULLIF(?, ''), '{}'))
 		ON CONFLICT(group_id, symbol) DO UPDATE SET
@@ -305,7 +308,7 @@ func (s *Store) UpsertWatchlistItem(ctx context.Context, item WatchlistItem) (Wa
 			sec_type = excluded.sec_type,
 			exchange = excluded.exchange,
 			currency = excluded.currency,
-			updated_at = datetime('now')`,
+			updated_at = CURRENT_TIMESTAMP`,
 		item.GroupID,
 		item.Symbol,
 		item.ConID,
@@ -327,7 +330,7 @@ func (s *Store) UpsertWatchlistItem(ctx context.Context, item WatchlistItem) (Wa
 func (s *Store) GetWatchlistItem(ctx context.Context, groupID int64, symbol string) (WatchlistItem, error) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	var item WatchlistItem
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryRowContext(ctx, `
 		SELECT id, group_id, symbol, conid, name, sec_type, exchange, currency, tags, notes, custom_fields, sort_order
 		FROM watchlist_items
 		WHERE group_id = ? AND symbol = ?`, groupID, symbol).Scan(
@@ -344,13 +347,16 @@ func (s *Store) GetWatchlistItem(ctx context.Context, groupID int64, symbol stri
 		&item.CustomFields,
 		&item.SortOrder,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WatchlistItem{}, ErrNotFound
+	}
 	return item, err
 }
 
 // DeleteWatchlistItem removes one item by group and symbol.
 func (s *Store) DeleteWatchlistItem(ctx context.Context, groupID int64, symbol string) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
-	res, err := s.db.ExecContext(ctx, `
+	res, err := s.execContext(ctx, `
 		DELETE FROM watchlist_items WHERE group_id = ? AND symbol = ?`, groupID, symbol)
 	if err != nil {
 		return err
@@ -360,7 +366,7 @@ func (s *Store) DeleteWatchlistItem(ctx context.Context, groupID int64, symbol s
 		return err
 	}
 	if affected == 0 {
-		return sql.ErrNoRows
+		return ErrNotFound
 	}
 	return nil
 }

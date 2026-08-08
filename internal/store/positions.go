@@ -61,7 +61,7 @@ func nullableFloat(value float64) any {
 }
 
 func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT symbol, COALESCE(conid, 0), quantity, COALESCE(avg_cost, 0),
 			COALESCE(market_price, 0), market_value,
 			unrealized_pnl, realized_pnl, currency, account, broker, synced_at

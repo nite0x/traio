@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -35,9 +34,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("API token: %v", err)
 	}
-	bootstrapDB := filepath.Join(baseDir, "data", "traio.db")
-
-	st, err := store.Open(bootstrapDB)
+	database := config.ResolveBootstrapDatabase(baseDir)
+	st, err := store.OpenRepository(database.Driver, database.DataSource)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
@@ -82,7 +80,8 @@ func main() {
 
 	startedAt := time.Now()
 	deps := api.Deps{
-		Store:       st,
+		Watchlists:  st,
+		CandleCache: st,
 		Settings:    settingsMgr,
 		Schwab:      brokers.Schwab,
 		Alpaca:      brokers.Alpaca,

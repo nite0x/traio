@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS candle_cache (
 func (s *Store) GetCachedCandles(ctx context.Context, symbol, period, bar string) ([]broker.Candle, error) {
 	var raw string
 	var cachedAt int64
-	err := s.db.QueryRowContext(ctx,
+	err := s.queryRowContext(ctx,
 		`SELECT candles, cached_at FROM candle_cache WHERE symbol=? AND period=? AND bar=?`,
 		symbol, period, bar,
 	).Scan(&raw, &cachedAt)
@@ -77,7 +77,7 @@ func (s *Store) SetCachedCandles(ctx context.Context, symbol string, conid int64
 	if err != nil {
 		return fmt.Errorf("candle cache encode: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.execContext(ctx,
 		`INSERT INTO candle_cache (symbol, conid, period, bar, candles, cached_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(symbol, period, bar) DO UPDATE SET
@@ -94,7 +94,7 @@ func (s *Store) PurgeExpiredCandles(ctx context.Context) error {
 	// Rows with longer TTLs will not be deleted prematurely because
 	// GetCachedCandles checks per-bar TTL individually.
 	minTTL := int64((15 * time.Minute).Seconds())
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.execContext(ctx,
 		`DELETE FROM candle_cache WHERE cached_at < ?`, now-minTTL)
 	return err
 }

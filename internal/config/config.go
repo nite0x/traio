@@ -36,6 +36,14 @@ type DatabaseConfig struct {
 	Path string `json:"path" yaml:"path"`
 }
 
+// BootstrapDatabaseConfig is resolved before persisted application settings
+// can be loaded. Database credentials therefore belong in process-level
+// configuration rather than in Config, which is itself stored in the database.
+type BootstrapDatabaseConfig struct {
+	Driver     string
+	DataSource string
+}
+
 type SnapTradeConfig struct {
 	ClientID    string `json:"client_id" yaml:"client_id"`
 	ConsumerKey string `json:"consumer_key" yaml:"consumer_key"`
@@ -203,6 +211,20 @@ func LocalAPIURL(port int) string {
 // ResolveServerAPIURL is the API base URL for the running traio-server instance.
 func ResolveServerAPIURL() string {
 	return LocalAPIURL(ResolveServerPort())
+}
+
+// ResolveBootstrapDatabase selects the process database from the environment.
+// Desktop and development runs default to the embedded SQLite database.
+func ResolveBootstrapDatabase(baseDir string) BootstrapDatabaseConfig {
+	driver := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_DATABASE_DRIVER")))
+	if driver == "" {
+		driver = "sqlite"
+	}
+	dataSource := strings.TrimSpace(os.Getenv("TRAIO_DATABASE_DSN"))
+	if dataSource == "" && driver == "sqlite" {
+		dataSource = filepath.Join(baseDir, "data", "traio.db")
+	}
+	return BootstrapDatabaseConfig{Driver: driver, DataSource: dataSource}
 }
 
 // ResolveRuntimeDir is the writable data root (App Support when embedded in .app).

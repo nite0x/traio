@@ -30,7 +30,7 @@ type BrokerSyncStatus struct {
 	ItemCount     int          `json:"item_count"`
 }
 
-func recordBrokerSyncSuccessTx(
+func (s *Store) recordBrokerSyncSuccessTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	brokerName, account string,
@@ -38,7 +38,7 @@ func recordBrokerSyncSuccessTx(
 	itemCount int,
 	syncedAt string,
 ) error {
-	_, err := tx.ExecContext(ctx, `
+	_, err := s.txExecContext(ctx, tx, `
 		INSERT INTO broker_sync_status (
 			broker, account, data_type, synced_at, last_attempt_at, last_error, item_count
 		) VALUES (?, ?, ?, ?, ?, '', ?)
@@ -71,7 +71,7 @@ func (s *Store) RecordBrokerSyncError(
 	if syncErr != nil {
 		message = syncErr.Error()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execContext(ctx, `
 		INSERT INTO broker_sync_status (
 			broker, account, data_type, synced_at, last_attempt_at, last_error, item_count
 		) VALUES (?, ?, ?, '', ?, ?, 0)
@@ -84,7 +84,7 @@ func (s *Store) RecordBrokerSyncError(
 }
 
 func (s *Store) ListBrokerSyncStatuses(ctx context.Context) ([]BrokerSyncStatus, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT broker, account, data_type, synced_at, last_attempt_at, last_error, item_count
 		FROM broker_sync_status
 		ORDER BY broker, account, data_type`)

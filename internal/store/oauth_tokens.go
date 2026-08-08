@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -16,7 +17,7 @@ type OAuthToken struct {
 func (s *Store) GetOAuthToken(ctx context.Context, provider string) (OAuthToken, error) {
 	var token OAuthToken
 	var expiresAt sql.NullString
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryRowContext(ctx, `
 		SELECT provider, access_token, COALESCE(refresh_token, ''), expires_at
 		FROM oauth_tokens
 		WHERE provider = ?`, provider).Scan(
@@ -26,6 +27,9 @@ func (s *Store) GetOAuthToken(ctx context.Context, provider string) (OAuthToken,
 		&expiresAt,
 	)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return OAuthToken{}, ErrNotFound
+		}
 		return OAuthToken{}, err
 	}
 	if expiresAt.Valid && expiresAt.String != "" {
@@ -39,14 +43,14 @@ func (s *Store) SaveOAuthToken(ctx context.Context, token OAuthToken) error {
 	if !token.ExpiresAt.IsZero() {
 		expiresAt = token.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execContext(ctx, `
 		INSERT INTO oauth_tokens (provider, access_token, refresh_token, expires_at, updated_at)
-		VALUES (?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(provider) DO UPDATE SET
 			access_token = excluded.access_token,
 			refresh_token = excluded.refresh_token,
 			expires_at = excluded.expires_at,
-			updated_at = datetime('now')`,
+			updated_at = CURRENT_TIMESTAMP`,
 		token.Provider,
 		token.AccessToken,
 		token.RefreshToken,
