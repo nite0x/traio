@@ -6,7 +6,7 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 
 - `cmd/server` 和 `internal/` 是服务核心。
 - `cmd/mcp` 是服务的开源 MCP 适配器，不被服务核心反向依赖。
-- `docs/` 保存服务架构、API 规格和接入文档。
+- 服务架构、API 规格和接入文档统一保存在 [`traio-doc`](https://github.com/nite0x/traio-doc/tree/main/docs/traio)。
 - Tauri 桌面客户端位于独立的 `traio-desktop` 仓库；移动客户端位于独立的 `traio-app` 仓库。
 - 本地数据库、配置、编译产物和 IBKR Gateway 安装目录均已忽略，不属于 Git 仓库内容。
 
@@ -42,8 +42,7 @@ traio/
 │   ├── server/        Go 后端入口
 │   └── mcp/           MCP 工具入口
 ├── internal/          业务逻辑、券商封装、存储
-├── bin/               编译产物（.gitignore）
-└── docs/              文档
+└── bin/               编译产物（.gitignore）
 ```
 
 ## 后端 API
@@ -69,7 +68,7 @@ POST /api/v1/server/shutdown
 GET  /api/v1/ws?symbols=AAPL,MSFT   WebSocket（Schwab 实时行情推送）
 ```
 
-完整 MCP 接入见 [docs/mcp.md](docs/mcp.md)。
+完整 MCP 接入见 [`traio-doc/docs/traio/mcp.md`](https://github.com/nite0x/traio-doc/blob/main/docs/traio/mcp.md)。
 
 ## Schwab 实时行情
 
@@ -82,8 +81,9 @@ OAuth token 保存在本地 SQLite `oauth_tokens` 表中，并在过期前自动
 
 ## 架构文档
 
-- [券商账户同步架构](docs/broker-sync.md)
-- [端到端加密设备同步架构](docs/e2ee-device-sync.md)
+- [券商账户同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/broker-sync.md)
+- [IBKR Client Portal Gateway 管理手册](https://github.com/nite0x/traio-doc/blob/main/docs/traio/ibkr-gateway-management.md)
+- [端到端加密设备同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/e2ee-device-sync.md)
 
 ## IBKR Gateway
 
