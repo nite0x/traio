@@ -28,19 +28,124 @@ type alpacaAccount struct {
 }
 
 type alpacaPosition struct {
-	Symbol         string `json:"symbol"`
-	Qty            string `json:"qty"`
-	AvgEntryPrice  string `json:"avg_entry_price"`
-	MarketValue    string `json:"market_value"`
-	CostBasis      string `json:"cost_basis"`
-	UnrealizedPL   string `json:"unrealized_pl"`
-	CurrentPrice   string `json:"current_price"`
-	Side           string `json:"side"`
+	Symbol        string `json:"symbol"`
+	Qty           string `json:"qty"`
+	AvgEntryPrice string `json:"avg_entry_price"`
+	MarketValue   string `json:"market_value"`
+	CostBasis     string `json:"cost_basis"`
+	UnrealizedPL  string `json:"unrealized_pl"`
+	CurrentPrice  string `json:"current_price"`
+	Side          string `json:"side"`
 }
 
 type portfolioHistory struct {
 	Timestamp []int64   `json:"timestamp"`
 	Equity    []float64 `json:"equity"`
+}
+
+var _ broker.Broker = (*Client)(nil)
+
+func (c *Client) BeginLogin(context.Context) (broker.LoginAction, error) {
+	return broker.LoginAction{Authenticated: c.Configured()}, nil
+}
+
+func (c *Client) ListAccounts(ctx context.Context) ([]broker.Account, error) {
+	if !c.Configured() {
+		return []broker.Account{}, nil
+	}
+	account, err := c.fetchAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	accountID := alpacaAccountID(account)
+	if accountID == "" {
+		return nil, fmt.Errorf("alpaca: account response has no account identifier")
+	}
+	return []broker.Account{{
+		ID:           accountID,
+		Broker:       "ALPACA",
+		DisplayName:  accountID,
+		AccountType:  "brokerage",
+		Status:       account.Status,
+		BaseCurrency: firstNonEmpty(account.Currency, "USD"),
+	}}, nil
+}
+
+func (c *Client) GetAccount(ctx context.Context, accountID string) (broker.Account, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return broker.Account{}, err
+	}
+	for _, account := range accounts {
+		if account.ID == accountID {
+			return account, nil
+		}
+	}
+	return broker.Account{}, fmt.Errorf("alpaca: account %s not found", accountID)
+}
+
+func (c *Client) GetCashBalances(ctx context.Context, accountID string) ([]broker.CashBalance, error) {
+	account, err := c.findAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return []broker.CashBalance{{
+		AccountID:      accountID,
+		Currency:       firstNonEmpty(account.Currency, "USD"),
+		Total:          parseDecimalOrZero(account.Cash),
+		Settled:        parseDecimalOrZero(account.Cash),
+		ExchangeRate:   1,
+		IsBaseCurrency: true,
+		AsOf:           time.Now().UTC().Format(time.RFC3339),
+	}}, nil
+}
+
+func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]broker.Position, error) {
+	if _, err := c.findAccount(ctx, accountID); err != nil {
+		return nil, err
+	}
+	positions, err := c.ListPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]broker.Position, 0, len(positions))
+	for _, position := range positions {
+		if position.Account == accountID {
+			out = append(out, position)
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (broker.DailyPerformance, error) {
+	account, err := c.findAccount(ctx, accountID)
+	if err != nil {
+		return broker.DailyPerformance{}, err
+	}
+	equity := firstNonZero(parseDecimalOrZero(account.Equity), parseDecimalOrZero(account.PortfolioValue))
+	return broker.DailyPerformance{
+		AccountID:       accountID,
+		DailyPnL:        equity - parseDecimalOrZero(account.LastEquity),
+		NetLiquidation:  equity,
+		ExcessLiquidity: parseDecimalOrZero(account.BuyingPower),
+		MarketValue:     parseDecimalOrZero(account.LongMarketValue) + parseDecimalOrZero(account.ShortMarketValue),
+		AsOf:            time.Now().UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func (c *Client) findAccount(ctx context.Context, accountID string) (alpacaAccount, error) {
+	account, err := c.fetchAccount(ctx)
+	if err != nil {
+		return alpacaAccount{}, err
+	}
+	if alpacaAccountID(account) != accountID {
+		return alpacaAccount{}, fmt.Errorf("alpaca: account %s not found", accountID)
+	}
+	return account, nil
+}
+
+func alpacaAccountID(account alpacaAccount) string {
+	return firstNonEmpty(account.AccountNumber, account.ID)
 }
 
 func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
@@ -81,7 +186,7 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 			MarketValue: parseDecimalOrZero(position.MarketValue),
 			Unrealized:  parseDecimalOrZero(position.UnrealizedPL),
 			Currency:    firstNonEmpty(account.Currency, "USD"),
-			Account:     firstNonEmpty(account.AccountNumber, account.ID),
+			Account:     alpacaAccountID(account),
 			Broker:      "ALPACA",
 			SyncedAt:    now,
 		})
@@ -98,7 +203,7 @@ func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, err
 		return broker.AccountSummary{}, err
 	}
 	return broker.AccountSummary{
-		AccountID:          firstNonEmpty(account.AccountNumber, account.ID),
+		AccountID:          alpacaAccountID(account),
 		Currency:           firstNonEmpty(account.Currency, "USD"),
 		NetLiquidation:     firstNonZero(parseDecimalOrZero(account.Equity), parseDecimalOrZero(account.PortfolioValue)),
 		TotalCashValue:     parseDecimalOrZero(account.Cash),

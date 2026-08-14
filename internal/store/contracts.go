@@ -26,12 +26,6 @@ type SettingsRepository interface {
 	HasSettings(context.Context) (bool, error)
 }
 
-// OAuthTokenRepository persists OAuth credentials independently of a broker client.
-type OAuthTokenRepository interface {
-	GetOAuthToken(context.Context, string) (OAuthToken, error)
-	SaveOAuthToken(context.Context, OAuthToken) error
-}
-
 // CandleCacheRepository provides the historical market-data cache used by the API.
 type CandleCacheRepository interface {
 	GetCachedCandles(context.Context, string, string, string) ([]broker.Candle, error)
@@ -39,15 +33,46 @@ type CandleCacheRepository interface {
 	PurgeExpiredCandles(context.Context) error
 }
 
+// BrokerCatalogRepository manages static providers and configured connection instances.
+type BrokerCatalogRepository interface {
+	ListBrokerProviders(context.Context) ([]BrokerProvider, error)
+	UpdateBrokerProviderConfig(context.Context, string, map[string]any, map[string]string) (BrokerProvider, error)
+	ListBrokerConnections(context.Context) ([]BrokerConnection, error)
+	GetBrokerConnection(context.Context, int64) (BrokerConnection, error)
+	UpsertBrokerConnection(context.Context, BrokerConnection) (BrokerConnection, error)
+	SetBrokerConnectionEnabled(context.Context, int64, bool) error
+	GetBrokerConnectionDeleteImpact(context.Context, int64) (BrokerConnectionDeleteImpact, error)
+	DeleteBrokerConnection(context.Context, int64) error
+}
+
+// IBKRGatewayRepository manages locally-owned Client Portal Gateway instances.
+// Broker connections intentionally do not reference these records: they only
+// store the network address of whichever Gateway they use, local or remote.
+type IBKRGatewayRepository interface {
+	ListIBKRGateways(context.Context) ([]IBKRGateway, error)
+	GetIBKRGateway(context.Context, int64) (IBKRGateway, error)
+	UpsertIBKRGateway(context.Context, IBKRGateway) (IBKRGateway, error)
+	DeleteIBKRGateway(context.Context, int64) error
+}
+
+// BrokerRuntimeConfigRepository exposes write-only broker secrets only to the
+// in-process adapter registry. It must never be used by HTTP response DTOs.
+type BrokerRuntimeConfigRepository interface {
+	GetBrokerProviderRuntimeConfig(context.Context, string) (BrokerProviderRuntimeConfig, error)
+	GetBrokerConnectionRuntimeConfig(context.Context, int64) (BrokerConnection, error)
+}
+
 // PortfolioRepository stores the latest broker projections and synchronization status.
 type PortfolioRepository interface {
-	ReplaceBrokerAccounts(context.Context, string, []broker.Account) error
-	ReplaceBrokerAccountDetails(context.Context, string, broker.Account) error
-	ReplaceBrokerCashBalances(context.Context, string, string, []broker.CashBalance) error
-	ReplaceBrokerAccountPositions(context.Context, string, string, []broker.Position) error
-	ReplaceBrokerAccountPerformance(context.Context, string, broker.DailyPerformance) error
-	RecordBrokerSyncError(context.Context, string, string, SyncDataType, error) error
+	ReplaceBrokerConnectionAccounts(context.Context, int64, []broker.Account) error
+	BrokerAccountConnectionIsPrimary(context.Context, int64, string) (bool, error)
+	ReplaceBrokerConnectionAccountDetails(context.Context, int64, broker.Account) error
+	ReplaceBrokerConnectionCashBalances(context.Context, int64, string, []broker.CashBalance) error
+	ReplaceBrokerConnectionAccountPositions(context.Context, int64, string, []broker.Position) error
+	ReplaceBrokerConnectionAccountPerformance(context.Context, int64, broker.DailyPerformance) error
+	RecordBrokerConnectionSyncError(context.Context, int64, string, SyncDataType, error) error
 	ListBrokerAccounts(context.Context) ([]BrokerAccount, error)
+	ListBrokerAccountsByConnection(context.Context, int64) ([]BrokerAccount, error)
 	ListBrokerAccountBalances(context.Context) ([]BrokerAccountBalance, error)
 	ListBrokerAccountPerformance(context.Context) ([]BrokerAccountPerformance, error)
 	ListBrokerPositions(context.Context) ([]broker.Position, error)
@@ -59,8 +84,10 @@ type PortfolioRepository interface {
 type Repository interface {
 	WatchlistRepository
 	SettingsRepository
-	OAuthTokenRepository
 	CandleCacheRepository
+	BrokerCatalogRepository
+	BrokerRuntimeConfigRepository
+	IBKRGatewayRepository
 	PortfolioRepository
 	Close() error
 }

@@ -25,33 +25,82 @@ func TestLocalAPIURL(t *testing.T) {
 	}
 }
 
-func TestNormalizeMigratesLegacySchwabRedirectURI(t *testing.T) {
-	cfg := Config{
-		Schwab: SchwabConfig{RedirectURI: "https://127.0.0.1:8182"},
-	}
-	cfg.Normalize(t.TempDir())
-	if got, want := cfg.Schwab.RedirectURI, "https://127.0.0.1:8182/callback"; got != want {
-		t.Fatalf("redirect URI: got %q, want %q", got, want)
+func TestResolveServerListenAddr(t *testing.T) {
+	t.Setenv("TRAIO_LISTEN_ADDR", "0.0.0.0:8080")
+	if got := ResolveServerListenAddr(); got != "0.0.0.0:8080" {
+		t.Fatalf("got %q", got)
 	}
 }
 
-func TestNormalizePreservesCustomSchwabRedirectURI(t *testing.T) {
-	const redirectURI = "https://127.0.0.1:8183/callback"
-	cfg := Config{
-		Schwab: SchwabConfig{RedirectURI: redirectURI},
+func TestResolveAllowedAPIHosts(t *testing.T) {
+	t.Setenv("TRAIO_ALLOWED_API_HOSTS", "api.example.com, admin.example.com ")
+	got := ResolveAllowedAPIHosts()
+	if len(got) != 2 || got[0] != "api.example.com" || got[1] != "admin.example.com" {
+		t.Fatalf("unexpected hosts: %#v", got)
 	}
-	cfg.Normalize(t.TempDir())
-	if cfg.Schwab.RedirectURI != redirectURI {
-		t.Fatalf("redirect URI changed: got %q, want %q", cfg.Schwab.RedirectURI, redirectURI)
+}
+
+func TestResolveIBKRProxyURL(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_PROXY_URL", " https://ibkr.example.com/ ")
+	if got := ResolveIBKRProxyURL(); got != "https://ibkr.example.com" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveIBKRGatewayLifecycle(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "persistent")
+	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecyclePersistent {
+		t.Fatalf("got %q", got)
+	}
+
+	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "managed")
+	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecycleManaged {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveIBKRGatewayLifecycleInvalidDefaultsToManaged(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "invalid")
+	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecycleManaged {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDefaultGatewayDirectories(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "alice")
+	desktopRuntime := DefaultDesktopRuntimeDir(home)
+	if want := filepath.Join(home, "Library", "Application Support", "Traio"); desktopRuntime != want {
+		t.Fatalf("desktop runtime: got %q, want %q", desktopRuntime, want)
+	}
+	if got, want := DefaultIBKRGatewayDir(desktopRuntime, "paper-local"), filepath.Join(desktopRuntime, "ibkr-gateways", "paper-local"); got != want {
+		t.Fatalf("desktop Gateway: got %q, want %q", got, want)
+	}
+	if got, want := DefaultIBKRGatewayDir(DefaultServerRuntimeDir, "live"), filepath.Join(DefaultServerRuntimeDir, "ibkr-gateways", "live"); got != want {
+		t.Fatalf("server Gateway: got %q, want %q", got, want)
+	}
+}
+
+func TestDefaultConfigUsesManagedGatewayRoot(t *testing.T) {
+	runtimeDir := t.TempDir()
+	cfg := IBKRConfig{}
+	cfg.normalize(runtimeDir)
+	if got, want := cfg.GatewayDir, DefaultIBKRGatewayDir(runtimeDir, "local"); got != want {
+		t.Fatalf("default Gateway directory: got %q, want %q", got, want)
+	}
+}
+
+func TestDefaultIBKRGatewayDirRejectsUnsafeKey(t *testing.T) {
+	for _, key := range []string{"", ".", "..", "../outside", "nested/gateway", `nested\gateway`, "/absolute"} {
+		if got := DefaultIBKRGatewayDir(t.TempDir(), key); got != "" {
+			t.Fatalf("key %q produced unsafe default %q", key, got)
+		}
 	}
 }
 
 func TestNormalizeAlpacaBaseURL(t *testing.T) {
-	cfg := Config{
-		Alpaca: AlpacaConfig{BaseURL: "https://paper-api.alpaca.markets/v2/"},
-	}
-	cfg.Normalize(t.TempDir())
-	if got, want := cfg.Alpaca.BaseURL, "https://paper-api.alpaca.markets"; got != want {
+	cfg := AlpacaConfig{BaseURL: "https://paper-api.alpaca.markets/v2/"}
+	cfg.Normalize()
+	if got, want := cfg.BaseURL, "https://paper-api.alpaca.markets"; got != want {
 		t.Fatalf("base URL: got %q, want %q", got, want)
 	}
 }

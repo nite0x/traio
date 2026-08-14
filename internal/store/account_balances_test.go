@@ -10,19 +10,20 @@ import (
 func TestReplaceBrokerCashBalancesStoresEveryAccount(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
+	connection := createTestConnection(t, st, "default")
 	accounts := []broker.Account{
 		{ID: "U1", BaseCurrency: "USD"},
 		{ID: "U2", BaseCurrency: "TWD"},
 	}
-	if err := st.ReplaceBrokerAccounts(ctx, "ibkr", accounts); err != nil {
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, accounts); err != nil {
 		t.Fatalf("replace accounts: %v", err)
 	}
-	if err := st.ReplaceBrokerCashBalances(ctx, "ibkr", "U1", []broker.CashBalance{
+	if err := st.ReplaceBrokerConnectionCashBalances(ctx, connection.ID, "U1", []broker.CashBalance{
 		{Currency: "USD", Total: 500, Settled: 450, ExchangeRate: 1, IsBaseCurrency: true},
 	}); err != nil {
 		t.Fatalf("replace U1 cash balances: %v", err)
 	}
-	if err := st.ReplaceBrokerCashBalances(ctx, "ibkr", "U2", []broker.CashBalance{
+	if err := st.ReplaceBrokerConnectionCashBalances(ctx, connection.ID, "U2", []broker.CashBalance{
 		{Currency: "TWD", Total: 12000, Settled: 11000, ExchangeRate: 1, IsBaseCurrency: true},
 	}); err != nil {
 		t.Fatalf("replace U2 cash balances: %v", err)
@@ -42,7 +43,7 @@ func TestReplaceBrokerCashBalancesStoresEveryAccount(t *testing.T) {
 		t.Fatalf("unexpected second account balance: %#v", balances[1])
 	}
 
-	if err := st.ReplaceBrokerAccounts(ctx, "IBKR", accounts[1:]); err != nil {
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, accounts[1:]); err != nil {
 		t.Fatalf("replace account list again: %v", err)
 	}
 	balances, err = st.ListBrokerAccountBalances(ctx)

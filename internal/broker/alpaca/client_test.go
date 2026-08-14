@@ -18,9 +18,15 @@ func TestListPositions(t *testing.T) {
 		switch r.URL.Path {
 		case "/v2/account":
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"id":             "acct-1",
-				"account_number": "PA123",
-				"currency":       "USD",
+				"id":                "acct-1",
+				"account_number":    "PA123",
+				"status":            "ACTIVE",
+				"currency":          "USD",
+				"cash":              "500",
+				"equity":            "720",
+				"last_equity":       "700",
+				"buying_power":      "1000",
+				"long_market_value": "220",
 			})
 		case "/v2/positions":
 			_ = json.NewEncoder(w).Encode([]map[string]string{
@@ -55,6 +61,23 @@ func TestListPositions(t *testing.T) {
 	}
 	if positions[0].Symbol != "AAPL" || positions[0].Quantity != 2 {
 		t.Fatalf("unexpected position: %+v", positions[0])
+	}
+
+	accounts, err := client.ListAccounts(context.Background())
+	if err != nil || len(accounts) != 1 || accounts[0].ID != "PA123" {
+		t.Fatalf("unexpected accounts: accounts=%+v err=%v", accounts, err)
+	}
+	balances, err := client.GetCashBalances(context.Background(), "PA123")
+	if err != nil || len(balances) != 1 || balances[0].Total != 500 {
+		t.Fatalf("unexpected cash balances: balances=%+v err=%v", balances, err)
+	}
+	accountPositions, err := client.ListAccountPositions(context.Background(), "PA123")
+	if err != nil || len(accountPositions) != 1 || accountPositions[0].Symbol != "AAPL" {
+		t.Fatalf("unexpected account positions: positions=%+v err=%v", accountPositions, err)
+	}
+	performance, err := client.GetDailyPerformance(context.Background(), "PA123")
+	if err != nil || performance.DailyPnL != 20 || performance.NetLiquidation != 720 {
+		t.Fatalf("unexpected daily performance: performance=%+v err=%v", performance, err)
 	}
 }
 

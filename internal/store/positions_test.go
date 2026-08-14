@@ -21,11 +21,12 @@ func newTestStore(t *testing.T) *Store {
 func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	if err := st.ReplaceBrokerAccounts(ctx, "ibkr", []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+	connection := createTestConnection(t, st, "default")
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
 		t.Fatalf("replace accounts: %v", err)
 	}
 
-	err := st.ReplaceBrokerAccountPositions(ctx, "ibkr", "U1", []broker.Position{{
+	err := st.ReplaceBrokerConnectionAccountPositions(ctx, connection.ID, "U1", []broker.Position{{
 		Symbol:      "aapl",
 		ConID:       265598,
 		Quantity:    2,
@@ -42,9 +43,11 @@ func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 	var assetType, assetKey, symbol, currency string
 	var avgCost, unrealized float64
 	if err := st.db.QueryRow(`
-		SELECT asset_type, asset_key, symbol, currency, avg_cost, unrealized_pnl
-		FROM broker_asset_positions
-		WHERE broker = 'IBKR' AND account = 'U1'`).Scan(
+		SELECT x.asset_type, x.asset_key, x.symbol, x.currency, x.avg_cost, x.unrealized_pnl
+		FROM broker_asset_positions x
+		JOIN broker_accounts a ON a.id = x.account_id
+		JOIN broker_providers p ON p.id = a.provider_id
+		WHERE p.code = 'IBKR' AND a.provider_account_id = 'U1'`).Scan(
 		&assetType, &assetKey, &symbol, &currency, &avgCost, &unrealized,
 	); err != nil {
 		t.Fatalf("read asset projection: %v", err)
@@ -59,16 +62,23 @@ func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 
 func TestBrokerAccountBalancesBelongToAccount(t *testing.T) {
 	st := newTestStore(t)
+	ctx := context.Background()
+	connection := createTestConnection(t, st, "default")
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+		t.Fatalf("seed broker account: %v", err)
+	}
+	account, err := st.ListBrokerAccounts(ctx)
+	if err != nil || len(account) != 1 {
+		t.Fatalf("list broker account: accounts=%#v err=%v", account, err)
+	}
 	if _, err := st.db.Exec(`
-		INSERT INTO broker_accounts (broker, account, currency, synced_at)
-		VALUES ('IBKR', 'U1', 'USD', '2026-01-01T00:00:00Z');
 		INSERT INTO broker_account_balances (
-			broker, account, currency, net_liquidation, total_cash_value,
+			account_id, currency, net_liquidation, total_cash_value,
 			gross_position_value, buying_power, unrealized_pnl, realized_pnl, synced_at
 		) VALUES (
-			'IBKR', 'U1', 'USD', 1250, 500, 750, 1000, 150, 25, '2026-01-01T00:00:00Z'
+			?, 'USD', 1250, 500, 750, 1000, 150, 25, '2026-01-01T00:00:00Z'
 		);
-	`); err != nil {
+	`, account[0].ID); err != nil {
 		t.Fatalf("seed account balance: %v", err)
 	}
 
@@ -76,15 +86,15 @@ func TestBrokerAccountBalancesBelongToAccount(t *testing.T) {
 	if err := st.db.QueryRow(`
 		SELECT net_liquidation, total_cash_value
 		FROM broker_account_balances
-		WHERE broker = 'IBKR' AND account = 'U1' AND currency = 'USD'
-	`).Scan(&netLiquidation, &cashValue); err != nil {
+		WHERE account_id = ? AND currency = 'USD'
+	`, account[0].ID).Scan(&netLiquidation, &cashValue); err != nil {
 		t.Fatalf("read account balance: %v", err)
 	}
 	if netLiquidation != 1250 || cashValue != 500 {
 		t.Fatalf("unexpected account balance: net_liquidation=%v total_cash_value=%v", netLiquidation, cashValue)
 	}
 
-	if _, err := st.db.Exec(`DELETE FROM broker_accounts WHERE broker = 'IBKR' AND account = 'U1'`); err != nil {
+	if _, err := st.db.Exec(`DELETE FROM broker_accounts WHERE id = ?`, account[0].ID); err != nil {
 		t.Fatalf("delete broker account: %v", err)
 	}
 	var count int
@@ -98,17 +108,24 @@ func TestBrokerAccountBalancesBelongToAccount(t *testing.T) {
 
 func TestListBrokerPositionsReadsAssetProjection(t *testing.T) {
 	st := newTestStore(t)
+	ctx := context.Background()
+	connection := createTestConnection(t, st, "default")
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+		t.Fatalf("seed broker account: %v", err)
+	}
+	accounts, err := st.ListBrokerAccounts(ctx)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("list broker account: accounts=%#v err=%v", accounts, err)
+	}
 	if _, err := st.db.Exec(`
-		INSERT INTO broker_accounts (broker, account, currency, synced_at)
-		VALUES ('IBKR', 'U1', 'USD', '2026-01-01T00:00:00Z');
 		INSERT INTO broker_asset_positions (
-			broker, account, asset_type, asset_key, symbol, conid, currency,
+			account_id, asset_type, asset_key, symbol, conid, currency,
 			quantity, avg_cost, market_price, market_value, unrealized_pnl,
 			realized_pnl, synced_at
 		) VALUES
-			('IBKR', 'U1', 'cash', 'cash:USD', 'USD', NULL, 'USD', 1000, NULL, 1, 1000, NULL, NULL, '2026-01-01T00:00:00Z'),
-			('IBKR', 'U1', 'security', 'security:symbol:MSFT', 'MSFT', NULL, 'USD', 3, 200, 250, 750, 150, 0, '2026-01-01T00:00:00Z');
-	`); err != nil {
+			(?, 'cash', 'cash:USD', 'USD', NULL, 'USD', 1000, NULL, 1, 1000, NULL, NULL, '2026-01-01T00:00:00Z'),
+			(?, 'security', 'security:symbol:MSFT', 'MSFT', NULL, 'USD', 3, 200, 250, 750, 150, 0, '2026-01-01T00:00:00Z');
+	`, accounts[0].ID, accounts[0].ID); err != nil {
 		t.Fatalf("seed asset projection: %v", err)
 	}
 

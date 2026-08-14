@@ -37,8 +37,13 @@ api-token
 
 # IBKR Gateway bundle (ship locally, do not commit binaries)
 ibkr-gateway/
+ibkr-gateways/
 third_party/clientportal.gw/*
 !third_party/clientportal.gw/README.md
+
+# Runtime state
+*.audit.jsonl
+*.lock
 
 # Logs
 *.log

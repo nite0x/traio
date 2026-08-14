@@ -7,19 +7,17 @@ import (
 	"github.com/nite/traio/internal/config"
 )
 
-// Broker combines the IBKR data client and Client Portal Gateway lifecycle
-// into the minimum first-class broker capability set.
+// Broker is an IBKR connection adapter. It talks to a configured Client Portal
+// Gateway address but does not own or manage that Gateway process.
 type Broker struct {
-	client  *Client
-	gateway *GatewayManager
+	client *Client
 }
 
 var _ brokerapi.Broker = (*Broker)(nil)
 
 func NewBroker(cfg config.IBKRConfig) *Broker {
 	return &Broker{
-		client:  New(cfg),
-		gateway: NewGatewayManager(cfg),
+		client: New(cfg),
 	}
 }
 
@@ -27,29 +25,20 @@ func (b *Broker) Client() *Client {
 	return b.client
 }
 
-func (b *Broker) Gateway() *GatewayManager {
-	return b.gateway
-}
-
 func (b *Broker) SetConfig(cfg config.IBKRConfig) {
 	b.client.SetConfig(cfg)
-	b.gateway.UpdateConfig(cfg)
 }
 
 func (b *Broker) BeginLogin(ctx context.Context) (brokerapi.LoginAction, error) {
-	if err := b.gateway.StartGateway(ctx); err != nil {
-		return brokerapi.LoginAction{}, err
-	}
-	status := b.gateway.Status()
-	loginURL := status.LoginURL
-	if loginURL == "" && !status.Authenticated {
-		loginURL = b.gateway.LoginURL()
-	}
-	return brokerapi.LoginAction{
-		URL:           loginURL,
-		Authenticated: status.Authenticated,
-		AccountID:     status.Account,
-	}, nil
+	return b.client.BeginLogin(ctx)
+}
+
+func (b *Broker) LoginStatus(ctx context.Context) (brokerapi.LoginAction, error) {
+	return b.client.LoginStatus(ctx)
+}
+
+func (b *Broker) BaseURL() string {
+	return b.client.BaseURL()
 }
 
 func (b *Broker) ListAccounts(ctx context.Context) ([]brokerapi.Account, error) {

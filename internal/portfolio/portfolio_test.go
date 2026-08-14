@@ -2,6 +2,7 @@ package portfolio
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +17,76 @@ func newTestSyncService(t *testing.T, sources ...Source) *SyncService {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	for i := range sources {
+		if sources[i].ConnectionID != 0 {
+			continue
+		}
+		connection, err := st.UpsertBrokerConnection(context.Background(), store.BrokerConnection{
+			ProviderCode:  sources[i].Name,
+			ConnectionKey: fmt.Sprintf("test-%d", i+1),
+			Name:          "Test connection",
+			Environment:   "test",
+			Enabled:       true,
+		})
+		if err != nil {
+			t.Fatalf("create test broker connection: %v", err)
+		}
+		sources[i].ConnectionID = connection.ID
+	}
 	return NewSyncService(st, sources...)
+}
+
+func TestSyncUsesOnlyPrimaryConnectionForSharedAccounts(t *testing.T) {
+	primary := &fakeBroker{}
+	secondary := &fakeBroker{}
+	svc := newTestSyncService(t,
+		Source{Name: "IBKR", Broker: primary},
+		Source{Name: "IBKR", Broker: secondary},
+	)
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync shared accounts: %v", err)
+	}
+	if primary.detailCalls != 2 || primary.positionCalls != 2 {
+		t.Fatalf("primary connection did not sync projections: %#v", primary)
+	}
+	if secondary.listAccountCalls != 1 || secondary.detailCalls != 0 || secondary.positionCalls != 0 {
+		t.Fatalf("secondary connection duplicated account projections: %#v", secondary)
+	}
+	accounts, err := svc.store.ListBrokerAccounts(context.Background())
+	if err != nil || len(accounts) != 2 {
+		t.Fatalf("shared accounts were duplicated: accounts=%#v err=%v", accounts, err)
+	}
+	for _, account := range accounts {
+		if len(account.ConnectionIDs) != 2 {
+			t.Fatalf("account missing connection relationships: %#v", account)
+		}
+	}
+	positions, err := svc.AllPositions(context.Background())
+	if err != nil || len(positions) != 2 {
+		t.Fatalf("shared account positions duplicated: positions=%#v err=%v", positions, err)
+	}
+}
+
+func TestSyncConnectionOnlyRefreshesSelectedSource(t *testing.T) {
+	first := &fakeBroker{}
+	second := &fakeBroker{}
+	svc := newTestSyncService(t,
+		Source{Name: "IBKR", Broker: first},
+		Source{Name: "IBKR", Broker: second},
+	)
+	secondConnectionID := svc.sources[1].ConnectionID
+	if err := svc.SyncConnection(context.Background(), secondConnectionID); err != nil {
+		t.Fatalf("sync selected connection: %v", err)
+	}
+	if first.listAccountCalls != 0 {
+		t.Fatalf("unselected connection was synchronized: %#v", first)
+	}
+	if second.listAccountCalls != 1 || second.detailCalls != 2 || second.positionCalls != 2 {
+		t.Fatalf("selected connection was not fully synchronized: %#v", second)
+	}
+	if err := svc.SyncConnection(context.Background(), 999999); err == nil {
+		t.Fatal("missing sync source was accepted")
+	}
 }
 
 func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
@@ -54,5 +124,26 @@ func TestSyncSkipsWhenDisabled(t *testing.T) {
 	}
 	if provider.listAccountCalls != 0 {
 		t.Fatalf("expected no broker calls when sync is disabled, got %d", provider.listAccountCalls)
+	}
+}
+
+func TestSyncSkipsDisabledConnection(t *testing.T) {
+	provider := &fakeBroker{}
+	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
+	connectionID := svc.sources[0].ConnectionID
+	controller, ok := svc.store.(interface {
+		SetBrokerConnectionEnabled(context.Context, int64, bool) error
+	})
+	if !ok {
+		t.Fatal("test store cannot disable broker connections")
+	}
+	if err := controller.SetBrokerConnectionEnabled(context.Background(), connectionID, false); err != nil {
+		t.Fatalf("disable connection: %v", err)
+	}
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync disabled connection: %v", err)
+	}
+	if provider.listAccountCalls != 0 {
+		t.Fatalf("disabled connection called broker %d times", provider.listAccountCalls)
 	}
 }

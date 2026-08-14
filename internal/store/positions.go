@@ -62,12 +62,16 @@ func nullableFloat(value float64) any {
 
 func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT symbol, COALESCE(conid, 0), quantity, COALESCE(avg_cost, 0),
-			COALESCE(market_price, 0), market_value,
-			unrealized_pnl, realized_pnl, currency, account, broker, synced_at
-		FROM broker_asset_positions
-		WHERE asset_type <> 'cash'
-		ORDER BY broker, account, market_value DESC, symbol`)
+		SELECT x.account_id, COALESCE(ac.connection_id, 0), x.symbol, COALESCE(x.conid, 0), x.quantity, COALESCE(x.avg_cost, 0),
+			COALESCE(x.market_price, 0), x.market_value,
+			x.unrealized_pnl, x.realized_pnl, x.currency,
+			a.provider_account_id, p.code, x.synced_at
+		FROM broker_asset_positions x
+		JOIN broker_accounts a ON a.id = x.account_id
+		JOIN broker_providers p ON p.id = a.provider_id
+		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
+		WHERE x.asset_type <> 'cash'
+		ORDER BY p.code, a.provider_account_id, x.market_value DESC, x.symbol`)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +82,7 @@ func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, err
 		var position broker.Position
 		var unrealized, realized sql.NullFloat64
 		if err := rows.Scan(
+			&position.BrokerAccountID, &position.ConnectionID,
 			&position.Symbol, &position.ConID, &position.Quantity, &position.AvgCost,
 			&position.MarketPrice, &position.MarketValue, &unrealized, &realized,
 			&position.Currency, &position.Account, &position.Broker, &position.SyncedAt,

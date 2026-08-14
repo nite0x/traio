@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +47,10 @@ func main() {
 
 	cfg := settingsMgr.Get()
 
-	brokers := runtime.BuildBrokers(cfg, st)
+	brokers, err := runtime.BuildBrokers(cfg, st, baseDir)
+	if err != nil {
+		log.Fatalf("brokers: %v", err)
+	}
 	brokerSync := runtime.BuildBrokerSync(st, brokers)
 	brokerSync.SetSyncConfig(cfg.BrokerSync)
 	accountEquity := runtime.BuildAccountEquity(brokers)
@@ -56,7 +58,10 @@ func main() {
 	aiSvc := ai.New(cfg.Claude)
 
 	settingsMgr.OnApply(func(updated config.Config) {
-		brokers.ApplyConfig(updated)
+		if err := brokers.ApplyConfig(context.Background(), updated); err != nil {
+			log.Printf("apply broker config: %v", err)
+			return
+		}
 		brokerSync.SetSyncConfig(updated.BrokerSync)
 		brokerSync.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
@@ -79,21 +84,40 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	startedAt := time.Now()
+	ibkrLoginProxy, err := api.NewIBKRLoginProxy(config.ResolveIBKRProxyURL(), brokers)
+	if err != nil {
+		log.Fatalf("IBKR login proxy: %v", err)
+	}
 	deps := api.Deps{
-		Watchlists:  st,
-		CandleCache: st,
-		Settings:    settingsMgr,
-		Schwab:      brokers.Schwab,
-		Alpaca:      brokers.Alpaca,
-		IBKR:        brokers.Gateway,
-		Instruments: brokers.Instruments,
-		Quotes:      brokers.Quotes,
-		Candles:     brokers.Candles,
-		BrokerSync:  brokerSync,
-		Account:     accountEquity,
-		News:        newsSvc,
-		AI:          aiSvc,
-		APIToken:    apiToken,
+		Brokers:       st,
+		BrokerRuntime: brokers,
+		OnBrokersChanged: func(ctx context.Context) error {
+			if err := brokers.Reload(ctx); err != nil {
+				return err
+			}
+			brokerSync.SetSources(brokers.SyncSources()...)
+			accountEquity.SetSources(brokers.AccountSources()...)
+			brokerSync.Invalidate()
+			return nil
+		},
+		Watchlists:      st,
+		CandleCache:     st,
+		Settings:        settingsMgr,
+		Schwab:          brokers.Schwab,
+		Alpaca:          brokers.Alpaca,
+		IBKR:            brokers.Gateway,
+		IBKRGateways:    brokers,
+		Instruments:     brokers.Instruments,
+		Quotes:          brokers.Quotes,
+		Candles:         brokers.Candles,
+		BrokerSync:      brokerSync,
+		Account:         accountEquity,
+		News:            newsSvc,
+		AI:              aiSvc,
+		APIToken:        apiToken,
+		AllowedAPIHosts: config.ResolveAllowedAPIHosts(),
+		IBKRLoginProxy:  ibkrLoginProxy,
+		RuntimeDir:      baseDir,
 	}
 
 	router := api.NewRouter(deps, api.ServerControl{
@@ -108,23 +132,28 @@ func main() {
 		log.Printf("write pid: %v", err)
 	}
 
-	port := config.ResolveServerPort()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	apiURL := config.LocalAPIURL(port)
+	addr := config.ResolveServerListenAddr()
+	apiURL := config.ResolveServerAPIURL()
 	srv := &http.Server{Addr: addr, Handler: router}
 	go func() {
-		log.Printf("traio server listening on %s", apiURL)
+		log.Printf("traio server listening on %s (%s)", addr, apiURL)
+		if ibkrLoginProxy != nil {
+			log.Printf("IBKR login proxy enabled at %s", ibkrLoginProxy.ExternalURL())
+		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()
 
 	<-quit
-	log.Println("shutting down traio-server (IBKR gateway stays running)")
+	log.Println("shutting down traio-server")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
+	if err := brokers.ShutdownGateways(); err != nil {
+		log.Printf("shutdown IBKR gateways: %v", err)
+	}
 
 	runtime.RemovePID(baseDir)
 }

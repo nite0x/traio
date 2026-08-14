@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"sync"
 
 	"github.com/nite/traio/internal/broker"
 )
@@ -14,6 +15,7 @@ type Source struct {
 
 // Service loads account equity directly from broker APIs until a SQLite projection exists.
 type Service struct {
+	mu      sync.RWMutex
 	sources []Source
 }
 
@@ -21,10 +23,23 @@ func New(sources ...Source) *Service {
 	return &Service{sources: sources}
 }
 
+func (s *Service) SetSources(sources ...Source) {
+	s.mu.Lock()
+	s.sources = append([]Source(nil), sources...)
+	s.mu.Unlock()
+}
+
+func (s *Service) accountSources() []Source {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Source(nil), s.sources...)
+}
+
 // Timeline returns historical equity and the best available realtime summary.
 // Sources are tried in registration order; historical points prefer the longest series.
 func (s *Service) Timeline(ctx context.Context) ([]broker.AccountEquityPoint, broker.AccountSummary, error) {
-	if len(s.sources) == 0 {
+	sources := s.accountSources()
+	if len(sources) == 0 {
 		return []broker.AccountEquityPoint{}, broker.AccountSummary{}, nil
 	}
 
@@ -33,7 +48,7 @@ func (s *Service) Timeline(ctx context.Context) ([]broker.AccountEquityPoint, br
 	var summary broker.AccountSummary
 	var summaryErr error
 
-	for _, source := range s.sources {
+	for _, source := range sources {
 		if source.Provider == nil {
 			continue
 		}
@@ -50,7 +65,7 @@ func (s *Service) Timeline(ctx context.Context) ([]broker.AccountEquityPoint, br
 		}
 	}
 
-	for _, source := range s.sources {
+	for _, source := range sources {
 		if source.Provider == nil {
 			continue
 		}

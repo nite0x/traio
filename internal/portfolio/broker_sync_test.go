@@ -74,6 +74,10 @@ func TestSyncBrokerRefreshesEveryAccountCapability(t *testing.T) {
 	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("sync broker snapshot: %v", err)
 	}
+	connection, err := svc.store.GetBrokerConnection(context.Background(), svc.sources[0].ConnectionID)
+	if err != nil || connection.Status != store.BrokerConnectionStatusConnected || connection.LastAuthenticatedAt == "" {
+		t.Fatalf("successful account discovery did not authenticate connection: connection=%#v err=%v", connection, err)
+	}
 	if provider.loginCalls != 0 {
 		t.Fatalf("periodic sync must not open login, got %d calls", provider.loginCalls)
 	}

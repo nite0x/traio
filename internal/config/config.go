@@ -13,9 +13,6 @@ type Config struct {
 	Database   DatabaseConfig   `json:"database" yaml:"database"`
 	BrokerSync BrokerSyncConfig `json:"broker_sync" yaml:"broker_sync"`
 	SnapTrade  SnapTradeConfig  `json:"snaptrade" yaml:"snaptrade"`
-	Schwab     SchwabConfig     `json:"schwab" yaml:"schwab"`
-	Alpaca     AlpacaConfig     `json:"alpaca" yaml:"alpaca"`
-	IBKR       IBKRConfig       `json:"ibkr" yaml:"ibkr"`
 	Finnhub    FinnhubConfig    `json:"finnhub" yaml:"finnhub"`
 	Claude     ClaudeConfig     `json:"claude" yaml:"claude"`
 }
@@ -30,6 +27,12 @@ const (
 	DefaultServerPort = 38180
 	// DevServerPort is used for local development (go run, make server, tauri dev).
 	DevServerPort = 38181
+
+	IBKRGatewayLifecycleManaged    = "managed"
+	IBKRGatewayLifecyclePersistent = "persistent"
+
+	DeploymentModeServer    = "server"
+	DefaultServerRuntimeDir = "/var/lib/traio"
 )
 
 type DatabaseConfig struct {
@@ -71,6 +74,7 @@ type IBKRConfig struct {
 	BundledGatewayDir string `json:"bundled_gateway_dir" yaml:"bundled_gateway_dir"`
 	GatewayPort       int    `json:"gateway_port" yaml:"gateway_port"`
 	GatewayURL        string `json:"gateway_url" yaml:"gateway_url"`
+	GatewayLifecycle  string `json:"gateway_lifecycle" yaml:"gateway_lifecycle"`
 	DownloadProxy     string `json:"download_proxy" yaml:"download_proxy"`
 	// GatewayProxyHost overrides the IBKR API endpoint in conf.yaml.
 	// Keep the official https://api.ibkr.com default unless IBKR documents
@@ -92,29 +96,13 @@ type ClaudeConfig struct {
 
 // Default returns built-in defaults; no external config file required.
 func Default(baseDir string) Config {
-	bundledGW := ResolveBundledGatewayDir()
-	if bundledGW == "" {
-		bundledGW = filepath.Join(baseDir, "third_party", "clientportal.gw")
-	}
 	cfg := Config{
 		Database: DatabaseConfig{
 			Path: filepath.Join(baseDir, "data", "traio.db"),
 		},
 		BrokerSync: BrokerSyncConfig{Enabled: true},
 		SnapTrade:  SnapTradeConfig{},
-		Schwab: SchwabConfig{
-			RedirectURI: "https://127.0.0.1:8182/callback",
-		},
-		Alpaca: AlpacaConfig{
-			BaseURL: "https://paper-api.alpaca.markets",
-		},
-		IBKR: IBKRConfig{
-			GatewayDir:        filepath.Join(baseDir, "ibkr-gateway"),
-			BundledGatewayDir: bundledGW,
-			GatewayPort:       5680,
-			GatewayURL:        "https://localhost:5680",
-		},
-		Finnhub: FinnhubConfig{},
+		Finnhub:    FinnhubConfig{},
 		Claude: ClaudeConfig{
 			Model: "claude-sonnet-4-20250514",
 		},
@@ -130,14 +118,9 @@ func (c *Config) Normalize(baseDir string) {
 	} else if !filepath.IsAbs(c.Database.Path) {
 		c.Database.Path = filepath.Join(baseDir, c.Database.Path)
 	}
-	if c.Schwab.RedirectURI == "" || c.Schwab.RedirectURI == "https://127.0.0.1:8182" {
-		c.Schwab.RedirectURI = "https://127.0.0.1:8182/callback"
-	}
-	c.Alpaca.Normalize()
 	if c.Claude.Model == "" {
 		c.Claude.Model = "claude-sonnet-4-20250514"
 	}
-	c.IBKR.normalize(baseDir)
 }
 
 func (c *AlpacaConfig) Normalize() {
@@ -154,7 +137,7 @@ func (c *IBKRConfig) normalize(baseDir string) {
 	c.resolvePath(&c.GatewayDir, baseDir)
 	c.resolvePath(&c.BundledGatewayDir, baseDir)
 	if c.GatewayDir == "" {
-		c.GatewayDir = filepath.Join(baseDir, "ibkr-gateway")
+		c.GatewayDir = DefaultIBKRGatewayDir(baseDir, "local")
 	}
 	if c.BundledGatewayDir == "" {
 		c.BundledGatewayDir = ResolveBundledGatewayDir()
@@ -169,6 +152,7 @@ func (c *IBKRConfig) normalize(baseDir string) {
 		c.GatewayURL = fmt.Sprintf("https://localhost:%d", c.GatewayPort)
 	}
 	c.GatewayURL = strings.TrimSuffix(strings.TrimRight(c.GatewayURL, "/"), "/v1/api")
+	c.GatewayLifecycle = NormalizeIBKRGatewayLifecycle(c.GatewayLifecycle)
 	if c.FlexBaseURL == "" {
 		c.FlexBaseURL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
 	}
@@ -213,6 +197,64 @@ func ResolveServerAPIURL() string {
 	return LocalAPIURL(ResolveServerPort())
 }
 
+// ResolveServerListenAddr selects the socket address used by traio-server.
+// Docker deployments can set TRAIO_LISTEN_ADDR=0.0.0.0:8080 while desktop
+// builds retain the loopback-only default.
+func ResolveServerListenAddr() string {
+	if value := strings.TrimSpace(os.Getenv("TRAIO_LISTEN_ADDR")); value != "" {
+		return value
+	}
+	return fmt.Sprintf("127.0.0.1:%d", ResolveServerPort())
+}
+
+// ResolveAllowedAPIHosts returns exact, comma-separated public API hosts that
+// are allowed in addition to loopback hosts.
+func ResolveAllowedAPIHosts() []string {
+	parts := strings.Split(os.Getenv("TRAIO_ALLOWED_API_HOSTS"), ",")
+	hosts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if host := strings.TrimSpace(part); host != "" {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+// ResolveIBKRProxyURL is the public origin dedicated to the IBKR login proxy,
+// for example https://alice-ibkr.traio.example.com.
+func ResolveIBKRProxyURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("TRAIO_IBKR_PROXY_URL")), "/")
+}
+
+// ResolveIBKRGatewayLifecycle selects how the Gateway behaves when Traio
+// exits. Packaged desktop builds preserve the local session; server and Docker
+// deployments own the Gateway for the lifetime of the Traio process.
+func ResolveIBKRGatewayLifecycle() string {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_IBKR_GATEWAY_LIFECYCLE")))
+	switch value {
+	case IBKRGatewayLifecycleManaged, IBKRGatewayLifecyclePersistent:
+		return value
+	case "":
+		if IsEmbedded() {
+			return IBKRGatewayLifecyclePersistent
+		}
+	}
+	return IBKRGatewayLifecycleManaged
+}
+
+// NormalizeIBKRGatewayLifecycle validates a connection override and otherwise
+// applies the process-level desktop/server default.
+func NormalizeIBKRGatewayLifecycle(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case IBKRGatewayLifecycleManaged:
+		return IBKRGatewayLifecycleManaged
+	case IBKRGatewayLifecyclePersistent:
+		return IBKRGatewayLifecyclePersistent
+	default:
+		return ResolveIBKRGatewayLifecycle()
+	}
+}
+
 // ResolveBootstrapDatabase selects the process database from the environment.
 // Desktop and development runs default to the embedded SQLite database.
 func ResolveBootstrapDatabase(baseDir string) BootstrapDatabaseConfig {
@@ -227,10 +269,12 @@ func ResolveBootstrapDatabase(baseDir string) BootstrapDatabaseConfig {
 	return BootstrapDatabaseConfig{Driver: driver, DataSource: dataSource}
 }
 
-// ResolveRuntimeDir is the writable data root (App Support when embedded in .app).
+// ResolveRuntimeDir is the writable data root. Explicit configuration wins;
+// packaged desktop apps use Application Support, and server deployments use
+// /var/lib/traio.
 func ResolveRuntimeDir() string {
-	if v := os.Getenv("TRAIO_RUNTIME_DIR"); v != "" {
-		_ = os.MkdirAll(v, 0o755)
+	if v := strings.TrimSpace(os.Getenv("TRAIO_RUNTIME_DIR")); v != "" {
+		_ = os.MkdirAll(v, 0o700)
 		return v
 	}
 	if IsEmbedded() {
@@ -238,11 +282,37 @@ func ResolveRuntimeDir() string {
 		if err != nil {
 			return "."
 		}
-		dir := filepath.Join(home, "Library", "Application Support", "Traio")
-		_ = os.MkdirAll(dir, 0o755)
+		dir := DefaultDesktopRuntimeDir(home)
+		_ = os.MkdirAll(dir, 0o700)
 		return dir
 	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TRAIO_DEPLOYMENT_MODE")), DeploymentModeServer) {
+		_ = os.MkdirAll(DefaultServerRuntimeDir, 0o700)
+		return DefaultServerRuntimeDir
+	}
 	return ResolveBaseDir()
+}
+
+// DefaultDesktopRuntimeDir returns the writable root used by the packaged
+// macOS desktop application.
+func DefaultDesktopRuntimeDir(home string) string {
+	return filepath.Join(home, "Library", "Application Support", "Traio")
+}
+
+// DefaultIBKRGatewayRoot contains all managed Gateway instances for one Traio
+// runtime. Each instance gets a stable directory derived from gateway_key.
+func DefaultIBKRGatewayRoot(runtimeDir string) string {
+	return filepath.Join(runtimeDir, "ibkr-gateways")
+}
+
+// DefaultIBKRGatewayDir returns an empty string when gatewayKey is unsafe to
+// use as a path component. Callers may still supply a validated absolute path.
+func DefaultIBKRGatewayDir(runtimeDir, gatewayKey string) string {
+	key := strings.TrimSpace(gatewayKey)
+	if key == "" || key == "." || key == ".." || filepath.IsAbs(key) || strings.ContainsAny(key, `/\`) {
+		return ""
+	}
+	return filepath.Join(DefaultIBKRGatewayRoot(runtimeDir), key)
 }
 
 // IsEmbedded reports whether this binary runs from a macOS .app bundle Resources folder.

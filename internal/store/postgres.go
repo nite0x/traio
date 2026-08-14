@@ -66,80 +66,6 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	data TEXT NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS broker_accounts (
-	broker TEXT NOT NULL,
-	account TEXT NOT NULL DEFAULT '',
-	display_name TEXT NOT NULL DEFAULT '',
-	account_type TEXT NOT NULL DEFAULT '',
-	status TEXT NOT NULL DEFAULT '',
-	currency TEXT NOT NULL DEFAULT '',
-	synced_at TEXT NOT NULL,
-	PRIMARY KEY (broker, account)
-);
-CREATE TABLE IF NOT EXISTS broker_account_balances (
-	broker TEXT NOT NULL,
-	account TEXT NOT NULL DEFAULT '',
-	currency TEXT NOT NULL DEFAULT '',
-	net_liquidation DOUBLE PRECISION NOT NULL DEFAULT 0,
-	total_cash_value DOUBLE PRECISION NOT NULL DEFAULT 0,
-	gross_position_value DOUBLE PRECISION NOT NULL DEFAULT 0,
-	buying_power DOUBLE PRECISION NOT NULL DEFAULT 0,
-	unrealized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-	realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-	settled_cash DOUBLE PRECISION NOT NULL DEFAULT 0,
-	exchange_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
-	is_base_currency BOOLEAN NOT NULL DEFAULT FALSE,
-	synced_at TEXT NOT NULL,
-	PRIMARY KEY (broker, account, currency),
-	FOREIGN KEY (broker, account) REFERENCES broker_accounts(broker, account) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS broker_asset_positions (
-	broker TEXT NOT NULL,
-	account TEXT NOT NULL DEFAULT '',
-	asset_type TEXT NOT NULL,
-	asset_key TEXT NOT NULL,
-	symbol TEXT NOT NULL DEFAULT '',
-	name TEXT NOT NULL DEFAULT '',
-	conid BIGINT,
-	currency TEXT NOT NULL DEFAULT '',
-	quantity DOUBLE PRECISION NOT NULL,
-	avg_cost DOUBLE PRECISION,
-	market_price DOUBLE PRECISION,
-	market_value DOUBLE PRECISION NOT NULL DEFAULT 0,
-	unrealized_pnl DOUBLE PRECISION,
-	realized_pnl DOUBLE PRECISION,
-	cost_basis DOUBLE PRECISION,
-	day_pnl DOUBLE PRECISION,
-	day_pnl_pct DOUBLE PRECISION,
-	raw_payload TEXT,
-	synced_at TEXT NOT NULL,
-	PRIMARY KEY (broker, account, asset_key),
-	FOREIGN KEY (broker, account) REFERENCES broker_accounts(broker, account) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol ON broker_asset_positions(symbol);
-CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key ON broker_asset_positions(asset_key);
-CREATE TABLE IF NOT EXISTS broker_account_performance (
-	broker TEXT NOT NULL,
-	account TEXT NOT NULL DEFAULT '',
-	daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-	net_liquidation DOUBLE PRECISION NOT NULL DEFAULT 0,
-	unrealized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
-	excess_liquidity DOUBLE PRECISION NOT NULL DEFAULT 0,
-	market_value DOUBLE PRECISION NOT NULL DEFAULT 0,
-	synced_at TEXT NOT NULL,
-	PRIMARY KEY (broker, account),
-	FOREIGN KEY (broker, account) REFERENCES broker_accounts(broker, account) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS broker_sync_status (
-	broker TEXT NOT NULL,
-	account TEXT NOT NULL DEFAULT '',
-	data_type TEXT NOT NULL,
-	synced_at TEXT NOT NULL DEFAULT '',
-	last_attempt_at TEXT NOT NULL,
-	last_error TEXT NOT NULL DEFAULT '',
-	item_count INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY (broker, account, data_type)
-);
 CREATE TABLE IF NOT EXISTS candle_cache (
 	symbol TEXT NOT NULL,
 	conid BIGINT NOT NULL,
@@ -161,5 +87,5 @@ INSERT INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0)
 			return err
 		}
 	}
-	return nil
+	return s.initializeBrokerModelPostgres()
 }

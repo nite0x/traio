@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestSQLiteRepositoryContract(t *testing.T) {
@@ -31,16 +30,6 @@ func runRepositoryContract(t *testing.T, repository Repository) {
 	loadedSettings, err := repository.GetSettings(ctx)
 	if err != nil || string(loadedSettings) != string(settings) {
 		t.Fatalf("get settings: data=%s err=%v", loadedSettings, err)
-	}
-
-	expiresAt := time.Now().UTC().Truncate(time.Second)
-	token := OAuthToken{Provider: "contract", AccessToken: "access", RefreshToken: "refresh", ExpiresAt: expiresAt}
-	if err := repository.SaveOAuthToken(ctx, token); err != nil {
-		t.Fatalf("save OAuth token: %v", err)
-	}
-	loadedToken, err := repository.GetOAuthToken(ctx, token.Provider)
-	if err != nil || loadedToken.AccessToken != token.AccessToken || !loadedToken.ExpiresAt.Equal(expiresAt) {
-		t.Fatalf("get OAuth token: token=%#v err=%v", loadedToken, err)
 	}
 
 	item, err := repository.UpsertWatchlistItem(ctx, WatchlistItem{GroupID: 1, Symbol: "aapl", Notes: "contract"})

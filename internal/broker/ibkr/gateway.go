@@ -34,6 +34,19 @@ func pidFile(gatewayDir string) string {
 	return filepath.Join(gatewayDir, "gateway.pid")
 }
 
+func processRecordFile(gatewayDir string) string {
+	return filepath.Join(gatewayDir, "gateway-process.json")
+}
+
+type gatewayProcessRecord struct {
+	Version     int    `json:"version"`
+	PID         int    `json:"pid"`
+	WrapperPID  int    `json:"wrapper_pid,omitempty"`
+	StartedAt   string `json:"started_at"`
+	GatewayDir  string `json:"gateway_dir"`
+	GatewayPort int    `json:"gateway_port"`
+}
+
 const (
 	gatewayDownloadURL  = "https://download2.interactivebrokers.com/portal/clientportal.gw.zip"
 	startupTimeout      = 30 * time.Second
@@ -61,6 +74,7 @@ type GatewayStatus struct {
 	Running           bool   `json:"running"`
 	Authenticated     bool   `json:"authenticated"`
 	Account           string `json:"account"`
+	Lifecycle         string `json:"lifecycle"`
 	SessionAgeSeconds int64  `json:"session_age_seconds"`
 	LoginMode         string `json:"login_mode"` // manual
 	LoginURL          string `json:"login_url,omitempty"`
@@ -97,6 +111,7 @@ type GatewayManager struct {
 }
 
 func NewGatewayManager(cfg config.IBKRConfig) *GatewayManager {
+	cfg.GatewayLifecycle = config.NormalizeIBKRGatewayLifecycle(cfg.GatewayLifecycle)
 	return &GatewayManager{
 		config:         cfg,
 		httpClient:     newGatewayHTTPClient(cfg.GatewayURL, 10*time.Second),
@@ -111,6 +126,15 @@ func (g *GatewayManager) LoginURL() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return strings.TrimRight(g.config.GatewayURL, "/") + "/sso/Login"
+}
+
+// BaseURL returns the private Client Portal Gateway origin used by this
+// connection. Callers must still enforce that it resolves to loopback before
+// exposing it through a reverse proxy.
+func (g *GatewayManager) BaseURL() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return strings.TrimRight(g.config.GatewayURL, "/")
 }
 
 func (g *GatewayManager) acquireProcessLock() error {
@@ -259,6 +283,16 @@ func (g *GatewayManager) Stop() {
 	}
 }
 
+// Shutdown applies the configured process lifecycle. Server and Docker
+// instances stop their Gateway; packaged desktop instances detach so the
+// authenticated session can survive a sidecar restart.
+func (g *GatewayManager) Shutdown() error {
+	g.mu.Lock()
+	keepSession := g.config.GatewayLifecycle == config.IBKRGatewayLifecyclePersistent
+	g.mu.Unlock()
+	return g.StopGateway(keepSession)
+}
+
 // StartGateway ensures the IBKR gateway process is running and monitored.
 func (g *GatewayManager) StartGateway(ctx context.Context) error {
 	return g.Start(ctx)
@@ -309,6 +343,7 @@ func (g *GatewayManager) Status() GatewayStatus {
 	stateUpdatedAt := g.stateUpdatedAt
 	gatewayURL := g.config.GatewayURL
 	gatewayDir := g.config.GatewayDir
+	lifecycle := g.config.GatewayLifecycle
 	pinnedVersion := g.release.Version
 	g.mu.Unlock()
 
@@ -316,6 +351,7 @@ func (g *GatewayManager) Status() GatewayStatus {
 	status := GatewayStatus{
 		Running:        online,
 		Account:        account,
+		Lifecycle:      lifecycle,
 		LoginMode:      g.loginMode(),
 		State:          state,
 		LastError:      lastError,
@@ -528,6 +564,7 @@ func secureGatewayRuntime(gatewayDir string) error {
 		filepath.Join(gatewayDir, "root", "conf.yaml"),
 		filepath.Join(gatewayDir, "root", "vertx.jks"),
 		pidFile(gatewayDir),
+		processRecordFile(gatewayDir),
 		installManifestPath(gatewayDir),
 	}
 	for _, path := range sensitiveFiles {
@@ -586,29 +623,20 @@ func pruneGatewayLogs(logDir string, before time.Time) error {
 }
 
 func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
-	if g.isOnline() {
-		pid, err := readPIDFile(pidFile(g.config.GatewayDir))
-		if err != nil || !processAlive(pid) || !g.gatewayProcessMatches(pid) {
-			return fmt.Errorf("gateway is online but is not owned by Traio; refusing to manage it")
+	// Reuse a validated Gateway that survived a persistent desktop shutdown.
+	// Recovery also migrates the old numeric PID file by resolving the process
+	// that actually owns this connection's configured listening port.
+	if record, err := g.loadOrRecoverOwnedProcess(); err == nil {
+		log.Printf("[IBKR] reusing existing gateway process (pid=%d)", record.PID)
+		if g.isOnline() || g.waitUntilOnline(ctx) {
+			return nil
 		}
-		return nil
-	}
-
-	// Reuse an already-running gateway process that survived a traio restart.
-	if pid, err := readPIDFile(pidFile(g.config.GatewayDir)); err == nil {
-		if processAlive(pid) {
-			if !g.gatewayProcessMatches(pid) {
-				return fmt.Errorf("gateway PID file points to unrecognized process %d; refusing to manage it", pid)
-			}
-			log.Printf("[IBKR] reusing existing gateway process (pid=%d)", pid)
-			if g.waitUntilOnline(ctx) {
-				return nil
-			}
-			if err := terminateProcess(pid); err != nil {
-				return fmt.Errorf("stop unresponsive gateway process %d: %w", pid, err)
-			}
-			_ = os.Remove(pidFile(g.config.GatewayDir))
+		if err := terminateProcess(record.PID); err != nil {
+			return fmt.Errorf("stop unresponsive gateway process %d: %w", record.PID, err)
 		}
+		g.removeProcessRecord()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
 	// Never terminate an arbitrary process merely because it occupies the
@@ -639,15 +667,17 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 	cmd.Dir = g.config.GatewayDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	isolateGatewayProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
 	}
 
-	// Detach: gateway lives beyond traio's context.
-	pid := cmd.Process.Pid
-	if err := writePIDFile(pidFile(g.config.GatewayDir), pid); err != nil {
-		_ = cmd.Process.Kill()
+	// Store the wrapper temporarily. Once the listener is ready this is replaced
+	// by the actual Java PID, while WrapperPID remains available for cleanup.
+	wrapperPID := cmd.Process.Pid
+	if err := writePIDFile(pidFile(g.config.GatewayDir), wrapperPID); err != nil {
+		_ = terminateGatewayProcessGroup(wrapperPID)
 		_ = cmd.Wait()
 		return fmt.Errorf("write gateway pid file: %w", err)
 	}
@@ -655,6 +685,36 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 	g.mu.Lock()
 	g.cmd = cmd
 	g.mu.Unlock()
+
+	log.Printf("[IBKR] gateway wrapper started (pid=%d)", wrapperPID)
+	if !g.waitUntilOnline(ctx) {
+		_ = terminateGatewayProcessGroup(wrapperPID)
+		_ = cmd.Wait()
+		g.removeProcessRecord()
+		return fmt.Errorf("gateway did not become ready within %s", startupTimeout)
+	}
+
+	pid, err := g.findGatewayListener()
+	if err != nil {
+		_ = terminateGatewayProcessGroup(wrapperPID)
+		_ = cmd.Wait()
+		g.removeProcessRecord()
+		return fmt.Errorf("identify gateway Java process: %w", err)
+	}
+	record, err := g.newProcessRecord(pid, wrapperPID)
+	if err != nil {
+		_ = terminateGatewayProcessGroup(wrapperPID)
+		_ = cmd.Wait()
+		g.removeProcessRecord()
+		return fmt.Errorf("record gateway Java process: %w", err)
+	}
+	if err := g.writeProcessRecord(record); err != nil {
+		_ = terminateGatewayProcessGroup(wrapperPID)
+		_ = cmd.Wait()
+		g.removeProcessRecord()
+		return fmt.Errorf("write gateway process record: %w", err)
+	}
+
 	go func() {
 		_ = cmd.Wait()
 		g.mu.Lock()
@@ -662,15 +722,12 @@ func (g *GatewayManager) EnsureRunning(ctx context.Context) error {
 			g.cmd = nil
 		}
 		g.mu.Unlock()
-		if recordedPID, err := readPIDFile(pidFile(g.config.GatewayDir)); err == nil && recordedPID == pid {
-			_ = os.Remove(pidFile(g.config.GatewayDir))
+		if !processAlive(record.PID) {
+			g.removeProcessRecordIfPID(record.PID)
 		}
 	}()
 
-	log.Printf("[IBKR] gateway process started (pid=%d)", pid)
-	if !g.waitUntilOnline(ctx) {
-		return fmt.Errorf("gateway did not become ready within %s", startupTimeout)
-	}
+	log.Printf("[IBKR] gateway Java process started (pid=%d, wrapper_pid=%d)", pid, wrapperPID)
 	return nil
 }
 
@@ -839,34 +896,31 @@ func (g *GatewayManager) stopProcess() error {
 	g.mu.Lock()
 	cmd := g.cmd
 	g.cmd = nil
-	gatewayDir := g.config.GatewayDir
 	g.mu.Unlock()
 
-	if cmd != nil && cmd.Process != nil {
-		if err := cmd.Process.Kill(); err != nil && processAlive(cmd.Process.Pid) {
+	record, err := g.loadOrRecoverOwnedProcess()
+	if err == nil {
+		if err := terminateProcess(record.PID); err != nil {
 			return err
 		}
-		_ = os.Remove(pidFile(gatewayDir))
-		log.Println("[IBKR] gateway process stopped")
+		// The run.sh wrapper normally exits when Java exits. If it does not,
+		// terminate only the isolated process group created by this manager.
+		if record.WrapperPID > 1 && processAlive(record.WrapperPID) {
+			_ = terminateGatewayProcessGroup(record.WrapperPID)
+		}
+		g.removeProcessRecord()
+		log.Printf("[IBKR] gateway process stopped (pid=%d)", record.PID)
 		return nil
 	}
-
-	pid, err := readPIDFile(pidFile(gatewayDir))
-	if err != nil {
-		return nil
-	}
-	if !processAlive(pid) {
-		_ = os.Remove(pidFile(gatewayDir))
-		return nil
-	}
-	if !g.gatewayProcessMatches(pid) {
-		return fmt.Errorf("PID %d is not a validated gateway process", pid)
-	}
-	if err := terminateProcess(pid); err != nil {
+	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	_ = os.Remove(pidFile(gatewayDir))
-	log.Printf("[IBKR] gateway process stopped (pid=%d)", pid)
+	if cmd != nil && cmd.Process != nil && processAlive(cmd.Process.Pid) {
+		if err := terminateGatewayProcessGroup(cmd.Process.Pid); err != nil {
+			return err
+		}
+	}
+	g.removeProcessRecord()
 	return nil
 }
 
@@ -899,10 +953,181 @@ func (g *GatewayManager) gatewayProcessMatches(pid int) bool {
 	return false
 }
 
+func (g *GatewayManager) findGatewayListener() (int, error) {
+	out, err := exec.Command(
+		"lsof", "-nP", "-t", "-iTCP:"+strconv.Itoa(g.config.GatewayPort), "-sTCP:LISTEN",
+	).Output()
+	if err != nil {
+		return 0, os.ErrNotExist
+	}
+	for _, value := range strings.Fields(string(out)) {
+		pid, parseErr := strconv.Atoi(value)
+		if parseErr == nil && g.gatewayProcessMatches(pid) && processListensOnPort(pid, g.config.GatewayPort) {
+			return pid, nil
+		}
+	}
+	return 0, os.ErrNotExist
+}
+
+func (g *GatewayManager) newProcessRecord(pid, wrapperPID int) (gatewayProcessRecord, error) {
+	startedAt, err := processStartSignature(pid)
+	if err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	gatewayDir, err := filepath.EvalSymlinks(g.config.GatewayDir)
+	if err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	return gatewayProcessRecord{
+		Version:     1,
+		PID:         pid,
+		WrapperPID:  wrapperPID,
+		StartedAt:   startedAt,
+		GatewayDir:  filepath.Clean(gatewayDir),
+		GatewayPort: g.config.GatewayPort,
+	}, nil
+}
+
+func (g *GatewayManager) writeProcessRecord(record gatewayProcessRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	path := processRecordFile(g.config.GatewayDir)
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	return writePIDFile(pidFile(g.config.GatewayDir), record.PID)
+}
+
+func (g *GatewayManager) loadOrRecoverOwnedProcess() (gatewayProcessRecord, error) {
+	record, err := readProcessRecord(processRecordFile(g.config.GatewayDir))
+	if err == nil {
+		if !processAlive(record.PID) {
+			g.removeProcessRecord()
+			return gatewayProcessRecord{}, os.ErrNotExist
+		}
+		if err := g.validateProcessRecord(record); err != nil {
+			return gatewayProcessRecord{}, err
+		}
+		return record, nil
+	}
+	if !os.IsNotExist(err) {
+		return gatewayProcessRecord{}, fmt.Errorf("read gateway process record: %w", err)
+	}
+
+	// Backward compatibility: old versions stored only a PID. It may identify
+	// the run.sh wrapper, so prefer it only when it owns the configured port.
+	if pid, pidErr := readPIDFile(pidFile(g.config.GatewayDir)); pidErr == nil &&
+		processAlive(pid) && g.gatewayProcessMatches(pid) && processListensOnPort(pid, g.config.GatewayPort) {
+		record, err = g.newProcessRecord(pid, 0)
+	} else {
+		pid, listenerErr := g.findGatewayListener()
+		if listenerErr != nil {
+			return gatewayProcessRecord{}, os.ErrNotExist
+		}
+		record, err = g.newProcessRecord(pid, 0)
+	}
+	if err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	if err := g.writeProcessRecord(record); err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	log.Printf("[IBKR] recovered gateway ownership (pid=%d, port=%d)", record.PID, record.GatewayPort)
+	return record, nil
+}
+
+func (g *GatewayManager) validateProcessRecord(record gatewayProcessRecord) error {
+	if record.Version != 1 || record.PID <= 1 {
+		return fmt.Errorf("invalid gateway process record")
+	}
+	if record.GatewayPort != g.config.GatewayPort {
+		return fmt.Errorf("gateway process record port %d does not match configured port %d", record.GatewayPort, g.config.GatewayPort)
+	}
+	gatewayDir, err := filepath.EvalSymlinks(g.config.GatewayDir)
+	if err != nil || filepath.Clean(record.GatewayDir) != filepath.Clean(gatewayDir) {
+		return fmt.Errorf("gateway process record directory does not match configured directory")
+	}
+	if !g.gatewayProcessMatches(record.PID) || !processListensOnPort(record.PID, record.GatewayPort) {
+		return fmt.Errorf("gateway process %d does not match its recorded command, directory, and port", record.PID)
+	}
+	startedAt, err := processStartSignature(record.PID)
+	if err != nil || startedAt != record.StartedAt {
+		return fmt.Errorf("gateway process %d start identity changed", record.PID)
+	}
+	return nil
+}
+
+func (g *GatewayManager) removeProcessRecord() {
+	_ = os.Remove(pidFile(g.config.GatewayDir))
+	_ = os.Remove(processRecordFile(g.config.GatewayDir))
+}
+
+func (g *GatewayManager) removeProcessRecordIfPID(pid int) {
+	record, err := readProcessRecord(processRecordFile(g.config.GatewayDir))
+	if err == nil && record.PID == pid {
+		g.removeProcessRecord()
+	}
+}
+
+func readProcessRecord(path string) (gatewayProcessRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	var record gatewayProcessRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return gatewayProcessRecord{}, err
+	}
+	return record, nil
+}
+
+func processStartSignature(pid int) (string, error) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("process %d has no start time", pid)
+	}
+	return value, nil
+}
+
+func processListensOnPort(pid, port int) bool {
+	if pid <= 1 || port <= 0 {
+		return false
+	}
+	out, err := exec.Command(
+		"lsof", "-nP", "-a", "-p", strconv.Itoa(pid),
+		"-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-t",
+	).Output()
+	return err == nil && strings.TrimSpace(string(out)) == strconv.Itoa(pid)
+}
+
 func terminateProcess(pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return err
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil && processAlive(pid) {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !processAlive(pid) {
+		return nil
 	}
 	return proc.Kill()
 }

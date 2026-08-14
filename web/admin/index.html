@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Traio · Gateway 管理</title>
+  <style>
+    :root {
+      --ink: #17231f;
+      --muted: #66736e;
+      --line: #dce3df;
+      --line-strong: #c8d2cd;
+      --canvas: #f4f6f4;
+      --surface: #ffffff;
+      --surface-soft: #f8faf8;
+      --green: #0f7155;
+      --green-dark: #09543f;
+      --green-soft: #e4f4ed;
+      --amber: #99620b;
+      --amber-soft: #fff3d6;
+      --red: #ad3b32;
+      --red-soft: #fce9e7;
+      --blue: #2b5f93;
+      --blue-soft: #e8f1fa;
+      --shadow: 0 18px 45px rgba(27, 49, 41, .08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { min-width: 320px; background: var(--canvas); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% -10%, rgba(37, 128, 96, .13), transparent 34rem),
+        var(--canvas);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .5; }
+    a { color: inherit; }
+
+    .shell { min-height: 100vh; }
+    .topbar {
+      height: 72px;
+      padding: 0 max(24px, calc((100vw - 1240px) / 2));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid rgba(200, 210, 205, .8);
+      background: rgba(255, 255, 255, .78);
+      backdrop-filter: blur(18px);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      width: 36px; height: 36px; border-radius: 11px;
+      display: grid; place-items: center;
+      color: white; background: var(--ink);
+      font-weight: 800; letter-spacing: -.05em;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+    }
+    .brand-copy strong { display: block; font-size: 15px; letter-spacing: -.01em; }
+    .brand-copy span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+
+    .button {
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      border-radius: 11px;
+      padding: 0 14px;
+      background: var(--surface);
+      color: var(--ink);
+      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: border-color .16s, background .16s, transform .16s;
+    }
+    .button:hover:not(:disabled) { border-color: #9baba3; background: var(--surface-soft); }
+    .button:active:not(:disabled) { transform: translateY(1px); }
+    .button.primary { background: var(--green); color: white; border-color: var(--green); }
+    .button.primary:hover:not(:disabled) { background: var(--green-dark); border-color: var(--green-dark); }
+    .button.danger { color: var(--red); }
+    .button.danger-solid { color: white; background: var(--red); border-color: var(--red); }
+    .button.danger-solid:hover:not(:disabled) { color: white; background: #8d312a; border-color: #8d312a; }
+    .button.quiet { background: transparent; border-color: transparent; color: var(--muted); }
+    .button.small { min-height: 34px; padding: 0 11px; border-radius: 9px; font-size: 13px; }
+    .button.icon { width: 40px; padding: 0; font-size: 18px; }
+
+    main { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 54px 0 80px; }
+    .hero { display: flex; justify-content: space-between; gap: 32px; align-items: end; margin-bottom: 30px; }
+    .eyebrow { margin: 0 0 10px; color: var(--green); font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0; max-width: 760px; font-size: clamp(32px, 5vw, 54px); line-height: 1.02; letter-spacing: -.05em; }
+    .hero p:not(.eyebrow) { margin: 16px 0 0; max-width: 690px; color: var(--muted); line-height: 1.65; }
+
+    .auth-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: end;
+      padding: 22px;
+      margin: 24px 0;
+      border: 1px solid #e8d6aa;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #fffdf7, #fff8e9);
+      box-shadow: var(--shadow);
+    }
+    .auth-card h2 { margin: 0 0 6px; font-size: 18px; }
+    .auth-card p { margin: 0; color: #756548; font-size: 14px; line-height: 1.55; }
+    .auth-card .auth-error { margin-top: 9px; color: var(--red); font-weight: 700; }
+    .auth-fields { display: flex; gap: 8px; min-width: min(100%, 420px); }
+    .auth-fields input { width: 290px; }
+
+    .field { display: grid; gap: 7px; }
+    .field label { color: #4e5d57; font-size: 13px; font-weight: 700; }
+    .field input, .field select {
+      width: 100%; min-height: 42px;
+      border: 1px solid var(--line-strong); border-radius: 10px;
+      padding: 0 12px; color: var(--ink); background: white; outline: none;
+      transition: border .15s, box-shadow .15s;
+    }
+    .field input:focus, .field select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(15, 113, 85, .12); }
+    .field small { color: var(--muted); line-height: 1.45; }
+
+    .dashboard[hidden], .auth-card[hidden] { display: none; }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 28px; }
+    .summary-card { padding: 20px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.82); }
+    .summary-card span { color: var(--muted); font-size: 13px; }
+    .summary-card strong { display: block; margin-top: 9px; font-size: 30px; letter-spacing: -.04em; }
+
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin: 12px 0 14px; }
+    .section-head h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+    .last-refresh { color: var(--muted); font-size: 12px; }
+
+    .gateway-list { display: grid; gap: 14px; }
+    .gateway-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 25px rgba(31, 52, 45, .045);
+      overflow: hidden;
+    }
+    .gateway-main { display: grid; grid-template-columns: minmax(260px, 1.25fr) minmax(420px, 2fr); gap: 22px; padding: 24px; }
+    .gateway-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .gateway-title { min-width: 0; }
+    .gateway-title h3 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
+    .gateway-key { display: inline-block; margin-top: 5px; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .gateway-url { margin-top: 18px; color: #45564f; font-size: 13px; overflow-wrap: anywhere; }
+    .gateway-dir { margin-top: 7px; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+
+    .pills { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 25px; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 800; background: #edf1ef; color: #53615c; }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 99px; background: currentColor; opacity: .75; }
+    .pill.good { background: var(--green-soft); color: var(--green-dark); }
+    .pill.warn { background: var(--amber-soft); color: var(--amber); }
+    .pill.bad { background: var(--red-soft); color: var(--red); }
+    .pill.info { background: var(--blue-soft); color: var(--blue); }
+
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .metric { min-height: 76px; padding: 13px; border-radius: 12px; background: var(--surface-soft); border: 1px solid #edf0ee; }
+    .metric span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 7px; }
+    .metric strong { display: block; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+    .gateway-error { grid-column: 1 / -1; padding: 11px 13px; border-radius: 10px; background: var(--red-soft); color: var(--red); font-size: 12px; line-height: 1.5; }
+
+    .gateway-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 24px; border-top: 1px solid var(--line); background: #fbfcfb; }
+    .action-spacer { flex: 1; }
+
+    .empty { padding: 72px 28px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius); background: rgba(255,255,255,.55); }
+    .empty-icon { width: 54px; height: 54px; margin: 0 auto 18px; display: grid; place-items: center; border-radius: 16px; background: var(--green-soft); color: var(--green); font-size: 24px; }
+    .empty h3 { margin: 0 0 7px; }
+    .empty p { margin: 0 0 20px; color: var(--muted); }
+
+    dialog { width: min(680px, calc(100% - 32px)); padding: 0; border: 0; border-radius: 20px; color: var(--ink); background: white; box-shadow: 0 30px 90px rgba(13, 35, 27, .25); }
+    dialog::backdrop { background: rgba(18, 31, 26, .52); backdrop-filter: blur(5px); }
+    .dialog-head { display: flex; justify-content: space-between; gap: 20px; padding: 22px 24px; border-bottom: 1px solid var(--line); }
+    .dialog-head h2 { margin: 0; font-size: 20px; }
+    .dialog-head p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+    .dialog-body { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 24px; }
+    .field.full { grid-column: 1 / -1; }
+    .check { display: flex; align-items: center; gap: 9px; min-height: 42px; }
+    .check input { width: 17px; height: 17px; accent-color: var(--green); }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 16px 24px 22px; }
+    .stop-dialog-body { padding: 24px; }
+    .stop-dialog-body > p { margin: 0 0 18px; color: var(--muted); line-height: 1.6; }
+    .stop-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stop-option { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-soft); }
+    .stop-option strong { display: block; margin-bottom: 6px; font-size: 14px; }
+    .stop-option span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+    .toast-stack { position: fixed; right: 22px; bottom: 22px; z-index: 60; display: grid; gap: 10px; width: min(380px, calc(100% - 44px)); }
+    .toast { padding: 14px 16px; border-radius: 12px; color: white; background: var(--ink); box-shadow: 0 15px 40px rgba(20,35,29,.22); font-size: 13px; line-height: 1.45; animation: toast-in .2s ease-out; }
+    .toast.error { background: #8d312a; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 99px; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 900px) {
+      .gateway-main { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: 1fr 1fr; }
+      .auth-card { grid-template-columns: 1fr; align-items: stretch; }
+      .auth-fields, .auth-fields input { width: 100%; }
+    }
+    @media (max-width: 620px) {
+      .topbar { padding: 0 16px; }
+      .brand-copy span, #disconnectButton span { display: none; }
+      main { width: min(100% - 28px, 1240px); padding-top: 34px; }
+      .hero { display: block; }
+      .hero .button { width: 100%; margin-top: 22px; }
+      .auth-fields { flex-direction: column; }
+      .summary-grid { gap: 9px; }
+      .summary-card { padding: 16px; }
+      .summary-card strong { font-size: 25px; }
+      .gateway-main { padding: 19px; }
+      .metrics { grid-template-columns: 1fr 1fr; }
+      .gateway-actions { padding: 13px 19px; }
+      .action-spacer { display: none; }
+      .gateway-actions .button { flex: 1 0 auto; }
+      .dialog-body { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .stop-options { grid-template-columns: 1fr; }
+      .dialog-actions { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">T</div>
+        <div class="brand-copy">
+          <strong>Traio Control</strong>
+          <span>本机服务管理控制台</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button class="button quiet" id="disconnectButton" type="button" hidden>断开 <span>API Token</span></button>
+        <button class="button icon" id="refreshButton" type="button" aria-label="刷新" title="刷新" hidden>↻</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Infrastructure</p>
+          <h1>IBKR Gateway 管理</h1>
+          <p>集中查看 Gateway 的运行、认证和安装状态，并安全地执行启停、重连、升级与回滚。</p>
+        </div>
+        <button class="button primary" id="createButton" type="button" hidden>＋ 新建 Gateway</button>
+      </section>
+
+      <section class="auth-card" id="authCard">
+        <div>
+          <h2>连接到 Traio API</h2>
+          <p>输入运行目录中的 API Token。Token 仅保存在当前浏览器标签页的 sessionStorage，关闭标签页后自动清除。</p>
+          <p class="auth-error" id="authError" role="alert" hidden></p>
+        </div>
+        <form class="auth-fields" id="authForm">
+          <div class="field">
+            <label for="tokenInput">API Token</label>
+            <input id="tokenInput" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 API Token" required>
+          </div>
+          <button class="button primary" id="connectButton" type="submit">连接</button>
+        </form>
+      </section>
+
+      <section class="dashboard" id="dashboard" hidden>
+        <div class="summary-grid">
+          <div class="summary-card"><span>Gateway 总数</span><strong id="totalCount">0</strong></div>
+          <div class="summary-card"><span>正在运行</span><strong id="runningCount">0</strong></div>
+          <div class="summary-card"><span>已认证</span><strong id="authCount">0</strong></div>
+          <div class="summary-card"><span>需要关注</span><strong id="attentionCount">0</strong></div>
+        </div>
+
+        <div class="section-head">
+          <h2>Gateway 实例</h2>
+          <span class="last-refresh" id="lastRefresh">尚未刷新</span>
+        </div>
+        <div class="gateway-list" id="gatewayList"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="gatewayDialog">
+    <form id="gatewayForm">
+      <div class="dialog-head">
+        <div>
+          <h2 id="dialogTitle">新建 Gateway</h2>
+          <p>Gateway 地址必须使用 localhost 或回环地址，并与端口一致。</p>
+        </div>
+        <button class="button quiet icon" id="closeDialogButton" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body">
+        <input id="gatewayId" type="hidden">
+        <div class="field">
+          <label for="gatewayKey">唯一标识</label>
+          <input id="gatewayKey" required placeholder="paper-local" pattern="[^ ]+">
+          <small>创建后不可修改。</small>
+        </div>
+        <div class="field">
+          <label for="gatewayName">显示名称</label>
+          <input id="gatewayName" required placeholder="Paper Gateway">
+        </div>
+        <div class="field">
+          <label for="gatewayPort">端口</label>
+          <input id="gatewayPort" type="number" min="1" max="65535" value="5680" required>
+        </div>
+        <div class="field">
+          <label for="gatewayLifecycle">生命周期</label>
+          <select id="gatewayLifecycle">
+            <option value="managed">Managed · 服务退出时停止</option>
+            <option value="persistent">Persistent · 保留会话</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label for="gatewayUrl">Gateway Origin</label>
+          <input id="gatewayUrl" type="url" required placeholder="https://localhost:5680">
+        </div>
+        <div class="field full">
+          <label for="gatewayDir">安装目录</label>
+          <input id="gatewayDir" placeholder="由 Traio 根据部署环境生成">
+          <small>留空时使用当前部署的默认目录；也可以指定其他绝对路径。</small>
+        </div>
+        <label class="check full"><input id="gatewayEnabled" type="checkbox" checked> 启用并加载到 Gateway Runtime</label>
+      </div>
+      <div class="dialog-actions">
+        <button class="button" id="cancelDialogButton" type="button">取消</button>
+        <button class="button primary" id="saveGatewayButton" type="submit">保存 Gateway</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stopDialog" aria-labelledby="stopDialogTitle">
+    <div class="dialog-head">
+      <div>
+        <h2 id="stopDialogTitle">停止 Gateway</h2>
+        <p id="stopDialogSubtitle"></p>
+      </div>
+      <button class="button quiet icon" id="closeStopDialogButton" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="stop-dialog-body">
+      <p>请选择停止方式。保留 Session 会让 Gateway 进程继续运行；完全停止会结束该实例的进程。</p>
+      <div class="stop-options">
+        <div class="stop-option">
+          <strong>保留登录 Session</strong>
+          <span>Traio 停止监控并与进程分离，之后可以重新接管。</span>
+        </div>
+        <div class="stop-option">
+          <strong>完全停止进程</strong>
+          <span>安全校验实例身份后结束 Gateway，当前登录 Session 将失效。</span>
+        </div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button class="button" id="cancelStopButton" type="button">取消操作</button>
+      <button class="button" id="detachStopButton" type="button">保留 Session</button>
+      <button class="button danger-solid" id="terminateStopButton" type="button">完全停止</button>
+    </div>
+  </dialog>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const TOKEN_KEY = "traio.admin.api-token";
+      const state = {
+        token: sessionStorage.getItem(TOKEN_KEY) || "",
+        gateways: [],
+        statuses: new Map(),
+        busy: new Set(),
+        pollTimer: null,
+      };
+      let generatedGatewayDir = "";
+      let gatewayKeyTimer = null;
+      let stopDialogResolve = null;
+
+      const $ = (id) => document.getElementById(id);
+      const els = {
+        authCard: $("authCard"), authError: $("authError"), authForm: $("authForm"), tokenInput: $("tokenInput"), connectButton: $("connectButton"),
+        dashboard: $("dashboard"), createButton: $("createButton"), refreshButton: $("refreshButton"), disconnectButton: $("disconnectButton"),
+        gatewayList: $("gatewayList"), totalCount: $("totalCount"), runningCount: $("runningCount"), authCount: $("authCount"),
+        attentionCount: $("attentionCount"), lastRefresh: $("lastRefresh"), gatewayDialog: $("gatewayDialog"), gatewayForm: $("gatewayForm"),
+        dialogTitle: $("dialogTitle"), gatewayId: $("gatewayId"), gatewayKey: $("gatewayKey"), gatewayName: $("gatewayName"),
+        gatewayPort: $("gatewayPort"), gatewayLifecycle: $("gatewayLifecycle"), gatewayUrl: $("gatewayUrl"), gatewayDir: $("gatewayDir"),
+        gatewayEnabled: $("gatewayEnabled"), saveGatewayButton: $("saveGatewayButton"), toastStack: $("toastStack"),
+        stopDialog: $("stopDialog"), stopDialogSubtitle: $("stopDialogSubtitle"),
+      };
+
+      function escapeHTML(value) {
+        return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+        })[character]);
+      }
+
+      function toast(message, type = "success") {
+        const item = document.createElement("div");
+        item.className = `toast${type === "error" ? " error" : ""}`;
+        item.textContent = message;
+        els.toastStack.appendChild(item);
+        window.setTimeout(() => item.remove(), type === "error" ? 6500 : 3500);
+      }
+
+      function chooseStopMode(gateway) {
+        if (stopDialogResolve) return Promise.resolve(null);
+        els.stopDialogSubtitle.textContent = gateway.name;
+        els.stopDialog.showModal();
+        return new Promise((resolve) => { stopDialogResolve = resolve; });
+      }
+
+      function resolveStopMode(keepSession) {
+        const resolve = stopDialogResolve;
+        stopDialogResolve = null;
+        if (els.stopDialog.open) els.stopDialog.close();
+        if (resolve) resolve(keepSession);
+      }
+
+      function setConnected(connected) {
+        els.authCard.hidden = connected;
+        els.dashboard.hidden = !connected;
+        els.createButton.hidden = !connected;
+        els.refreshButton.hidden = !connected;
+        els.disconnectButton.hidden = !connected;
+        if (state.pollTimer) window.clearInterval(state.pollTimer);
+        state.pollTimer = connected ? window.setInterval(() => {
+          if (!document.hidden && state.busy.size === 0) refreshAll({ quiet: true }).catch(() => {});
+        }, 15000) : null;
+      }
+
+      function requireAuthentication(message = "请重新输入当前 Traio 实例的 API Token。") {
+        sessionStorage.removeItem(TOKEN_KEY);
+        state.token = "";
+        state.busy.clear();
+        if (els.gatewayDialog.open) els.gatewayDialog.close();
+        if (els.stopDialog.open) resolveStopMode(null);
+        setConnected(false);
+        els.authError.textContent = message;
+        els.authError.hidden = !message;
+        window.setTimeout(() => els.tokenInput.focus(), 0);
+      }
+
+      async function api(path, options = {}) {
+        if (!state.token) {
+          requireAuthentication("API Token 未设置，请重新连接后再操作。");
+          const error = new Error("API Token 未设置");
+          error.code = "AUTH_REQUIRED";
+          throw error;
+        }
+        const headers = new Headers(options.headers || {});
+        headers.set("Accept", "application/json");
+        headers.set("Authorization", `Bearer ${state.token}`);
+        if (options.body) headers.set("Content-Type", "application/json");
+        const response = await fetch(path, { ...options, headers });
+        const contentType = response.headers.get("Content-Type") || "";
+        const body = contentType.includes("application/json") ? await response.json() : await response.text();
+        if (!response.ok) {
+          if (response.status === 401) {
+            requireAuthentication("API Token 无效或已失效。请从当前运行目录重新复制 Token。");
+          }
+          const message = body && typeof body === "object" ? [body.error, body.details].filter(Boolean).join(": ") : String(body || response.statusText);
+          const error = new Error(message || `HTTP ${response.status}`);
+          if (response.status === 401) error.code = "AUTH_REQUIRED";
+          throw error;
+        }
+        return body;
+      }
+
+      function statusFor(id) { return state.statuses.get(Number(id)); }
+
+      function pill(label, tone = "") {
+        return `<span class="pill ${tone}">${escapeHTML(label)}</span>`;
+      }
+
+      function formatDuration(seconds) {
+        const value = Number(seconds || 0);
+        if (value < 60) return `${value} 秒`;
+        if (value < 3600) return `${Math.floor(value / 60)} 分钟`;
+        const hours = Math.floor(value / 3600);
+        if (hours < 24) return `${hours} 小时 ${Math.floor((value % 3600) / 60)} 分`;
+        return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+      }
+
+      function renderSummary() {
+        const statuses = state.gateways.map((gateway) => statusFor(gateway.id)).filter((status) => status && !status.error);
+        const running = statuses.filter((status) => status.running).length;
+        const authenticated = statuses.filter((status) => status.authenticated).length;
+        const attention = state.gateways.filter((gateway) => {
+          const status = statusFor(gateway.id);
+          return gateway.enabled && (!status || status.error || !status.running || !status.authenticated || status.last_error);
+        }).length;
+        els.totalCount.textContent = state.gateways.length;
+        els.runningCount.textContent = running;
+        els.authCount.textContent = authenticated;
+        els.attentionCount.textContent = attention;
+      }
+
+      function renderGateways() {
+        renderSummary();
+        if (!state.gateways.length) {
+          els.gatewayList.innerHTML = `
+            <div class="empty">
+              <div class="empty-icon">⌁</div>
+              <h3>还没有 Gateway</h3>
+              <p>创建第一个受 Traio 管理的 IBKR Client Portal Gateway。</p>
+              <button class="button primary" data-action="create" type="button">新建 Gateway</button>
+            </div>`;
+          return;
+        }
+
+        els.gatewayList.innerHTML = state.gateways.map((gateway) => {
+          const status = statusFor(gateway.id);
+          const loading = state.busy.has(gateway.id);
+          const unavailable = status && status.error;
+          const stateLabel = gateway.enabled ? (status?.state || (unavailable ? "状态不可用" : "读取中")) : "已停用";
+          const version = status?.installed_version || "未安装";
+          const versionDetail = status?.pinned_version && status.pinned_version !== status.installed_version ? `目标 ${status.pinned_version}` : (status?.install_verified ? "签名已验证" : "—");
+          const authLabel = status?.authenticated ? "已认证" : "未认证";
+          const runningPill = !gateway.enabled ? pill("已停用") : status?.running ? pill("运行中", "good") : pill("未运行", unavailable ? "bad" : "warn");
+          const authPill = status?.authenticated ? pill("已认证", "good") : pill("待登录", "warn");
+          const lifecyclePill = pill(gateway.lifecycle === "persistent" ? "Persistent" : "Managed", "info");
+          const disabled = loading || !gateway.enabled;
+          return `
+            <article class="gateway-card" data-gateway-id="${gateway.id}">
+              <div class="gateway-main">
+                <div>
+                  <div class="gateway-title-row">
+                    <div class="gateway-title">
+                      <h3>${escapeHTML(gateway.name)}</h3>
+                      <span class="gateway-key">${escapeHTML(gateway.gateway_key)}</span>
+                    </div>
+                    <div class="pills">${runningPill}${gateway.enabled ? authPill : ""}${lifecyclePill}</div>
+                  </div>
+                  <div class="gateway-url">${escapeHTML(gateway.gateway_url)}</div>
+                  <div class="gateway-dir">${escapeHTML(gateway.gateway_dir)}</div>
+                </div>
+                <div class="metrics">
+                  <div class="metric"><span>运行状态</span><strong>${escapeHTML(stateLabel)}</strong></div>
+                  <div class="metric"><span>认证账户</span><strong>${escapeHTML(status?.account || authLabel)}</strong></div>
+                  <div class="metric"><span>当前版本</span><strong>${escapeHTML(version)}<br><span>${escapeHTML(versionDetail)}</span></strong></div>
+                  <div class="metric"><span>Session 时长</span><strong>${status?.authenticated ? escapeHTML(formatDuration(status.session_age_seconds)) : "—"}</strong></div>
+                  ${status?.last_error ? `<div class="gateway-error">${escapeHTML(status.last_error)}</div>` : ""}
+                  ${unavailable ? `<div class="gateway-error">无法读取 Runtime 状态：${escapeHTML(status.error)}</div>` : ""}
+                </div>
+              </div>
+              <div class="gateway-actions">
+                <button class="button small primary" data-action="${status?.running ? "login" : "start"}" data-id="${gateway.id}" ${disabled ? "disabled" : ""}>${loading ? '<span class="spin"></span>' : status?.running ? "打开登录" : "启动"}</button>
+                <button class="button small" data-action="reconnect" data-id="${gateway.id}" ${disabled || !status?.running ? "disabled" : ""}>重连</button>
+                <button class="button small" data-action="stop" data-id="${gateway.id}" ${disabled || !status?.running ? "disabled" : ""}>停止</button>
+                <button class="button small" data-action="upgrade" data-id="${gateway.id}" ${disabled ? "disabled" : ""}>升级</button>
+                <button class="button small" data-action="rollback" data-id="${gateway.id}" ${disabled || !status?.rollback_available ? "disabled" : ""}>回滚</button>
+                <span class="action-spacer"></span>
+                <button class="button small" data-action="edit" data-id="${gateway.id}" ${loading ? "disabled" : ""}>编辑</button>
+                <button class="button small danger" data-action="delete" data-id="${gateway.id}" ${loading ? "disabled" : ""}>删除</button>
+              </div>
+            </article>`;
+        }).join("");
+      }
+
+      async function refreshAll({ quiet = false } = {}) {
+        if (!state.token) return;
+        els.refreshButton.disabled = true;
+        els.refreshButton.innerHTML = '<span class="spin"></span>';
+        try {
+          const gateways = await api("/api/v1/ibkr/gateways");
+          state.gateways = Array.isArray(gateways) ? gateways : [];
+          const results = await Promise.all(state.gateways.map(async (gateway) => {
+            if (!gateway.enabled) return [gateway.id, { disabled: true }];
+            try {
+              return [gateway.id, await api(`/api/v1/ibkr/gateways/${gateway.id}/status`)];
+            } catch (error) {
+              if (error.code === "AUTH_REQUIRED") throw error;
+              return [gateway.id, { error: error.message }];
+            }
+          }));
+          state.statuses = new Map(results);
+          els.lastRefresh.textContent = `更新于 ${new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
+          els.authError.hidden = true;
+          els.authError.textContent = "";
+          setConnected(true);
+          renderGateways();
+        } catch (error) {
+          if (!quiet && error.code !== "AUTH_REQUIRED") toast(error.message, "error");
+          throw error;
+        } finally {
+          els.refreshButton.disabled = false;
+          els.refreshButton.textContent = "↻";
+        }
+      }
+
+      async function applyGatewayDefaults(gatewayKey, force = false) {
+        const currentDir = els.gatewayDir.value.trim();
+        if (!force && currentDir && currentDir !== generatedGatewayDir) return;
+        try {
+          const defaults = await api(`/api/v1/ibkr/gateways/defaults?gateway_key=${encodeURIComponent(gatewayKey || "local")}`);
+          generatedGatewayDir = defaults.gateway_dir || "";
+          els.gatewayDir.value = generatedGatewayDir;
+          if (defaults.lifecycle) els.gatewayLifecycle.value = defaults.lifecycle;
+        } catch (error) {
+          if (error.code !== "AUTH_REQUIRED") toast(error.message, "error");
+        }
+      }
+
+      async function openCreateDialog() {
+        els.gatewayForm.reset();
+        els.dialogTitle.textContent = "新建 Gateway";
+        els.gatewayId.value = "";
+        els.gatewayKey.disabled = false;
+        els.gatewayKey.value = "local";
+        els.gatewayName.value = "Local Gateway";
+        els.gatewayPort.value = "5680";
+        els.gatewayUrl.value = "https://localhost:5680";
+        els.gatewayLifecycle.value = "managed";
+        els.gatewayEnabled.checked = true;
+        generatedGatewayDir = "";
+        els.gatewayDialog.showModal();
+        await applyGatewayDefaults("local", true);
+      }
+
+      function openEditDialog(gateway) {
+        els.gatewayForm.reset();
+        els.dialogTitle.textContent = `编辑 ${gateway.name}`;
+        els.gatewayId.value = gateway.id;
+        els.gatewayKey.value = gateway.gateway_key;
+        els.gatewayKey.disabled = true;
+        els.gatewayName.value = gateway.name;
+        els.gatewayPort.value = gateway.gateway_port;
+        els.gatewayUrl.value = gateway.gateway_url;
+        els.gatewayDir.value = gateway.gateway_dir;
+        els.gatewayLifecycle.value = gateway.lifecycle || "managed";
+        els.gatewayEnabled.checked = gateway.enabled;
+        generatedGatewayDir = "";
+        els.gatewayDialog.showModal();
+      }
+
+      async function saveGateway(event) {
+        event.preventDefault();
+        if (!state.token) {
+          requireAuthentication("API Token 已丢失，请重新连接后再保存 Gateway。");
+          return;
+        }
+        const id = Number(els.gatewayId.value || 0);
+        const body = {
+          gateway_key: els.gatewayKey.value.trim(),
+          name: els.gatewayName.value.trim(),
+          gateway_url: els.gatewayUrl.value.trim(),
+          gateway_dir: els.gatewayDir.value.trim(),
+          gateway_port: Number(els.gatewayPort.value),
+          lifecycle: els.gatewayLifecycle.value,
+          enabled: els.gatewayEnabled.checked,
+        };
+        els.saveGatewayButton.disabled = true;
+        els.saveGatewayButton.innerHTML = '<span class="spin"></span> 保存中';
+        try {
+          await api(id ? `/api/v1/ibkr/gateways/${id}` : "/api/v1/ibkr/gateways", {
+            method: id ? "PUT" : "POST",
+            body: JSON.stringify(body),
+          });
+          els.gatewayDialog.close();
+          toast(id ? "Gateway 已更新" : "Gateway 已创建");
+          await refreshAll({ quiet: true });
+        } catch (error) {
+          if (error.code !== "AUTH_REQUIRED") toast(error.message, "error");
+        } finally {
+          els.saveGatewayButton.disabled = false;
+          els.saveGatewayButton.textContent = "保存 Gateway";
+        }
+      }
+
+      async function runOperation(gateway, action) {
+        if (!state.token) {
+          requireAuthentication("API Token 已丢失，请重新连接后再操作 Gateway。");
+          return;
+        }
+        const status = statusFor(gateway.id) || {};
+        if (action === "login") {
+          const loginURL = status.login_url || `${gateway.gateway_url.replace(/\/$/, "")}/sso/Login`;
+          window.open(loginURL, "_blank", "noopener,noreferrer");
+          return;
+        }
+        if (action === "edit") { openEditDialog(gateway); return; }
+        let deleteFiles = false;
+        if (action === "delete") {
+          try {
+            const defaults = await api(`/api/v1/ibkr/gateways/defaults?gateway_key=${encodeURIComponent(gateway.gateway_key)}`);
+            deleteFiles = defaults.gateway_dir === gateway.gateway_dir;
+          } catch (error) {
+            if (error.code !== "AUTH_REQUIRED") toast(error.message, "error");
+            return;
+          }
+          const message = deleteFiles
+            ? `删除「${gateway.name}」及其托管安装目录？\n\n${gateway.gateway_dir}\n\nTraio 会先完全停止该 Gateway。此操作不可撤销。`
+            : `删除「${gateway.name}」的管理记录？\n\n这是自定义目录，Traio 不会自动删除：\n${gateway.gateway_dir}`;
+          if (!window.confirm(message)) return;
+        }
+        let keepSession = null;
+        if (action === "stop") {
+          keepSession = await chooseStopMode(gateway);
+          if (keepSession === null) return;
+        }
+        if (action === "upgrade" && !window.confirm(`升级「${gateway.name}」？\n\nGateway 会短暂停止；新版本启动失败时服务端将自动尝试回滚。`)) return;
+        if (action === "rollback" && !window.confirm(`将「${gateway.name}」回滚到上一安装版本？`)) return;
+
+        const labels = { start: "启动", reconnect: "重连", stop: "停止", upgrade: "升级", rollback: "回滚", delete: "删除" };
+        state.busy.add(gateway.id);
+        renderGateways();
+        try {
+          if (action === "delete") {
+            await api(`/api/v1/ibkr/gateways/${gateway.id}?delete_files=${deleteFiles}`, { method: "DELETE" });
+          } else {
+            const suffix = action === "stop" ? `/stop?keep_session=${keepSession}` : `/${action}`;
+            await api(`/api/v1/ibkr/gateways/${gateway.id}${suffix}`, { method: "POST" });
+          }
+          const message = action === "stop"
+            ? (keepSession ? "已分离并保留 Session" : "已完全停止")
+            : `${labels[action]}操作已完成`;
+          toast(`${gateway.name}：${message}`);
+        } catch (error) {
+          if (error.code !== "AUTH_REQUIRED") toast(`${gateway.name}：${error.message}`, "error");
+        } finally {
+          state.busy.delete(gateway.id);
+          await refreshAll({ quiet: true }).catch(() => renderGateways());
+        }
+      }
+
+      els.authForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        state.token = els.tokenInput.value.trim();
+        if (!state.token) return;
+        els.connectButton.disabled = true;
+        els.connectButton.innerHTML = '<span class="spin"></span> 连接中';
+        try {
+          await refreshAll();
+          sessionStorage.setItem(TOKEN_KEY, state.token);
+          els.tokenInput.value = "";
+        } catch (error) {
+          if (error.code !== "AUTH_REQUIRED") requireAuthentication(error.message);
+        } finally {
+          els.connectButton.disabled = false;
+          els.connectButton.textContent = "连接";
+        }
+      });
+
+      els.disconnectButton.addEventListener("click", () => {
+        state.gateways = [];
+        state.statuses.clear();
+        requireAuthentication("");
+      });
+      els.refreshButton.addEventListener("click", () => refreshAll().catch(() => {}));
+      els.createButton.addEventListener("click", openCreateDialog);
+      els.gatewayList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-action]");
+        if (!button) return;
+        if (button.dataset.action === "create") { openCreateDialog(); return; }
+        const gateway = state.gateways.find((item) => item.id === Number(button.dataset.id));
+        if (gateway) runOperation(gateway, button.dataset.action);
+      });
+      els.gatewayForm.addEventListener("submit", saveGateway);
+      $("closeDialogButton").addEventListener("click", () => els.gatewayDialog.close());
+      $("cancelDialogButton").addEventListener("click", () => els.gatewayDialog.close());
+      $("closeStopDialogButton").addEventListener("click", () => resolveStopMode(null));
+      $("cancelStopButton").addEventListener("click", () => resolveStopMode(null));
+      $("detachStopButton").addEventListener("click", () => resolveStopMode(true));
+      $("terminateStopButton").addEventListener("click", () => resolveStopMode(false));
+      els.stopDialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        resolveStopMode(null);
+      });
+      els.stopDialog.addEventListener("click", (event) => {
+        if (event.target === els.stopDialog) resolveStopMode(null);
+      });
+      els.gatewayDialog.addEventListener("click", (event) => {
+        if (event.target === els.gatewayDialog) els.gatewayDialog.close();
+      });
+      els.gatewayPort.addEventListener("input", () => {
+        if (/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(els.gatewayUrl.value)) {
+          els.gatewayUrl.value = `https://localhost:${els.gatewayPort.value}`;
+        }
+      });
+      els.gatewayKey.addEventListener("input", () => {
+        if (els.gatewayKey.disabled) return;
+        if (gatewayKeyTimer) window.clearTimeout(gatewayKeyTimer);
+        gatewayKeyTimer = window.setTimeout(() => applyGatewayDefaults(els.gatewayKey.value.trim()), 250);
+      });
+
+      if (state.token) {
+        refreshAll({ quiet: true }).catch(() => {
+          state.token = "";
+          sessionStorage.removeItem(TOKEN_KEY);
+          setConnected(false);
+        });
+      } else {
+        setConnected(false);
+      }
+    })();
+  </script>
+</body>
+</html>

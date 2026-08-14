@@ -146,6 +146,53 @@ func TestTickleSendsEmptyJSONObject(t *testing.T) {
 	}
 }
 
+func TestGatewayShutdownLifecycle(t *testing.T) {
+	persistent := NewGatewayManager(config.IBKRConfig{
+		GatewayDir:       t.TempDir(),
+		GatewayLifecycle: config.IBKRGatewayLifecyclePersistent,
+	})
+	if err := persistent.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if got := persistent.Status().State; got != gatewayStateDetached {
+		t.Fatalf("persistent shutdown state: got %q", got)
+	}
+
+	managed := NewGatewayManager(config.IBKRConfig{
+		GatewayDir:       t.TempDir(),
+		GatewayLifecycle: config.IBKRGatewayLifecycleManaged,
+	})
+	if err := managed.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if got := managed.Status().State; got != gatewayStateStopped {
+		t.Fatalf("managed shutdown state: got %q", got)
+	}
+}
+
+func TestGatewayProcessRecordRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewGatewayManager(config.IBKRConfig{GatewayDir: dir, GatewayPort: 5680})
+	record := gatewayProcessRecord{
+		Version: 1, PID: os.Getpid(), WrapperPID: 42,
+		StartedAt: "test-start", GatewayDir: dir, GatewayPort: 5680,
+	}
+	if err := manager.writeProcessRecord(record); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readProcessRecord(processRecordFile(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != record {
+		t.Fatalf("got %#v, want %#v", got, record)
+	}
+	pid, err := readPIDFile(pidFile(dir))
+	if err != nil || pid != os.Getpid() {
+		t.Fatalf("pid file: pid=%d err=%v", pid, err)
+	}
+}
+
 func TestSecureRuntimePermissionsAndLogRetention(t *testing.T) {
 	gatewayDir := t.TempDir()
 	for _, dir := range []string{"root", "logs", ".vertx/cache"} {

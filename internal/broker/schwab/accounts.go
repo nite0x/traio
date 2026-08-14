@@ -70,6 +70,104 @@ type currentBalances struct {
 	UnrealizedProfitLoss    float64 `json:"unrealizedProfitLoss"`
 }
 
+var _ broker.Broker = (*Client)(nil)
+
+func (c *Client) BeginLogin(context.Context) (broker.LoginAction, error) {
+	_, authenticated := c.Token()
+	return broker.LoginAction{URL: c.AuthURL(""), Authenticated: authenticated}, nil
+}
+
+func (c *Client) ListAccounts(ctx context.Context) ([]broker.Account, error) {
+	accounts, err := c.accounts(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]broker.Account, 0, len(accounts))
+	for _, envelope := range accounts {
+		account := envelope.SecuritiesAccount
+		if strings.TrimSpace(account.AccountNumber) == "" {
+			continue
+		}
+		out = append(out, broker.Account{
+			ID: account.AccountNumber, Broker: "SCHWAB", DisplayName: account.AccountNumber,
+			AccountType: account.Type, Status: "open", BaseCurrency: "USD",
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) GetAccount(ctx context.Context, accountID string) (broker.Account, error) {
+	accounts, err := c.ListAccounts(ctx)
+	if err != nil {
+		return broker.Account{}, err
+	}
+	for _, account := range accounts {
+		if account.ID == accountID {
+			return account, nil
+		}
+	}
+	return broker.Account{}, fmt.Errorf("schwab: account %s not found", accountID)
+}
+
+func (c *Client) GetCashBalances(ctx context.Context, accountID string) ([]broker.CashBalance, error) {
+	account, err := c.findAccount(ctx, accountID, false)
+	if err != nil {
+		return nil, err
+	}
+	return []broker.CashBalance{{
+		AccountID: accountID, Currency: "USD",
+		Total:   account.CurrentBalances.CashBalance + account.CurrentBalances.MoneyMarketFund,
+		Settled: account.CurrentBalances.CashBalance, ExchangeRate: 1,
+		IsBaseCurrency: true, AsOf: time.Now().UTC().Format(time.RFC3339),
+	}}, nil
+}
+
+func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]broker.Position, error) {
+	positions, err := c.ListPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]broker.Position, 0, len(positions))
+	for _, position := range positions {
+		if position.Account == accountID {
+			out = append(out, position)
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (broker.DailyPerformance, error) {
+	account, err := c.findAccount(ctx, accountID, true)
+	if err != nil {
+		return broker.DailyPerformance{}, err
+	}
+	performance := broker.DailyPerformance{
+		AccountID:       accountID,
+		NetLiquidation:  firstNonZero(account.CurrentBalances.LiquidationValue, account.CurrentBalances.Equity),
+		UnrealizedPnL:   account.CurrentBalances.UnrealizedProfitLoss,
+		ExcessLiquidity: account.CurrentBalances.AvailableFunds,
+		MarketValue:     account.CurrentBalances.LongMarketValue + account.CurrentBalances.ShortMarketValue,
+		AsOf:            time.Now().UTC().Format(time.RFC3339),
+	}
+	for _, position := range account.Positions {
+		performance.DailyPnL += position.CurrentDayProfitLoss
+	}
+	return performance, nil
+}
+
+func (c *Client) findAccount(ctx context.Context, accountID string, positions bool) (securitiesAccount, error) {
+	accounts, err := c.accounts(ctx, positions)
+	if err != nil {
+		return securitiesAccount{}, err
+	}
+	for _, envelope := range accounts {
+		if envelope.SecuritiesAccount.AccountNumber == accountID {
+			return envelope.SecuritiesAccount, nil
+		}
+	}
+	return securitiesAccount{}, fmt.Errorf("schwab: account %s not found", accountID)
+}
+
 func (c *Client) accounts(ctx context.Context, positions bool) ([]accountEnvelope, error) {
 	c.mu.RLock()
 	endpoint := c.traderURL + "/accounts"

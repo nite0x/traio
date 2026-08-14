@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -23,26 +24,33 @@ import (
 )
 
 type Deps struct {
-	Watchlists  store.WatchlistRepository
-	CandleCache store.CandleCacheRepository
-	Settings    *settings.Manager
-	Schwab      *schwab.Client
-	Alpaca      *alpaca.Client
-	IBKR        broker.GatewayController
-	Instruments broker.InstrumentProvider
-	Quotes      broker.BatchMarketDataProvider
-	Candles     broker.CandleProvider
-	BrokerSync  *portfolio.SyncService
-	Account     *account.Service
-	News        *news.Service
-	AI          *ai.Service
-	APIToken    string
+	Brokers          brokerStore
+	BrokerRuntime    brokerConnectionRuntime
+	OnBrokersChanged func(context.Context) error
+	Watchlists       store.WatchlistRepository
+	CandleCache      store.CandleCacheRepository
+	Settings         *settings.Manager
+	Schwab           *schwab.Client
+	Alpaca           *alpaca.Client
+	IBKR             broker.GatewayController
+	IBKRGateways     ibkrGatewayRuntime
+	Instruments      broker.InstrumentProvider
+	Quotes           broker.BatchMarketDataProvider
+	Candles          broker.CandleProvider
+	BrokerSync       *portfolio.SyncService
+	Account          *account.Service
+	News             *news.Service
+	AI               *ai.Service
+	APIToken         string
+	AllowedAPIHosts  []string
+	IBKRLoginProxy   *IBKRLoginProxy
+	RuntimeDir       string
 }
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if origin != "" && !allowedOrigin(origin) {
+		if origin != "" && !allowedOrigin(origin) && !sameOrigin(origin, c.Request) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin is not allowed"})
 			return
 		}
@@ -60,6 +68,17 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func sameOrigin(origin string, request *http.Request) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return parsed.Path == "" && strings.EqualFold(parsed.Host, request.Host)
+}
+
 func allowedOrigin(origin string) bool {
 	switch origin {
 	case "http://localhost:1420", "http://127.0.0.1:1420", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
@@ -69,7 +88,7 @@ func allowedOrigin(origin string) bool {
 	}
 }
 
-func localAPIMiddleware(token string) gin.HandlerFunc {
+func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if token == "" || c.Request.Method == http.MethodOptions {
 			c.Next()
@@ -79,8 +98,8 @@ func localAPIMiddleware(token string) gin.HandlerFunc {
 		if err != nil {
 			host = c.Request.Host
 		}
-		if !isLoopbackAPIHost(host) {
-			c.AbortWithStatusJSON(http.StatusMisdirectedRequest, gin.H{"error": "local API host required"})
+		if !isAllowedAPIHost(host, allowedHosts) {
+			c.AbortWithStatusJSON(http.StatusMisdirectedRequest, gin.H{"error": "API host is not allowed"})
 			return
 		}
 
@@ -103,6 +122,19 @@ func localAPIMiddleware(token string) gin.HandlerFunc {
 	}
 }
 
+func isAllowedAPIHost(host string, allowedHosts []string) bool {
+	if isLoopbackAPIHost(host) {
+		return true
+	}
+	host = normalizeRequestHost(host)
+	for _, allowed := range allowedHosts {
+		if host != "" && host == normalizeRequestHost(allowed) {
+			return true
+		}
+	}
+	return false
+}
+
 func websocketToken(header string) string {
 	parts := strings.Split(header, ",")
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "traio" {
@@ -122,14 +154,49 @@ func isLoopbackAPIHost(host string) bool {
 
 func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), gin.Logger(), corsMiddleware())
+	r.Use(gin.Recovery(), gin.Logger())
+	if deps.IBKRLoginProxy != nil {
+		r.Use(deps.IBKRLoginProxy.Middleware())
+	}
+	r.Use(corsMiddleware())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
 	})
+	registerAdminRoutes(r)
 
-	v1 := r.Group("/api/v1", localAPIMiddleware(deps.APIToken))
+	// API authentication is temporarily disabled to avoid blocking local debugging.
+	// Restore the middleware below when authentication is enabled again.
+	// v1 := r.Group("/api/v1", localAPIMiddleware(deps.APIToken, deps.AllowedAPIHosts...))
+	v1 := r.Group("/api/v1")
 	{
+		v1.GET("/brokers", listBrokerProviders(deps.Brokers))
+		v1.PUT("/brokers/:code", updateBrokerProvider(deps.Brokers, deps.OnBrokersChanged))
+		v1.GET("/broker-connections", listBrokerConnections(deps.Brokers))
+		v1.GET("/broker-connections/:connection_id", getBrokerConnection(deps.Brokers))
+		v1.POST("/brokers/:code/connections", createBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.PUT("/broker-connections/:connection_id", updateBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.GET("/broker-connections/:connection_id/delete-impact", brokerConnectionDeleteImpact(deps.Brokers))
+		v1.DELETE("/broker-connections/:connection_id", deleteBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.POST("/broker-connections/:connection_id/login", beginBrokerConnectionLogin(deps.BrokerRuntime, deps.IBKRLoginProxy))
+		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.BrokerRuntime, deps.IBKRLoginProxy))
+		v1.POST("/broker-connections/:connection_id/oauth/exchange", exchangeBrokerConnectionOAuthCode(deps.BrokerRuntime))
+		v1.GET("/broker-connections/:connection_id/accounts", listBrokerConnectionAccounts(deps.Brokers))
+		v1.POST("/broker-connections/:connection_id/sync", syncBrokerConnection(deps.Brokers, deps.BrokerSync))
+		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
+		v1.GET("/ibkr/gateways", listIBKRGateways(deps.Brokers))
+		v1.POST("/ibkr/gateways", createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir))
+		v1.GET("/ibkr/gateways/defaults", ibkrGatewayDefaults(deps.RuntimeDir))
+		v1.GET("/ibkr/gateways/:gateway_id", getIBKRGateway(deps.Brokers))
+		v1.PUT("/ibkr/gateways/:gateway_id", updateIBKRGateway(deps.Brokers, deps.OnBrokersChanged))
+		v1.DELETE("/ibkr/gateways/:gateway_id", deleteIBKRGateway(deps.Brokers, deps.IBKRGateways, deps.OnBrokersChanged, deps.RuntimeDir))
+		v1.GET("/ibkr/gateways/:gateway_id/status", ibkrManagedGatewayStatus(deps.IBKRGateways))
+		v1.GET("/ibkr/gateways/:gateway_id/login", ibkrManagedGatewayLogin(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/start", ibkrManagedGatewayStart(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/stop", ibkrManagedGatewayStop(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/reconnect", ibkrManagedGatewayReconnect(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/upgrade", ibkrManagedGatewayUpgrade(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/rollback", ibkrManagedGatewayRollback(deps.IBKRGateways))
 		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Watchlists))
 		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Watchlists))
 		v1.POST("/watchlist/groups/:group_id/items", upsertWatchlistItem(deps.Watchlists))

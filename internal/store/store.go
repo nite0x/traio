@@ -74,107 +74,20 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
 	UNIQUE(group_id, symbol)
 );
 
-CREATE TABLE IF NOT EXISTS oauth_tokens (
-	provider TEXT PRIMARY KEY,
-	access_token TEXT NOT NULL,
-	refresh_token TEXT,
-	expires_at TEXT,
-	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS app_settings (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	data TEXT NOT NULL,
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-	CREATE TABLE IF NOT EXISTS broker_accounts (
-		broker TEXT NOT NULL,
-		account TEXT NOT NULL DEFAULT '',
-		display_name TEXT NOT NULL DEFAULT '',
-		account_type TEXT NOT NULL DEFAULT '',
-		status TEXT NOT NULL DEFAULT '',
-		currency TEXT NOT NULL DEFAULT '',
-		synced_at TEXT NOT NULL,
-		PRIMARY KEY (broker, account)
-	);
-
-	CREATE TABLE IF NOT EXISTS broker_account_balances (
-		broker TEXT NOT NULL,
-		account TEXT NOT NULL DEFAULT '',
-		currency TEXT NOT NULL DEFAULT '',
-		net_liquidation REAL NOT NULL DEFAULT 0,
-		total_cash_value REAL NOT NULL DEFAULT 0,
-		gross_position_value REAL NOT NULL DEFAULT 0,
-		buying_power REAL NOT NULL DEFAULT 0,
-		unrealized_pnl REAL NOT NULL DEFAULT 0,
-		realized_pnl REAL NOT NULL DEFAULT 0,
-		settled_cash REAL NOT NULL DEFAULT 0,
-		exchange_rate REAL NOT NULL DEFAULT 0,
-		is_base_currency INTEGER NOT NULL DEFAULT 0,
-		synced_at TEXT NOT NULL,
-		PRIMARY KEY (broker, account, currency),
-		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
-			ON DELETE CASCADE
-	);
-
-	CREATE TABLE IF NOT EXISTS broker_asset_positions (
-		broker TEXT NOT NULL,
-		account TEXT NOT NULL DEFAULT '',
-		asset_type TEXT NOT NULL,
-		asset_key TEXT NOT NULL,
-		symbol TEXT NOT NULL DEFAULT '',
-		name TEXT NOT NULL DEFAULT '',
-		conid INTEGER,
-		currency TEXT NOT NULL DEFAULT '',
-		quantity REAL NOT NULL,
-		avg_cost REAL,
-		market_price REAL,
-		market_value REAL NOT NULL DEFAULT 0,
-		unrealized_pnl REAL,
-		realized_pnl REAL,
-		cost_basis REAL,
-		day_pnl REAL,
-		day_pnl_pct REAL,
-		raw_payload TEXT,
-		synced_at TEXT NOT NULL,
-		PRIMARY KEY (broker, account, asset_key),
-		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
-			ON DELETE CASCADE
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol
-		ON broker_asset_positions (symbol);
-
-	CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key
-		ON broker_asset_positions (asset_key);
-
-	CREATE TABLE IF NOT EXISTS broker_account_performance (
-		broker TEXT NOT NULL,
-		account TEXT NOT NULL DEFAULT '',
-		daily_pnl REAL NOT NULL DEFAULT 0,
-		net_liquidation REAL NOT NULL DEFAULT 0,
-		unrealized_pnl REAL NOT NULL DEFAULT 0,
-		excess_liquidity REAL NOT NULL DEFAULT 0,
-		market_value REAL NOT NULL DEFAULT 0,
-		synced_at TEXT NOT NULL,
-		PRIMARY KEY (broker, account),
-		FOREIGN KEY (broker, account) REFERENCES broker_accounts (broker, account)
-			ON DELETE CASCADE
-	);
-
-	CREATE TABLE IF NOT EXISTS broker_sync_status (
-		broker TEXT NOT NULL,
-		account TEXT NOT NULL DEFAULT '',
-		data_type TEXT NOT NULL,
-		synced_at TEXT NOT NULL DEFAULT '',
-		last_attempt_at TEXT NOT NULL,
-		last_error TEXT NOT NULL DEFAULT '',
-		item_count INTEGER NOT NULL DEFAULT 0,
-		PRIMARY KEY (broker, account, data_type)
-	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	if err := s.requireCurrentBrokerSchemaSQLite(); err != nil {
+		return err
+	}
+	if err := s.initializeBrokerModelSQLite(); err != nil {
 		return err
 	}
 	if err := s.ensureWatchlistItemColumns(); err != nil {
@@ -188,6 +101,47 @@ CREATE TABLE IF NOT EXISTS app_settings (
 		ON CONFLICT(id) DO NOTHING;
 	`)
 	return err
+}
+
+// requireCurrentBrokerSchemaSQLite deliberately refuses legacy broker tables.
+// This release is a direct schema cutover: callers must back up and recreate
+// the SQLite database instead of expecting an implicit data migration.
+func (s *Store) requireCurrentBrokerSchemaSQLite() error {
+	var exists int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'broker_accounts'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(`PRAGMA table_info(broker_accounts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasProviderAccountID := false
+	hasProviderID := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		hasProviderAccountID = hasProviderAccountID || name == "provider_account_id"
+		hasProviderID = hasProviderID || name == "provider_id"
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasProviderAccountID || !hasProviderID {
+		return fmt.Errorf("legacy SQLite broker schema detected: back up and recreate the database; automatic migration is intentionally disabled")
+	}
+	return nil
 }
 
 func (s *Store) ensureWatchlistItemColumns() error {
