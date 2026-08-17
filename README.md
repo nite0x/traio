@@ -129,7 +129,10 @@ Content-Type: application/json
 | 指定本地目录 | 已自行解压，在 `config.yaml` 设置 `gateway_dir` |
 | 自动下载 | 能访问 IBKR CDN，留空 `bundled_gateway_dir` |
 
-登录：浏览器打开 `https://localhost:5680/sso/Login`，完成认证后 Gateway session 保持有效。
+登录：服务端开发会在 `5680–5699` 中自动分配端口；打包桌面端使用独立的
+`5780–5799` 端口段，因此两边的多个 Gateway 可以同时运行。创建时会跳过当前数据库
+已配置和系统正在监听的端口。`TRAIO_IBKR_GATEWAY_PORT` 可覆盖自动分配范围的起始端口；
+已保存实例仍以数据库配置为准。
 
 ### 通过服务域名登录 IBKR
 

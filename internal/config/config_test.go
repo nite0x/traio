@@ -19,6 +19,53 @@ func TestResolveServerPortEnvOverride(t *testing.T) {
 	}
 }
 
+func TestResolveIBKRGatewayPortDefaultsByRuntime(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "")
+	if got := resolveIBKRGatewayPort(false); got != DevIBKRGatewayPort {
+		t.Fatalf("got %d, want %d", got, DevIBKRGatewayPort)
+	}
+	if got := resolveIBKRGatewayPort(true); got != DesktopIBKRGatewayPort {
+		t.Fatalf("got %d, want %d", got, DesktopIBKRGatewayPort)
+	}
+}
+
+func TestResolveIBKRGatewayPortRange(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6200")
+	start, end := ResolveIBKRGatewayPortRange()
+	if start != 6200 || end != 6219 {
+		t.Fatalf("got %d-%d, want 6200-6219", start, end)
+	}
+}
+
+func TestResolveIBKRGatewayPortRangeCapsAtMaximumPort(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "65530")
+	start, end := ResolveIBKRGatewayPortRange()
+	if start != 65530 || end != 65535 {
+		t.Fatalf("got %d-%d, want 65530-65535", start, end)
+	}
+}
+
+func TestResolveIBKRGatewayPortEnvOverride(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "5688")
+	if got := ResolveIBKRGatewayPort(); got != 5688 {
+		t.Fatalf("got %d, want %d", got, 5688)
+	}
+}
+
+func TestEmbeddedExecutableLocations(t *testing.T) {
+	for _, path := range []string{
+		"/Applications/Traio.app/Contents/MacOS/traio-server",
+		"/Applications/Traio.app/Contents/Resources/traio-server",
+	} {
+		if !isEmbeddedExecutable(path) {
+			t.Fatalf("expected %q to be recognized as embedded", path)
+		}
+	}
+	if isEmbeddedExecutable("/Users/alice/open/traio/bin/traio-server") {
+		t.Fatal("development binary was recognized as embedded")
+	}
+}
+
 func TestLocalAPIURL(t *testing.T) {
 	if got := LocalAPIURL(38181); got != "http://127.0.0.1:38181" {
 		t.Fatalf("got %q", got)

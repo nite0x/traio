@@ -2,17 +2,28 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
 )
+
+var (
+	errNoAvailableGatewayPort = errors.New("no available gateway port")
+	errGatewayPortUnavailable = errors.New("gateway port is unavailable")
+	gatewayPortAllocationMu   sync.Mutex
+)
+
+type gatewayPortAvailableFunc func(int) bool
 
 type ibkrGatewayRuntime interface {
 	IBKRGatewayStatus(int64) (any, error)
@@ -49,18 +60,31 @@ func listIBKRGateways(st brokerStore) gin.HandlerFunc {
 	}
 }
 
-func ibkrGatewayDefaults(runtimeDir string) gin.HandlerFunc {
+func ibkrGatewayDefaults(st brokerStore, runtimeDir string, portAvailable gatewayPortAvailableFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if st == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker store unavailable"})
+			return
+		}
 		gatewayKey := strings.TrimSpace(c.DefaultQuery("gateway_key", "local"))
 		gatewayDir := config.DefaultIBKRGatewayDir(runtimeDir, gatewayKey)
 		if gatewayDir == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "gateway_key must be a path-safe name"})
 			return
 		}
+		gatewayPortAllocationMu.Lock()
+		gatewayPort, err := nextAvailableIBKRGatewayPort(c.Request.Context(), st, portAvailable)
+		gatewayPortAllocationMu.Unlock()
+		if err != nil {
+			writeGatewayPortError(c, err)
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"runtime_dir":  runtimeDir,
 			"gateway_root": config.DefaultIBKRGatewayRoot(runtimeDir),
 			"gateway_dir":  gatewayDir,
+			"gateway_port": gatewayPort,
+			"gateway_url":  fmt.Sprintf("https://localhost:%d", gatewayPort),
 			"lifecycle":    config.ResolveIBKRGatewayLifecycle(),
 		})
 	}
@@ -85,7 +109,7 @@ func getIBKRGateway(st brokerStore) gin.HandlerFunc {
 	}
 }
 
-func createIBKRGateway(st brokerStore, onChanged func(context.Context) error, runtimeDir string) gin.HandlerFunc {
+func createIBKRGateway(st brokerStore, onChanged func(context.Context) error, runtimeDir string, portAvailable gatewayPortAvailableFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if st == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker store unavailable"})
@@ -107,6 +131,31 @@ func createIBKRGateway(st brokerStore, onChanged func(context.Context) error, ru
 				return
 			}
 		}
+		gatewayPortAllocationMu.Lock()
+		if req.GatewayPort == 0 {
+			var err error
+			req.GatewayPort, err = nextAvailableIBKRGatewayPort(c.Request.Context(), st, portAvailable)
+			if err != nil {
+				gatewayPortAllocationMu.Unlock()
+				writeGatewayPortError(c, err)
+				return
+			}
+		} else {
+			available, err := gatewayPortIsAvailable(c.Request.Context(), st, req.GatewayPort, portAvailable)
+			if err != nil {
+				gatewayPortAllocationMu.Unlock()
+				writeGatewayPortError(c, err)
+				return
+			}
+			if !available {
+				gatewayPortAllocationMu.Unlock()
+				writeGatewayPortError(c, fmt.Errorf("%w: %d", errGatewayPortUnavailable, req.GatewayPort))
+				return
+			}
+		}
+		if strings.TrimSpace(req.GatewayURL) == "" {
+			req.GatewayURL = fmt.Sprintf("https://localhost:%d", req.GatewayPort)
+		}
 		if strings.TrimSpace(req.Lifecycle) == "" {
 			req.Lifecycle = config.ResolveIBKRGatewayLifecycle()
 		}
@@ -115,6 +164,7 @@ func createIBKRGateway(st brokerStore, onChanged func(context.Context) error, ru
 			GatewayDir: req.GatewayDir, GatewayPort: req.GatewayPort,
 			Lifecycle: req.Lifecycle, Enabled: enabled,
 		})
+		gatewayPortAllocationMu.Unlock()
 		if err != nil {
 			writeBrokerStoreError(c, err)
 			return
@@ -124,6 +174,60 @@ func createIBKRGateway(st brokerStore, onChanged func(context.Context) error, ru
 		}
 		c.JSON(http.StatusCreated, gateway)
 	}
+}
+
+func nextAvailableIBKRGatewayPort(ctx context.Context, st brokerStore, portAvailable gatewayPortAvailableFunc) (int, error) {
+	if portAvailable == nil {
+		portAvailable = loopbackGatewayPortAvailable
+	}
+	gateways, err := st.ListIBKRGateways(ctx)
+	if err != nil {
+		return 0, err
+	}
+	configured := make(map[int]bool, len(gateways))
+	for _, gateway := range gateways {
+		configured[gateway.GatewayPort] = true
+	}
+	start, end := config.ResolveIBKRGatewayPortRange()
+	for port := start; port <= end; port++ {
+		if !configured[port] && portAvailable(port) {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("%w in range %d-%d", errNoAvailableGatewayPort, start, end)
+}
+
+func gatewayPortIsAvailable(ctx context.Context, st brokerStore, port int, portAvailable gatewayPortAvailableFunc) (bool, error) {
+	if portAvailable == nil {
+		portAvailable = loopbackGatewayPortAvailable
+	}
+	gateways, err := st.ListIBKRGateways(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, gateway := range gateways {
+		if gateway.GatewayPort == port {
+			return false, nil
+		}
+	}
+	return portAvailable(port), nil
+}
+
+func loopbackGatewayPortAvailable(port int) bool {
+	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+func writeGatewayPortError(c *gin.Context, err error) {
+	if errors.Is(err, errNoAvailableGatewayPort) || errors.Is(err, errGatewayPortUnavailable) {
+		c.JSON(http.StatusConflict, gin.H{"error": "gateway_port_unavailable", "details": err.Error()})
+		return
+	}
+	writeBrokerStoreError(c, err)
 }
 
 func updateIBKRGateway(st brokerStore, onChanged func(context.Context) error) gin.HandlerFunc {

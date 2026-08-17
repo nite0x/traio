@@ -24,27 +24,28 @@ import (
 )
 
 type Deps struct {
-	Brokers          brokerStore
-	BrokerRuntime    brokerConnectionRuntime
-	OnBrokersChanged func(context.Context) error
-	Watchlists       store.WatchlistRepository
-	CandleCache      store.CandleCacheRepository
-	Settings         *settings.Manager
-	Schwab           *schwab.Client
-	Alpaca           *alpaca.Client
-	IBKR             broker.GatewayController
-	IBKRGateways     ibkrGatewayRuntime
-	Instruments      broker.InstrumentProvider
-	Quotes           broker.BatchMarketDataProvider
-	Candles          broker.CandleProvider
-	BrokerSync       *portfolio.SyncService
-	Account          *account.Service
-	News             *news.Service
-	AI               *ai.Service
-	APIToken         string
-	AllowedAPIHosts  []string
-	IBKRLoginProxy   *IBKRLoginProxy
-	RuntimeDir       string
+	Brokers              brokerStore
+	BrokerRuntime        brokerConnectionRuntime
+	OnBrokersChanged     func(context.Context) error
+	Watchlists           store.WatchlistRepository
+	CandleCache          store.CandleCacheRepository
+	Settings             *settings.Manager
+	Schwab               *schwab.Client
+	Alpaca               *alpaca.Client
+	IBKR                 broker.GatewayController
+	IBKRGateways         ibkrGatewayRuntime
+	Instruments          broker.InstrumentProvider
+	Quotes               broker.BatchMarketDataProvider
+	Candles              broker.CandleProvider
+	BrokerSync           *portfolio.SyncService
+	Account              *account.Service
+	News                 *news.Service
+	AI                   *ai.Service
+	APIToken             string
+	AllowedAPIHosts      []string
+	IBKRLoginProxy       *IBKRLoginProxy
+	RuntimeDir           string
+	gatewayPortAvailable gatewayPortAvailableFunc
 }
 
 func corsMiddleware() gin.HandlerFunc {
@@ -153,6 +154,10 @@ func isLoopbackAPIHost(host string) bool {
 }
 
 func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
+	portAvailable := deps.gatewayPortAvailable
+	if portAvailable == nil {
+		portAvailable = loopbackGatewayPortAvailable
+	}
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
 	if deps.IBKRLoginProxy != nil {
@@ -185,8 +190,8 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.POST("/broker-connections/:connection_id/sync", syncBrokerConnection(deps.Brokers, deps.BrokerSync))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
 		v1.GET("/ibkr/gateways", listIBKRGateways(deps.Brokers))
-		v1.POST("/ibkr/gateways", createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir))
-		v1.GET("/ibkr/gateways/defaults", ibkrGatewayDefaults(deps.RuntimeDir))
+		v1.POST("/ibkr/gateways", createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir, portAvailable))
+		v1.GET("/ibkr/gateways/defaults", ibkrGatewayDefaults(deps.Brokers, deps.RuntimeDir, portAvailable))
 		v1.GET("/ibkr/gateways/:gateway_id", getIBKRGateway(deps.Brokers))
 		v1.PUT("/ibkr/gateways/:gateway_id", updateIBKRGateway(deps.Brokers, deps.OnBrokersChanged))
 		v1.DELETE("/ibkr/gateways/:gateway_id", deleteIBKRGateway(deps.Brokers, deps.IBKRGateways, deps.OnBrokersChanged, deps.RuntimeDir))

@@ -603,6 +603,8 @@
           const defaults = await api(`/api/v1/ibkr/gateways/defaults?gateway_key=${encodeURIComponent(gatewayKey || "local")}`);
           generatedGatewayDir = defaults.gateway_dir || "";
           els.gatewayDir.value = generatedGatewayDir;
+          if (defaults.gateway_port) els.gatewayPort.value = String(defaults.gateway_port);
+          if (defaults.gateway_url) els.gatewayUrl.value = defaults.gateway_url;
           if (defaults.lifecycle) els.gatewayLifecycle.value = defaults.lifecycle;
         } catch (error) {
           if (error.code !== "AUTH_REQUIRED") toast(error.message, "error");

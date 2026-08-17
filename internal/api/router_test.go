@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +18,8 @@ import (
 	"github.com/nite/traio/internal/portfolio"
 	"github.com/nite/traio/internal/store"
 )
+
+func assumeGatewayPortsAvailable(int) bool { return true }
 
 func TestBrokerSyncRoutes(t *testing.T) {
 	router := NewRouter(Deps{}, ServerControl{})
@@ -141,7 +145,7 @@ func TestIBKRGatewayResourceDoesNotCreateBrokerConnection(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	router := NewRouter(Deps{Brokers: st}, ServerControl{})
+	router := NewRouter(Deps{Brokers: st, gatewayPortAvailable: assumeGatewayPortsAvailable}, ServerControl{})
 	body := `{"gateway_key":"paper","name":"Paper","gateway_url":"https://localhost:5680","gateway_dir":"/tmp/traio-test-paper","gateway_port":5680,"lifecycle":"managed","enabled":false}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ibkr/gateways", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -165,18 +169,22 @@ func TestIBKRGatewayResourceDoesNotCreateBrokerConnection(t *testing.T) {
 
 func TestIBKRGatewayCreateUsesRuntimeDefaultDirectory(t *testing.T) {
 	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "managed")
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "5681")
 	runtimeDir := t.TempDir()
 	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	router := NewRouter(Deps{Brokers: st, RuntimeDir: runtimeDir}, ServerControl{})
+	router := NewRouter(Deps{Brokers: st, RuntimeDir: runtimeDir, gatewayPortAvailable: assumeGatewayPortsAvailable}, ServerControl{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ibkr/gateways/defaults?gateway_key=paper", nil)
 	res := httptest.NewRecorder()
 	router.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), filepath.Join(runtimeDir, "ibkr-gateways", "paper")) {
+	if res.Code != http.StatusOK ||
+		!strings.Contains(res.Body.String(), filepath.Join(runtimeDir, "ibkr-gateways", "paper")) ||
+		!strings.Contains(res.Body.String(), `"gateway_port":5681`) ||
+		!strings.Contains(res.Body.String(), `"gateway_url":"https://localhost:5681"`) {
 		t.Fatalf("Gateway defaults: got %d %s", res.Code, res.Body.String())
 	}
 
@@ -197,6 +205,202 @@ func TestIBKRGatewayCreateUsesRuntimeDefaultDirectory(t *testing.T) {
 	}
 	if gateway.Lifecycle != "managed" {
 		t.Fatalf("lifecycle: got %q", gateway.Lifecycle)
+	}
+}
+
+func TestIBKRGatewayCreateUsesRuntimeDefaultPortAndURL(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "5681")
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	router := NewRouter(Deps{Brokers: st, RuntimeDir: runtimeDir, gatewayPortAvailable: assumeGatewayPortsAvailable}, ServerControl{})
+
+	body := `{"gateway_key":"local","name":"Local Gateway","enabled":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ibkr/gateways", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create Gateway with port defaults: got %d %s", res.Code, res.Body.String())
+	}
+	var gateway store.IBKRGateway
+	if err := json.Unmarshal(res.Body.Bytes(), &gateway); err != nil {
+		t.Fatalf("decode Gateway: %v", err)
+	}
+	if gateway.GatewayPort != 5681 || gateway.GatewayURL != "https://localhost:5681" {
+		t.Fatalf("unexpected Gateway endpoint: %#v", gateway)
+	}
+}
+
+func TestIBKRGatewayCreateAllocatesSuccessivePorts(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6500")
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	router := NewRouter(Deps{
+		Brokers: st, RuntimeDir: runtimeDir, gatewayPortAvailable: assumeGatewayPortsAvailable,
+	}, ServerControl{})
+
+	for index, wantPort := range []int{6500, 6501, 6502} {
+		body := fmt.Sprintf(`{"gateway_key":"gateway-%d","name":"Gateway %d","enabled":false}`, index, index)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/ibkr/gateways", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("create Gateway %d: got %d %s", index, res.Code, res.Body.String())
+		}
+		var gateway store.IBKRGateway
+		if err := json.Unmarshal(res.Body.Bytes(), &gateway); err != nil {
+			t.Fatalf("decode Gateway %d: %v", index, err)
+		}
+		if gateway.GatewayPort != wantPort || gateway.GatewayURL != fmt.Sprintf("https://localhost:%d", wantPort) {
+			t.Fatalf("Gateway %d endpoint: %#v", index, gateway)
+		}
+	}
+}
+
+func TestIBKRGatewayConcurrentCreateAllocatesUniquePorts(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6520")
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	router := NewRouter(Deps{
+		Brokers: st, RuntimeDir: runtimeDir, gatewayPortAvailable: assumeGatewayPortsAvailable,
+	}, ServerControl{})
+
+	type createResult struct {
+		code int
+		body []byte
+	}
+	start := make(chan struct{})
+	results := make(chan createResult, 2)
+	for index := 0; index < 2; index++ {
+		go func(index int) {
+			<-start
+			body := fmt.Sprintf(`{"gateway_key":"concurrent-%d","name":"Concurrent %d","enabled":false}`, index, index)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/ibkr/gateways", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			res := httptest.NewRecorder()
+			router.ServeHTTP(res, req)
+			results <- createResult{code: res.Code, body: res.Body.Bytes()}
+		}(index)
+	}
+	close(start)
+	ports := map[int]bool{}
+	for index := 0; index < 2; index++ {
+		result := <-results
+		if result.code != http.StatusCreated {
+			t.Fatalf("concurrent create: got %d %s", result.code, result.body)
+		}
+		var gateway store.IBKRGateway
+		if err := json.Unmarshal(result.body, &gateway); err != nil {
+			t.Fatalf("decode concurrent Gateway: %v", err)
+		}
+		ports[gateway.GatewayPort] = true
+	}
+	if !ports[6520] || !ports[6521] || len(ports) != 2 {
+		t.Fatalf("unexpected concurrent ports: %#v", ports)
+	}
+}
+
+func TestIBKRGatewayDefaultsSkipsConfiguredAndOccupiedPorts(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6200")
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	for _, port := range []int{6200, 6202} {
+		_, err := st.UpsertIBKRGateway(t.Context(), store.IBKRGateway{
+			GatewayKey: fmt.Sprintf("gateway-%d", port), GatewayURL: fmt.Sprintf("https://localhost:%d", port),
+			GatewayDir: filepath.Join(runtimeDir, fmt.Sprintf("gateway-%d", port)), GatewayPort: port, Enabled: false,
+		})
+		if err != nil {
+			t.Fatalf("create configured Gateway %d: %v", port, err)
+		}
+	}
+	router := NewRouter(Deps{
+		Brokers: st, RuntimeDir: runtimeDir,
+		gatewayPortAvailable: func(port int) bool { return port != 6201 },
+	}, ServerControl{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ibkr/gateways/defaults?gateway_key=next", nil)
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"gateway_port":6203`) {
+		t.Fatalf("Gateway defaults: got %d %s", res.Code, res.Body.String())
+	}
+}
+
+func TestIBKRGatewayDefaultsReportsExhaustedPortRange(t *testing.T) {
+	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6300")
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	router := NewRouter(Deps{
+		Brokers: st, RuntimeDir: runtimeDir,
+		gatewayPortAvailable: func(int) bool { return false },
+	}, ServerControl{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ibkr/gateways/defaults?gateway_key=full", nil)
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "6300-6319") {
+		t.Fatalf("Gateway defaults: got %d %s", res.Code, res.Body.String())
+	}
+}
+
+func TestIBKRGatewayCreateRejectsOccupiedPort(t *testing.T) {
+	runtimeDir := t.TempDir()
+	st, err := store.Open(filepath.Join(runtimeDir, "api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	router := NewRouter(Deps{
+		Brokers: st, RuntimeDir: runtimeDir,
+		gatewayPortAvailable: func(int) bool { return false },
+	}, ServerControl{})
+
+	body := `{"gateway_key":"occupied","name":"Occupied","gateway_port":6400,"gateway_url":"https://localhost:6400","enabled":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ibkr/gateways", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "gateway_port_unavailable") {
+		t.Fatalf("create occupied Gateway: got %d %s", res.Code, res.Body.String())
+	}
+}
+
+func TestLoopbackGatewayPortAvailable(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if loopbackGatewayPortAvailable(port) {
+		_ = listener.Close()
+		t.Fatalf("port %d reported available while listening", port)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if !loopbackGatewayPortAvailable(port) {
+		t.Fatalf("port %d remained unavailable after listener closed", port)
 	}
 }
 

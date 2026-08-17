@@ -27,6 +27,15 @@ const (
 	DefaultServerPort = 38180
 	// DevServerPort is used for local development (go run, make server, tauri dev).
 	DevServerPort = 38181
+	// DevIBKRGatewayPort keeps locally-run development Gateways on IBKR's
+	// conventional port.
+	DevIBKRGatewayPort = 5680
+	// DesktopIBKRGatewayPort starts the packaged desktop allocation range far
+	// enough from development to keep multiple Gateways isolated.
+	DesktopIBKRGatewayPort = 5780
+	// IBKRGatewayPortRangeSize is the number of automatically allocated ports
+	// reserved for one Traio runtime class.
+	IBKRGatewayPortRangeSize = 20
 
 	IBKRGatewayLifecycleManaged    = "managed"
 	IBKRGatewayLifecyclePersistent = "persistent"
@@ -146,7 +155,7 @@ func (c *IBKRConfig) normalize(baseDir string) {
 		}
 	}
 	if c.GatewayPort == 0 {
-		c.GatewayPort = 5680
+		c.GatewayPort = ResolveIBKRGatewayPort()
 	}
 	if c.GatewayURL == "" {
 		c.GatewayURL = fmt.Sprintf("https://localhost:%d", c.GatewayPort)
@@ -185,6 +194,35 @@ func ResolveServerPort() int {
 		return DefaultServerPort
 	}
 	return DevServerPort
+}
+
+// ResolveIBKRGatewayPort selects the default port for a newly managed local
+// Gateway. Persisted Gateway records remain authoritative once created.
+func ResolveIBKRGatewayPort() int {
+	return resolveIBKRGatewayPort(IsEmbedded())
+}
+
+// ResolveIBKRGatewayPortRange returns the inclusive automatic allocation range.
+// TRAIO_IBKR_GATEWAY_PORT overrides the first port in the range.
+func ResolveIBKRGatewayPortRange() (int, int) {
+	start := ResolveIBKRGatewayPort()
+	end := start + IBKRGatewayPortRangeSize - 1
+	if end > 65535 {
+		end = 65535
+	}
+	return start, end
+}
+
+func resolveIBKRGatewayPort(embedded bool) int {
+	if v := os.Getenv("TRAIO_IBKR_GATEWAY_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	if embedded {
+		return DesktopIBKRGatewayPort
+	}
+	return DevIBKRGatewayPort
 }
 
 // LocalAPIURL builds a loopback base URL for the given port.
@@ -315,10 +353,15 @@ func DefaultIBKRGatewayDir(runtimeDir, gatewayKey string) string {
 	return filepath.Join(DefaultIBKRGatewayRoot(runtimeDir), key)
 }
 
-// IsEmbedded reports whether this binary runs from a macOS .app bundle Resources folder.
+// IsEmbedded reports whether this binary runs from a macOS .app bundle.
 func IsEmbedded() bool {
 	exe, err := os.Executable()
-	return err == nil && strings.Contains(exe, ".app/Contents/Resources")
+	return err == nil && isEmbeddedExecutable(exe)
+}
+
+func isEmbeddedExecutable(exe string) bool {
+	return strings.Contains(exe, ".app/Contents/MacOS/") ||
+		strings.Contains(exe, ".app/Contents/Resources/")
 }
 
 // ResolveBundledGatewayDir locates the packaged IBKR gateway next to the executable.
