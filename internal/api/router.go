@@ -206,6 +206,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
 		v1.GET("/quotes/:symbol/history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles))
+		v1.GET("/portfolio/snapshot", portfolioSnapshot(deps.BrokerSync))
 		v1.GET("/positions", listPositions(deps.BrokerSync))
 		v1.GET("/brokers/sync-status", brokerSyncStatus(deps.BrokerSync))
 		v1.POST("/brokers/sync", syncBrokers(deps.BrokerSync))
@@ -478,6 +479,21 @@ func listPositions(svc *portfolio.SyncService) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, pos)
+	}
+}
+
+func portfolioSnapshot(svc *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio snapshot is not available"})
+			return
+		}
+		snapshot, err := svc.Snapshot(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, snapshot)
 	}
 }
 

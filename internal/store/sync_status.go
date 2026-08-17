@@ -83,7 +83,7 @@ func (s *Store) RecordBrokerConnectionSyncError(
 			FROM broker_accounts a
 			JOIN broker_account_connections ac ON ac.account_id = a.id
 			JOIN broker_connections c ON c.id = ac.connection_id
-			WHERE ac.connection_id = ? AND a.provider_id = c.provider_id
+			WHERE ac.connection_id = ? AND a.provider_code = c.provider_code
 				AND a.provider_account_id = ?`, connectionID, accountScope).Scan(&id)
 		if err == nil {
 			accountID = id
@@ -112,14 +112,13 @@ func (s *Store) RecordBrokerConnectionSyncError(
 
 func (s *Store) ListBrokerSyncStatuses(ctx context.Context) ([]BrokerSyncStatus, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT x.connection_id, x.account_id, p.code,
+		SELECT x.connection_id, x.account_id, c.provider_code,
 			COALESCE(a.provider_account_id, x.account_scope), x.data_type,
 			x.synced_at, x.last_attempt_at, x.last_error, x.item_count
 		FROM broker_sync_status x
 		JOIN broker_connections c ON c.id = x.connection_id
-		JOIN broker_providers p ON p.id = c.provider_id
 		LEFT JOIN broker_accounts a ON a.id = x.account_id
-		ORDER BY p.code, x.connection_id, x.account_scope, x.data_type`)
+		ORDER BY c.provider_code, x.connection_id, x.account_scope, x.data_type`)
 	if err != nil {
 		return nil, err
 	}

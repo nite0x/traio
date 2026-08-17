@@ -19,20 +19,23 @@ type Quote struct {
 
 // Position is a normalized holding.
 type Position struct {
-	BrokerAccountID int64   `json:"broker_account_id,omitempty"`
-	ConnectionID    int64   `json:"connection_id,omitempty"`
-	Symbol          string  `json:"symbol"`
-	ConID           int64   `json:"conid"`
-	Quantity        float64 `json:"quantity"`
-	AvgCost         float64 `json:"avg_cost"`
-	MarketPrice     float64 `json:"market_price"`
-	MarketValue     float64 `json:"market_value"`
-	Unrealized      float64 `json:"unrealized_pnl"`
-	Realized        float64 `json:"realized_pnl"`
-	Currency        string  `json:"currency"`
-	Account         string  `json:"account"`
-	Broker          string  `json:"broker"`
-	SyncedAt        string  `json:"synced_at,omitempty"`
+	BrokerAccountID int64    `json:"broker_account_id,omitempty"`
+	ConnectionID    int64    `json:"connection_id,omitempty"`
+	Symbol          string   `json:"symbol"`
+	Name            string   `json:"name,omitempty"`
+	ConID           int64    `json:"conid"`
+	Quantity        float64  `json:"quantity"`
+	AvgCost         float64  `json:"avg_cost"`
+	MarketPrice     float64  `json:"market_price"`
+	MarketValue     float64  `json:"market_value"`
+	Unrealized      float64  `json:"unrealized_pnl"`
+	Realized        float64  `json:"realized_pnl"`
+	DailyPnL        *float64 `json:"daily_pnl,omitempty"`
+	DailyPnLPct     *float64 `json:"daily_pnl_pct,omitempty"`
+	Currency        string   `json:"currency"`
+	Account         string   `json:"account"`
+	Broker          string   `json:"broker"`
+	SyncedAt        string   `json:"synced_at,omitempty"`
 }
 
 // AccountSummary is a normalized real-time account snapshot.

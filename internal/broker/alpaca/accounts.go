@@ -34,6 +34,8 @@ type alpacaPosition struct {
 	MarketValue   string `json:"market_value"`
 	CostBasis     string `json:"cost_basis"`
 	UnrealizedPL  string `json:"unrealized_pl"`
+	IntradayPL    string `json:"unrealized_intraday_pl"`
+	IntradayPLPct string `json:"unrealized_intraday_plpc"`
 	CurrentPrice  string `json:"current_price"`
 	Side          string `json:"side"`
 }
@@ -178,6 +180,14 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 		if strings.EqualFold(position.Side, "short") && quantity > 0 {
 			quantity = -quantity
 		}
+		var dayPnL, dayPnLPct *float64
+		if value, err := parseDecimal(position.IntradayPL); err == nil && strings.TrimSpace(position.IntradayPL) != "" {
+			dayPnL = &value
+		}
+		if value, err := parseDecimal(position.IntradayPLPct); err == nil && strings.TrimSpace(position.IntradayPLPct) != "" {
+			value *= 100
+			dayPnLPct = &value
+		}
 		out = append(out, broker.Position{
 			Symbol:      strings.ToUpper(position.Symbol),
 			Quantity:    quantity,
@@ -185,6 +195,8 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 			MarketPrice: parseDecimalOrZero(position.CurrentPrice),
 			MarketValue: parseDecimalOrZero(position.MarketValue),
 			Unrealized:  parseDecimalOrZero(position.UnrealizedPL),
+			DailyPnL:    dayPnL,
+			DailyPnLPct: dayPnLPct,
 			Currency:    firstNonEmpty(account.Currency, "USD"),
 			Account:     alpacaAccountID(account),
 			Broker:      "ALPACA",

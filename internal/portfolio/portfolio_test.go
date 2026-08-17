@@ -114,6 +114,38 @@ func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
 	}
 }
 
+func TestSnapshotReadsOnlyDatabase(t *testing.T) {
+	provider := &fakeBroker{}
+	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync broker: %v", err)
+	}
+	callsAfterSync := *provider
+
+	first, err := svc.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	second, err := svc.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("read snapshot again: %v", err)
+	}
+
+	if provider.listAccountCalls != callsAfterSync.listAccountCalls ||
+		provider.detailCalls != callsAfterSync.detailCalls ||
+		provider.balanceCalls != callsAfterSync.balanceCalls ||
+		provider.positionCalls != callsAfterSync.positionCalls ||
+		provider.performanceCalls != callsAfterSync.performanceCalls {
+		t.Fatalf("database snapshot called broker: before=%#v after=%#v", callsAfterSync, provider)
+	}
+	if first.Summary.NetAssetValue != 2000 || second.Summary.SyncedAccounts != 2 {
+		t.Fatalf("unexpected snapshot: %#v", second)
+	}
+	if len(second.Positions) != 2 || len(second.CashBalances) != 4 || len(second.Allocations) != 1 {
+		t.Fatalf("unexpected snapshot resources: %#v", second)
+	}
+}
+
 func TestSyncSkipsWhenDisabled(t *testing.T) {
 	provider := &fakeBroker{}
 	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})

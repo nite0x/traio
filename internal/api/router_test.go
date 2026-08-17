@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/portfolio"
 	"github.com/nite/traio/internal/store"
 )
 
@@ -42,6 +43,7 @@ func TestBrokerSyncRoutes(t *testing.T) {
 		"POST /api/v1/ibkr/gateways/:gateway_id/start",
 		"POST /api/v1/brokers/sync",
 		"GET /api/v1/brokers/sync-status",
+		"GET /api/v1/portfolio/snapshot",
 		"GET /api/v1/ibkr/gateway/login",
 		"POST /api/v1/ibkr/gateway/upgrade",
 		"POST /api/v1/ibkr/gateway/rollback",
@@ -49,6 +51,40 @@ func TestBrokerSyncRoutes(t *testing.T) {
 		if !routes[route] {
 			t.Fatalf("missing broker sync route %s", route)
 		}
+	}
+}
+
+func TestPortfolioSnapshotReadsStoredProjections(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "snapshot-api.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	connection, err := st.UpsertBrokerConnection(t.Context(), store.BrokerConnection{
+		ProviderCode: "IBKR", ConnectionKey: "snapshot", Name: "Snapshot", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	if err := st.ReplaceBrokerConnectionAccounts(t.Context(), connection.ID, []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+		t.Fatalf("store account: %v", err)
+	}
+	if err := st.ReplaceBrokerConnectionCashBalances(t.Context(), connection.ID, "U1", []broker.CashBalance{{Currency: "USD", Total: 400, ExchangeRate: 1, IsBaseCurrency: true}}); err != nil {
+		t.Fatalf("store cash: %v", err)
+	}
+	if err := st.ReplaceBrokerConnectionAccountPositions(t.Context(), connection.ID, "U1", []broker.Position{{Symbol: "AAPL", Quantity: 2, MarketValue: 600, Currency: "USD"}}); err != nil {
+		t.Fatalf("store positions: %v", err)
+	}
+	if err := st.ReplaceBrokerConnectionAccountPerformance(t.Context(), connection.ID, broker.DailyPerformance{AccountID: "U1", NetLiquidation: 1000, MarketValue: 600, DailyPnL: 10}); err != nil {
+		t.Fatalf("store performance: %v", err)
+	}
+
+	router := NewRouter(Deps{BrokerSync: portfolio.NewSyncService(st)}, ServerControl{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/portfolio/snapshot", nil)
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"net_asset_value":1000`) || !strings.Contains(res.Body.String(), `"cash_balances"`) {
+		t.Fatalf("unexpected snapshot response: %d %s", res.Code, res.Body.String())
 	}
 }
 

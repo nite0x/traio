@@ -25,15 +25,14 @@ type BrokerAccountBalance struct {
 
 func (s *Store) ListBrokerAccountBalances(ctx context.Context) ([]BrokerAccountBalance, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT b.account_id, COALESCE(ac.connection_id, 0), p.code, a.provider_account_id,
+		SELECT b.account_id, COALESCE(ac.connection_id, 0), a.provider_code, a.provider_account_id,
 			b.currency, b.net_liquidation, b.total_cash_value,
 			b.gross_position_value, b.buying_power, b.unrealized_pnl, b.realized_pnl,
 			b.settled_cash, b.exchange_rate, b.is_base_currency, b.synced_at
 		FROM broker_account_balances b
 		JOIN broker_accounts a ON a.id = b.account_id
-		JOIN broker_providers p ON p.id = a.provider_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
-		ORDER BY p.code, a.provider_account_id, b.currency`)
+		ORDER BY a.provider_code, a.provider_account_id, b.currency`)
 	if err != nil {
 		return nil, err
 	}

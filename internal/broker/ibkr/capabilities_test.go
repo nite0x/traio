@@ -106,7 +106,7 @@ func TestClientBrokerCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cash balances: %v", err)
 	}
-	if len(balances) != 2 || !balances[0].IsBaseCurrency || balances[1].Currency != "USD" || balances[1].Settled != 450.25 {
+	if len(balances) != 1 || !balances[0].IsBaseCurrency || balances[0].Currency != "USD" || balances[0].Settled != 450.25 {
 		t.Fatalf("unexpected cash balances: %#v", balances)
 	}
 

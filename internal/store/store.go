@@ -122,7 +122,7 @@ func (s *Store) requireCurrentBrokerSchemaSQLite() error {
 	}
 	defer rows.Close()
 	hasProviderAccountID := false
-	hasProviderID := false
+	hasProviderCode := false
 	for rows.Next() {
 		var cid int
 		var name, typ string
@@ -133,12 +133,12 @@ func (s *Store) requireCurrentBrokerSchemaSQLite() error {
 			return err
 		}
 		hasProviderAccountID = hasProviderAccountID || name == "provider_account_id"
-		hasProviderID = hasProviderID || name == "provider_id"
+		hasProviderCode = hasProviderCode || name == "provider_code"
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if !hasProviderAccountID || !hasProviderID {
+	if !hasProviderAccountID || !hasProviderCode {
 		return fmt.Errorf("legacy SQLite broker schema detected: back up and recreate the database; automatic migration is intentionally disabled")
 	}
 	return nil

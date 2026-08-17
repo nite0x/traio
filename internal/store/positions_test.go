@@ -26,37 +26,50 @@ func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 		t.Fatalf("replace accounts: %v", err)
 	}
 
+	dayPnL := 4.5
+	dayPnLPct := 1.25
 	err := st.ReplaceBrokerConnectionAccountPositions(ctx, connection.ID, "U1", []broker.Position{{
 		Symbol:      "aapl",
+		Name:        "Apple Inc.",
 		ConID:       265598,
 		Quantity:    2,
 		AvgCost:     150,
 		MarketPrice: 180,
 		MarketValue: 360,
 		Unrealized:  60,
+		DailyPnL:    &dayPnL,
+		DailyPnLPct: &dayPnLPct,
 		Currency:    "usd",
 	}})
 	if err != nil {
 		t.Fatalf("replace positions: %v", err)
 	}
 
-	var assetType, assetKey, symbol, currency string
-	var avgCost, unrealized float64
+	var assetType, assetKey, symbol, name, currency string
+	var avgCost, unrealized, storedDayPnL, storedDayPnLPct float64
 	if err := st.db.QueryRow(`
-		SELECT x.asset_type, x.asset_key, x.symbol, x.currency, x.avg_cost, x.unrealized_pnl
+		SELECT x.asset_type, x.asset_key, x.symbol, x.name, x.currency, x.avg_cost,
+			x.unrealized_pnl, x.day_pnl, x.day_pnl_pct
 		FROM broker_asset_positions x
 		JOIN broker_accounts a ON a.id = x.account_id
-		JOIN broker_providers p ON p.id = a.provider_id
-		WHERE p.code = 'IBKR' AND a.provider_account_id = 'U1'`).Scan(
-		&assetType, &assetKey, &symbol, &currency, &avgCost, &unrealized,
+		WHERE a.provider_code = 'IBKR' AND a.provider_account_id = 'U1'`).Scan(
+		&assetType, &assetKey, &symbol, &name, &currency, &avgCost, &unrealized,
+		&storedDayPnL, &storedDayPnLPct,
 	); err != nil {
 		t.Fatalf("read asset projection: %v", err)
 	}
 	if assetType != "security" || assetKey != "security:conid:265598" {
 		t.Fatalf("unexpected asset identity: %s %s", assetType, assetKey)
 	}
-	if symbol != "AAPL" || currency != "USD" || avgCost != 150 || unrealized != 60 {
-		t.Fatalf("unexpected asset row: symbol=%s currency=%s avgCost=%v unrealized=%v", symbol, currency, avgCost, unrealized)
+	if symbol != "AAPL" || name != "Apple Inc." || currency != "USD" || avgCost != 150 || unrealized != 60 || storedDayPnL != dayPnL || storedDayPnLPct != dayPnLPct {
+		t.Fatalf("unexpected asset row: symbol=%s name=%s currency=%s avgCost=%v unrealized=%v dayPnL=%v dayPnLPct=%v", symbol, name, currency, avgCost, unrealized, storedDayPnL, storedDayPnLPct)
+	}
+	positions, err := st.ListBrokerPositions(ctx)
+	if err != nil || len(positions) != 1 {
+		t.Fatalf("list stored positions: positions=%#v err=%v", positions, err)
+	}
+	if positions[0].Name != "Apple Inc." || positions[0].DailyPnL == nil || *positions[0].DailyPnL != dayPnL || positions[0].DailyPnLPct == nil || *positions[0].DailyPnLPct != dayPnLPct {
+		t.Fatalf("stored position lost frontend fields: %#v", positions[0])
 	}
 }
 

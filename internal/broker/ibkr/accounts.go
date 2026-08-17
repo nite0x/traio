@@ -107,7 +107,9 @@ func (c *Client) GetCashBalances(ctx context.Context, accountID string) ([]broke
 	out := make([]broker.CashBalance, 0, len(raw))
 	for key, value := range raw {
 		currency := strings.ToUpper(strings.TrimSpace(firstNonEmpty(value.Currency, value.SecondKey, key)))
-		if currency == "" {
+		// The ledger's BASE entry is an aggregate, not another currency balance.
+		// Persisting it alongside the real currencies would double count cash.
+		if currency == "" || strings.EqualFold(key, "BASE") || currency == "BASE" {
 			continue
 		}
 		out = append(out, broker.CashBalance{
@@ -116,7 +118,7 @@ func (c *Client) GetCashBalances(ctx context.Context, accountID string) ([]broke
 			Total:          value.CashBalance,
 			Settled:        value.SettledCash,
 			ExchangeRate:   value.ExchangeRate,
-			IsBaseCurrency: strings.EqualFold(key, "BASE") || strings.EqualFold(currency, "BASE"),
+			IsBaseCurrency: value.ExchangeRate == 1,
 			AsOf:           formatIBKRTimestamp(value.Timestamp),
 		})
 	}

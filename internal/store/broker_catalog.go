@@ -19,7 +19,6 @@ const (
 // BrokerProvider combines static integration metadata with provider-scoped
 // configuration. Secrets are write-only; callers only receive their keys.
 type BrokerProvider struct {
-	ID                   int64                   `json:"id"`
 	Code                 string                  `json:"code"`
 	Name                 string                  `json:"name"`
 	DisplayName          string                  `json:"display_name"`
@@ -44,7 +43,6 @@ type BrokerFieldDefinition struct {
 // BrokerConnection is one configured login/environment for a provider.
 type BrokerConnection struct {
 	ID                   int64             `json:"id"`
-	ProviderID           int64             `json:"provider_id"`
 	ProviderCode         string            `json:"provider_code"`
 	ConnectionKey        string            `json:"connection_key"`
 	Name                 string            `json:"name"`
@@ -184,7 +182,7 @@ func (s *Store) seedBrokerProvidersTx(tx *sql.Tx) error {
 
 func (s *Store) ListBrokerProviders(ctx context.Context) ([]BrokerProvider, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT id, code, name, display_name, display_info, capabilities,
+		SELECT code, name, display_name, display_info, capabilities,
 			provider_fields, connection_fields,
 			config_json, secrets_json
 		FROM broker_providers ORDER BY code`)
@@ -197,7 +195,7 @@ func (s *Store) ListBrokerProviders(ctx context.Context) ([]BrokerProvider, erro
 		var provider BrokerProvider
 		var displayInfo, capabilities, providerFields, connectionFields, configJSON, secretsJSON string
 		if err := rows.Scan(
-			&provider.ID, &provider.Code, &provider.Name, &provider.DisplayName,
+			&provider.Code, &provider.Name, &provider.DisplayName,
 			&displayInfo, &capabilities, &providerFields, &connectionFields,
 			&configJSON, &secretsJSON,
 		); err != nil {
@@ -279,7 +277,6 @@ func (s *Store) UpdateBrokerProviderConfig(
 }
 
 type BrokerProviderRuntimeConfig struct {
-	ProviderID   int64
 	ProviderCode string
 	Config       map[string]any
 	Secrets      map[string]string
@@ -290,9 +287,9 @@ func (s *Store) GetBrokerProviderRuntimeConfig(ctx context.Context, providerCode
 	var runtimeConfig BrokerProviderRuntimeConfig
 	var configJSON, secretsJSON string
 	err := s.queryRowContext(ctx, `
-		SELECT id, code, config_json, secrets_json
+		SELECT code, config_json, secrets_json
 		FROM broker_providers WHERE code = ?`, providerCode).Scan(
-		&runtimeConfig.ProviderID, &runtimeConfig.ProviderCode, &configJSON, &secretsJSON,
+		&runtimeConfig.ProviderCode, &configJSON, &secretsJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BrokerProviderRuntimeConfig{}, ErrNotFound
@@ -370,14 +367,14 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 	}
 	if _, err := s.execContext(ctx, `
 		INSERT INTO broker_connections (
-			provider_id, connection_key, name, provider_user_id, username,
+			provider_code, connection_key, name, provider_user_id, username,
 			environment, auth_type, config_json, secrets_json, enabled, status
 		)
-		SELECT id, ?, ?, ?, ?, ?, ?,
+		SELECT code, ?, ?, ?, ?, ?, ?,
 			COALESCE(NULLIF(?, ''), '{}'), COALESCE(NULLIF(?, ''), '{}'),
 			?, COALESCE(NULLIF(?, ''), 'disconnected')
 		FROM broker_providers WHERE code = ?
-		ON CONFLICT(provider_id, connection_key) DO UPDATE SET
+		ON CONFLICT(provider_code, connection_key) DO UPDATE SET
 			name = excluded.name,
 			provider_user_id = excluded.provider_user_id,
 			username = excluded.username,
@@ -403,12 +400,11 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 
 func (s *Store) getBrokerConnection(ctx context.Context, providerCode, connectionKey string) (BrokerConnection, error) {
 	connection, err := scanBrokerConnection(s.queryRowContext(ctx, `
-		SELECT c.id, c.provider_id, p.code, c.connection_key, c.name,
+		SELECT c.id, c.provider_code, c.connection_key, c.name,
 			c.provider_user_id, c.username, c.environment, c.auth_type,
 			c.config_json, c.secrets_json, c.enabled, c.status, c.last_authenticated_at
 		FROM broker_connections c
-		JOIN broker_providers p ON p.id = c.provider_id
-		WHERE p.code = ? AND c.connection_key = ?`, providerCode, connectionKey))
+		WHERE c.provider_code = ? AND c.connection_key = ?`, providerCode, connectionKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return BrokerConnection{}, ErrNotFound
 	}
@@ -417,12 +413,11 @@ func (s *Store) getBrokerConnection(ctx context.Context, providerCode, connectio
 
 func (s *Store) ListBrokerConnections(ctx context.Context) ([]BrokerConnection, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT c.id, c.provider_id, p.code, c.connection_key, c.name,
+		SELECT c.id, c.provider_code, c.connection_key, c.name,
 			c.provider_user_id, c.username, c.environment, c.auth_type,
 			c.config_json, c.secrets_json, c.enabled, c.status, c.last_authenticated_at
 		FROM broker_connections c
-		JOIN broker_providers p ON p.id = c.provider_id
-		ORDER BY p.code, c.connection_key`)
+		ORDER BY c.provider_code, c.connection_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -440,11 +435,10 @@ func (s *Store) ListBrokerConnections(ctx context.Context) ([]BrokerConnection, 
 
 func (s *Store) GetBrokerConnection(ctx context.Context, connectionID int64) (BrokerConnection, error) {
 	connection, err := scanBrokerConnection(s.queryRowContext(ctx, `
-		SELECT c.id, c.provider_id, p.code, c.connection_key, c.name,
+		SELECT c.id, c.provider_code, c.connection_key, c.name,
 			c.provider_user_id, c.username, c.environment, c.auth_type,
 			c.config_json, c.secrets_json, c.enabled, c.status, c.last_authenticated_at
 		FROM broker_connections c
-		JOIN broker_providers p ON p.id = c.provider_id
 		WHERE c.id = ?`, connectionID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return BrokerConnection{}, ErrNotFound
@@ -477,7 +471,7 @@ func scanBrokerConnection(scanner rowScanner) (BrokerConnection, error) {
 	var configJSON, secretsJSON string
 	var lastAuthenticated sql.NullString
 	if err := scanner.Scan(
-		&connection.ID, &connection.ProviderID, &connection.ProviderCode,
+		&connection.ID, &connection.ProviderCode,
 		&connection.ConnectionKey, &connection.Name, &connection.ProviderUserID,
 		&connection.Username, &connection.Environment, &connection.AuthType,
 		&configJSON, &secretsJSON, &connection.Enabled, &connection.Status,
@@ -660,10 +654,19 @@ func (s *Store) markBrokerConnectionAuthenticatedTx(ctx context.Context, tx *sql
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
+// The broker model separates three different concerns:
+//
+//   - broker_providers defines an integration; its readable code is the primary key.
+//   - broker_connections stores authentication/configuration routes into a provider.
+//   - broker_accounts stores one canonical account per (provider_code, provider_account_id).
+//
+// A canonical account can be visible through more than one connection, so
+// broker_account_connections records access and elects one connection as the
+// projection writer. Balances, positions, and performance belong to the
+// canonical account and therefore reference account_id only.
 const brokerModelSQLiteSchema = `
 CREATE TABLE IF NOT EXISTS broker_providers (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	code TEXT NOT NULL UNIQUE,
+	code TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
 	display_name TEXT NOT NULL DEFAULT '',
 	display_info TEXT NOT NULL DEFAULT '{}',
@@ -677,7 +680,7 @@ CREATE TABLE IF NOT EXISTS broker_providers (
 );
 CREATE TABLE IF NOT EXISTS broker_connections (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	provider_id INTEGER NOT NULL REFERENCES broker_providers(id) ON DELETE RESTRICT,
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
 	connection_key TEXT NOT NULL,
 	name TEXT NOT NULL DEFAULT '',
 	provider_user_id TEXT NOT NULL DEFAULT '',
@@ -691,7 +694,7 @@ CREATE TABLE IF NOT EXISTS broker_connections (
 	last_authenticated_at TEXT,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	UNIQUE(provider_id, connection_key)
+	UNIQUE(provider_code, connection_key)
 );
 CREATE TABLE IF NOT EXISTS ibkr_gateways (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -707,7 +710,7 @@ CREATE TABLE IF NOT EXISTS ibkr_gateways (
 );
 CREATE TABLE IF NOT EXISTS broker_accounts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	provider_id INTEGER NOT NULL REFERENCES broker_providers(id) ON DELETE RESTRICT,
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
 	provider_account_id TEXT NOT NULL,
 	first_discovered_connection_id INTEGER REFERENCES broker_connections(id) ON DELETE SET NULL,
 	masked_account_number TEXT NOT NULL DEFAULT '',
@@ -720,7 +723,7 @@ CREATE TABLE IF NOT EXISTS broker_accounts (
 	synced_at TEXT NOT NULL,
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	UNIQUE(provider_id, provider_account_id)
+	UNIQUE(provider_code, provider_account_id)
 );
 CREATE TABLE IF NOT EXISTS broker_account_connections (
 	account_id INTEGER NOT NULL REFERENCES broker_accounts(id) ON DELETE CASCADE,
@@ -794,27 +797,35 @@ CREATE TABLE IF NOT EXISTS broker_sync_status (
 
 const brokerModelPostgresSchema = `
 CREATE TABLE IF NOT EXISTS broker_providers (
-	id BIGSERIAL PRIMARY KEY,
-	code TEXT NOT NULL UNIQUE,
+	code TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
 	display_name TEXT NOT NULL DEFAULT '',
 	display_info TEXT NOT NULL DEFAULT '{}',
 	capabilities TEXT NOT NULL DEFAULT '[]',
+	provider_fields TEXT NOT NULL DEFAULT '[]',
+	connection_fields TEXT NOT NULL DEFAULT '[]',
+	config_json TEXT NOT NULL DEFAULT '{}',
+	secrets_json TEXT NOT NULL DEFAULT '{}',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS broker_connections (
 	id BIGSERIAL PRIMARY KEY,
-	provider_id BIGINT NOT NULL REFERENCES broker_providers(id) ON DELETE RESTRICT,
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
 	connection_key TEXT NOT NULL,
 	name TEXT NOT NULL DEFAULT '',
+	provider_user_id TEXT NOT NULL DEFAULT '',
+	username TEXT NOT NULL DEFAULT '',
 	environment TEXT NOT NULL DEFAULT 'default',
+	auth_type TEXT NOT NULL DEFAULT 'interactive',
+	config_json TEXT NOT NULL DEFAULT '{}',
+	secrets_json TEXT NOT NULL DEFAULT '{}',
 	enabled BOOLEAN NOT NULL DEFAULT TRUE,
 	status TEXT NOT NULL DEFAULT 'disconnected',
 	last_authenticated_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	UNIQUE(provider_id, connection_key)
+	UNIQUE(provider_code, connection_key)
 );
 CREATE TABLE IF NOT EXISTS ibkr_gateways (
 	id BIGSERIAL PRIMARY KEY,
@@ -830,15 +841,32 @@ CREATE TABLE IF NOT EXISTS ibkr_gateways (
 );
 CREATE TABLE IF NOT EXISTS broker_accounts (
 	id BIGSERIAL PRIMARY KEY,
-	connection_id BIGINT NOT NULL REFERENCES broker_connections(id) ON DELETE CASCADE,
-	external_account_id TEXT NOT NULL,
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
+	provider_account_id TEXT NOT NULL,
+	first_discovered_connection_id BIGINT REFERENCES broker_connections(id) ON DELETE SET NULL,
+	masked_account_number TEXT NOT NULL DEFAULT '',
 	display_name TEXT NOT NULL DEFAULT '',
 	account_type TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT '',
 	currency TEXT NOT NULL DEFAULT '',
+	first_discovered_at TEXT NOT NULL,
+	last_seen_at TEXT NOT NULL,
 	synced_at TEXT NOT NULL,
-	UNIQUE(connection_id, external_account_id)
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(provider_code, provider_account_id)
 );
+CREATE TABLE IF NOT EXISTS broker_account_connections (
+	account_id BIGINT NOT NULL REFERENCES broker_accounts(id) ON DELETE CASCADE,
+	connection_id BIGINT NOT NULL REFERENCES broker_connections(id) ON DELETE CASCADE,
+	is_primary SMALLINT NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT 'active',
+	first_seen_at TEXT NOT NULL,
+	last_seen_at TEXT NOT NULL,
+	PRIMARY KEY(account_id, connection_id)
+);
+CREATE INDEX IF NOT EXISTS idx_broker_account_connections_connection
+	ON broker_account_connections(connection_id, account_id);
 CREATE TABLE IF NOT EXISTS broker_account_balances (
 	account_id BIGINT NOT NULL REFERENCES broker_accounts(id) ON DELETE CASCADE,
 	currency TEXT NOT NULL DEFAULT '',

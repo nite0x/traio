@@ -87,5 +87,47 @@ INSERT INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0)
 			return err
 		}
 	}
+	if err := s.requireCurrentBrokerSchemaPostgres(); err != nil {
+		return err
+	}
 	return s.initializeBrokerModelPostgres()
+}
+
+// requireCurrentBrokerSchemaPostgres follows the same explicit cutover policy
+// as SQLite. Existing numeric-provider broker tables must be migrated or
+// recreated instead of being partially modified by CREATE TABLE IF NOT EXISTS.
+func (s *Store) requireCurrentBrokerSchemaPostgres() error {
+	var exists int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM information_schema.tables
+		WHERE table_schema = current_schema() AND table_name = 'broker_accounts'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(`
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'broker_accounts'`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasProviderAccountID := false
+	hasProviderCode := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		hasProviderAccountID = hasProviderAccountID || name == "provider_account_id"
+		hasProviderCode = hasProviderCode || name == "provider_code"
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasProviderAccountID || !hasProviderCode {
+		return fmt.Errorf("legacy PostgreSQL broker schema detected: back up and recreate or migrate the database; automatic migration is intentionally disabled")
+	}
+	return nil
 }

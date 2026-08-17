@@ -99,6 +99,103 @@ func TestOpenRejectsLegacyBrokerSchemaWithoutMigrating(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNumericProviderBrokerSchemaWithoutMigrating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "numeric-provider.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open numeric provider database: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE broker_accounts (
+		id INTEGER PRIMARY KEY,
+		provider_id INTEGER NOT NULL,
+		provider_account_id TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create numeric provider schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close numeric provider database: %v", err)
+	}
+	_, err = Open(path)
+	if err == nil || !strings.Contains(err.Error(), "automatic migration is intentionally disabled") {
+		t.Fatalf("expected explicit schema reset error, got %v", err)
+	}
+}
+
+func TestBrokerSchemasUseCanonicalProviderAccountModel(t *testing.T) {
+	wantColumns := map[string][]string{
+		"broker_providers":           {"code", "provider_fields", "connection_fields", "config_json", "secrets_json"},
+		"broker_connections":         {"id", "provider_code", "provider_user_id", "username", "auth_type", "config_json", "secrets_json"},
+		"broker_accounts":            {"id", "provider_code", "provider_account_id", "first_discovered_connection_id"},
+		"broker_account_connections": {"account_id", "connection_id", "is_primary", "first_seen_at", "last_seen_at"},
+		"broker_account_balances":    {"account_id"},
+		"broker_asset_positions":     {"account_id"},
+		"broker_account_performance": {"account_id"},
+	}
+	forbiddenColumns := map[string][]string{
+		"broker_providers":   {"id"},
+		"broker_connections": {"provider_id"},
+		"broker_accounts":    {"provider_id"},
+	}
+	for name, schema := range map[string]string{
+		"sqlite":   brokerModelSQLiteSchema,
+		"postgres": brokerModelPostgresSchema,
+	} {
+		t.Run(name, func(t *testing.T) {
+			db, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("open schema database: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+				t.Fatalf("enable foreign keys: %v", err)
+			}
+			if _, err := db.Exec(schema); err != nil {
+				t.Fatalf("initialize %s broker schema: %v", name, err)
+			}
+			for table, wanted := range wantColumns {
+				columns := sqliteTableColumns(t, db, table)
+				for _, column := range wanted {
+					if !columns[column] {
+						t.Errorf("%s schema table %s is missing column %s", name, table, column)
+					}
+				}
+			}
+			for table, forbidden := range forbiddenColumns {
+				columns := sqliteTableColumns(t, db, table)
+				for _, column := range forbidden {
+					if columns[column] {
+						t.Errorf("%s schema table %s still contains column %s", name, table, column)
+					}
+				}
+			}
+		})
+	}
+}
+
+func sqliteTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("inspect table %s: %v", table, err)
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan table %s: %v", table, err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("inspect table %s: %v", table, err)
+	}
+	return columns
+}
+
 func TestProviderAndConnectionSecretsAreWriteOnly(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

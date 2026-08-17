@@ -27,9 +27,9 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 	}
 	defer tx.Rollback()
 
-	var providerID int64
+	var providerCode string
 	if err := tx.QueryRowContext(ctx, s.bind(`
-		SELECT provider_id FROM broker_connections WHERE id = ?`), connectionID).Scan(&providerID); err != nil {
+		SELECT provider_code FROM broker_connections WHERE id = ?`), connectionID).Scan(&providerCode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -75,11 +75,11 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 		seen[providerAccountID] = struct{}{}
 		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_accounts (
-				provider_id, provider_account_id, first_discovered_connection_id,
+				provider_code, provider_account_id, first_discovered_connection_id,
 				display_name, account_type, status, currency,
 				first_discovered_at, last_seen_at, synced_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(provider_id, provider_account_id) DO UPDATE SET
+			ON CONFLICT(provider_code, provider_account_id) DO UPDATE SET
 				display_name = CASE WHEN excluded.display_name = '' THEN broker_accounts.display_name ELSE excluded.display_name END,
 				account_type = CASE WHEN excluded.account_type = '' THEN broker_accounts.account_type ELSE excluded.account_type END,
 				status = CASE WHEN excluded.status = '' THEN broker_accounts.status ELSE excluded.status END,
@@ -87,7 +87,7 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 				last_seen_at = excluded.last_seen_at,
 				synced_at = excluded.synced_at,
 				updated_at = CURRENT_TIMESTAMP`,
-			providerID, providerAccountID, connectionID, strings.TrimSpace(account.DisplayName),
+			providerCode, providerAccountID, connectionID, strings.TrimSpace(account.DisplayName),
 			strings.TrimSpace(account.AccountType), strings.TrimSpace(account.Status),
 			strings.ToUpper(strings.TrimSpace(account.BaseCurrency)), syncedAt, syncedAt, syncedAt,
 		); err != nil {
@@ -96,7 +96,7 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 		var accountID int64
 		if err := tx.QueryRowContext(ctx, s.bind(`
 			SELECT id FROM broker_accounts
-			WHERE provider_id = ? AND provider_account_id = ?`), providerID, providerAccountID).Scan(&accountID); err != nil {
+			WHERE provider_code = ? AND provider_account_id = ?`), providerCode, providerAccountID).Scan(&accountID); err != nil {
 			return err
 		}
 		var relationshipCount int
@@ -104,13 +104,17 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 			SELECT COUNT(*) FROM broker_account_connections WHERE account_id = ?`), accountID).Scan(&relationshipCount); err != nil {
 			return err
 		}
+		isPrimary := 0
+		if relationshipCount == 0 {
+			isPrimary = 1
+		}
 		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_account_connections (
 				account_id, connection_id, is_primary, status, first_seen_at, last_seen_at
 			) VALUES (?, ?, ?, 'active', ?, ?)
 			ON CONFLICT(account_id, connection_id) DO UPDATE SET
 				status = 'active', last_seen_at = excluded.last_seen_at`,
-			accountID, connectionID, relationshipCount == 0, syncedAt, syncedAt,
+			accountID, connectionID, isPrimary, syncedAt, syncedAt,
 		); err != nil {
 			return err
 		}
@@ -148,7 +152,7 @@ func (s *Store) BrokerAccountConnectionIsPrimary(ctx context.Context, connection
 		FROM broker_account_connections ac
 		JOIN broker_accounts a ON a.id = ac.account_id
 		JOIN broker_connections c ON c.id = ac.connection_id
-		WHERE ac.connection_id = ? AND a.provider_id = c.provider_id
+		WHERE ac.connection_id = ? AND a.provider_code = c.provider_code
 			AND a.provider_account_id = ?`, connectionID, providerAccountID).Scan(&primary)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrNotFound
@@ -219,9 +223,9 @@ func (s *Store) ReplaceBrokerConnectionAccountDetails(ctx context.Context, conne
 	return tx.Commit()
 }
 
-func (s *Store) ReplaceBrokerConnectionCashBalances(ctx context.Context, connectionID int64, externalID string, balances []broker.CashBalance) error {
-	externalID = strings.TrimSpace(externalID)
-	if connectionID == 0 || externalID == "" {
+func (s *Store) ReplaceBrokerConnectionCashBalances(ctx context.Context, connectionID int64, providerAccountID string, balances []broker.CashBalance) error {
+	providerAccountID = strings.TrimSpace(providerAccountID)
+	if connectionID == 0 || providerAccountID == "" {
 		return fmt.Errorf("connection and account are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -229,7 +233,7 @@ func (s *Store) ReplaceBrokerConnectionCashBalances(ctx context.Context, connect
 		return err
 	}
 	defer tx.Rollback()
-	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, externalID)
+	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, providerAccountID)
 	if err != nil {
 		return err
 	}
@@ -241,7 +245,7 @@ func (s *Store) ReplaceBrokerConnectionCashBalances(ctx context.Context, connect
 	for _, balance := range balances {
 		currency := strings.ToUpper(strings.TrimSpace(balance.Currency))
 		if currency == "" {
-			return fmt.Errorf("currency is required for account %s", externalID)
+			return fmt.Errorf("currency is required for account %s", providerAccountID)
 		}
 		asOf := strings.TrimSpace(balance.AsOf)
 		if asOf == "" {
@@ -259,15 +263,15 @@ func (s *Store) ReplaceBrokerConnectionCashBalances(ctx context.Context, connect
 		}
 		inserted++
 	}
-	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, externalID, SyncDataCashBalances, inserted, syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, providerAccountID, SyncDataCashBalances, inserted, syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, connectionID int64, externalID string, positions []broker.Position) error {
-	externalID = strings.TrimSpace(externalID)
-	if connectionID == 0 || externalID == "" {
+func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, connectionID int64, providerAccountID string, positions []broker.Position) error {
+	providerAccountID = strings.TrimSpace(providerAccountID)
+	if connectionID == 0 || providerAccountID == "" {
 		return fmt.Errorf("connection and account are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -275,7 +279,7 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 		return err
 	}
 	defer tx.Rollback()
-	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, externalID)
+	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, providerAccountID)
 	if err != nil {
 		return err
 	}
@@ -296,28 +300,36 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 		assetType, assetKey := positionAssetIdentity(position)
 		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_asset_positions (
-				account_id, asset_type, asset_key, symbol, conid, quantity,
+				account_id, asset_type, asset_key, symbol, name, conid, quantity,
 				avg_cost, market_price, market_value, unrealized_pnl, realized_pnl,
-				currency, synced_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			accountID, assetType, assetKey, symbol, nullableConID(position.ConID),
+				day_pnl, day_pnl_pct, currency, synced_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			accountID, assetType, assetKey, symbol, strings.TrimSpace(position.Name), nullableConID(position.ConID),
 			position.Quantity, nullableFloat(position.AvgCost), nullableFloat(marketPrice),
 			position.MarketValue, nullableFloat(position.Unrealized), nullableFloat(position.Realized),
+			nullableFloatPtr(position.DailyPnL), nullableFloatPtr(position.DailyPnLPct),
 			strings.ToUpper(strings.TrimSpace(position.Currency)), syncedAt,
 		); err != nil {
 			return err
 		}
 		inserted++
 	}
-	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, externalID, SyncDataPositions, inserted, syncedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, providerAccountID, SyncDataPositions, inserted, syncedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+func nullableFloatPtr(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 func (s *Store) ReplaceBrokerConnectionAccountPerformance(ctx context.Context, connectionID int64, performance broker.DailyPerformance) error {
-	externalID := strings.TrimSpace(performance.AccountID)
-	if connectionID == 0 || externalID == "" {
+	providerAccountID := strings.TrimSpace(performance.AccountID)
+	if connectionID == 0 || providerAccountID == "" {
 		return fmt.Errorf("connection and account are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -325,7 +337,7 @@ func (s *Store) ReplaceBrokerConnectionAccountPerformance(ctx context.Context, c
 		return err
 	}
 	defer tx.Rollback()
-	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, externalID)
+	accountID, err := s.brokerAccountIDTx(ctx, tx, connectionID, providerAccountID)
 	if err != nil {
 		return err
 	}
@@ -352,7 +364,7 @@ func (s *Store) ReplaceBrokerConnectionAccountPerformance(ctx context.Context, c
 	); err != nil {
 		return err
 	}
-	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, externalID, SyncDataDailyPerformance, 1, attemptedAt); err != nil {
+	if err := s.recordBrokerSyncSuccessTx(ctx, tx, connectionID, &accountID, providerAccountID, SyncDataDailyPerformance, 1, attemptedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -365,7 +377,7 @@ func (s *Store) brokerAccountIDTx(ctx context.Context, tx *sql.Tx, connectionID 
 		FROM broker_accounts a
 		JOIN broker_account_connections ac ON ac.account_id = a.id
 		JOIN broker_connections c ON c.id = ac.connection_id
-		WHERE ac.connection_id = ? AND a.provider_id = c.provider_id
+		WHERE ac.connection_id = ? AND a.provider_code = c.provider_code
 			AND a.provider_account_id = ?`), connectionID, providerAccountID).Scan(&accountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
@@ -375,7 +387,6 @@ func (s *Store) brokerAccountIDTx(ctx context.Context, tx *sql.Tx, connectionID 
 
 type BrokerAccount struct {
 	ID                          int64   `json:"id"`
-	ProviderID                  int64   `json:"provider_id"`
 	Broker                      string  `json:"broker"`
 	ProviderAccountID           string  `json:"provider_account_id"`
 	FirstDiscoveredConnectionID *int64  `json:"first_discovered_connection_id,omitempty"`
@@ -403,25 +414,28 @@ func (s *Store) ListBrokerAccountsByConnection(ctx context.Context, connectionID
 }
 
 func (s *Store) listBrokerAccounts(ctx context.Context, connectionID *int64) ([]BrokerAccount, error) {
-	query := `
-		SELECT a.id, a.provider_id, p.code, a.provider_account_id,
+	connectionIDsAggregate := "GROUP_CONCAT(ac.connection_id)"
+	if s.dialect == dialectPostgres {
+		connectionIDsAggregate = "STRING_AGG(ac.connection_id::text, ',' ORDER BY ac.connection_id)"
+	}
+	query := fmt.Sprintf(`
+		SELECT a.id, a.provider_code, a.provider_account_id,
 			a.first_discovered_connection_id,
 			MAX(CASE WHEN ac.is_primary = 1 THEN ac.connection_id END),
-			GROUP_CONCAT(ac.connection_id), a.masked_account_number,
+			%s, a.masked_account_number,
 			a.display_name, a.account_type, a.status, a.currency,
 			a.first_discovered_at, a.last_seen_at, a.synced_at
 		FROM broker_accounts a
-		JOIN broker_providers p ON p.id = a.provider_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id
 		WHERE (? IS NULL OR EXISTS (
 			SELECT 1 FROM broker_account_connections requested
 			WHERE requested.account_id = a.id AND requested.connection_id = ?
 		))
-		GROUP BY a.id, a.provider_id, p.code, a.provider_account_id,
+		GROUP BY a.id, a.provider_code, a.provider_account_id,
 			a.first_discovered_connection_id, a.masked_account_number,
 			a.display_name, a.account_type, a.status, a.currency,
 			a.first_discovered_at, a.last_seen_at, a.synced_at
-		ORDER BY p.code, a.provider_account_id`
+		ORDER BY a.provider_code, a.provider_account_id`, connectionIDsAggregate)
 	var filter any
 	if connectionID != nil {
 		filter = *connectionID
@@ -437,7 +451,7 @@ func (s *Store) listBrokerAccounts(ctx context.Context, connectionID *int64) ([]
 		var firstDiscovered, primary sql.NullInt64
 		var connectionIDs sql.NullString
 		if err := rows.Scan(
-			&account.ID, &account.ProviderID, &account.Broker, &account.ProviderAccountID,
+			&account.ID, &account.Broker, &account.ProviderAccountID,
 			&firstDiscovered, &primary, &connectionIDs, &account.MaskedAccountNumber,
 			&account.DisplayName, &account.AccountType, &account.Status, &account.BaseCurrency,
 			&account.FirstDiscoveredAt, &account.LastSeenAt, &account.SyncedAt,
@@ -473,14 +487,13 @@ type BrokerAccountPerformance struct {
 
 func (s *Store) ListBrokerAccountPerformance(ctx context.Context) ([]BrokerAccountPerformance, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT x.account_id, COALESCE(ac.connection_id, 0), p.code, a.provider_account_id,
+		SELECT x.account_id, COALESCE(ac.connection_id, 0), a.provider_code, a.provider_account_id,
 			x.daily_pnl, x.net_liquidation, x.unrealized_pnl,
 			x.excess_liquidity, x.market_value, x.synced_at
 		FROM broker_account_performance x
 		JOIN broker_accounts a ON a.id = x.account_id
-		JOIN broker_providers p ON p.id = a.provider_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
-		ORDER BY p.code, a.provider_account_id`)
+		ORDER BY a.provider_code, a.provider_account_id`)
 	if err != nil {
 		return nil, err
 	}

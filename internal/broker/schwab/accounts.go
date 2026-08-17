@@ -26,8 +26,8 @@ type securitiesAccount struct {
 type schwabPosition struct {
 	ShortQuantity           float64          `json:"shortQuantity"`
 	AveragePrice            float64          `json:"averagePrice"`
-	CurrentDayProfitLoss    float64          `json:"currentDayProfitLoss"`
-	CurrentDayProfitLossPct float64          `json:"currentDayProfitLossPercentage"`
+	CurrentDayProfitLoss    *float64         `json:"currentDayProfitLoss"`
+	CurrentDayProfitLossPct *float64         `json:"currentDayProfitLossPercentage"`
 	LongQuantity            float64          `json:"longQuantity"`
 	SettledLongQuantity     float64          `json:"settledLongQuantity"`
 	SettledShortQuantity    float64          `json:"settledShortQuantity"`
@@ -150,7 +150,9 @@ func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (bro
 		AsOf:            time.Now().UTC().Format(time.RFC3339),
 	}
 	for _, position := range account.Positions {
-		performance.DailyPnL += position.CurrentDayProfitLoss
+		if position.CurrentDayProfitLoss != nil {
+			performance.DailyPnL += *position.CurrentDayProfitLoss
+		}
 	}
 	return performance, nil
 }
@@ -215,12 +217,15 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 			}
 			out = append(out, broker.Position{
 				Symbol:      strings.ToUpper(position.Instrument.Symbol),
+				Name:        strings.TrimSpace(position.Instrument.Description),
 				ConID:       position.Instrument.InstrumentID,
 				Quantity:    quantity,
 				AvgCost:     averagePrice,
 				MarketPrice: marketPrice,
 				MarketValue: position.MarketValue,
 				Unrealized:  position.LongOpenProfitLoss + position.ShortOpenProfitLoss,
+				DailyPnL:    position.CurrentDayProfitLoss,
+				DailyPnLPct: position.CurrentDayProfitLossPct,
 				Currency:    "USD",
 				Account:     account.AccountNumber,
 				Broker:      "SCHWAB",
