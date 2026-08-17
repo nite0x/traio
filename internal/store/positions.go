@@ -34,11 +34,15 @@ type BrokerAssetPosition struct {
 func positionAssetIdentity(position broker.Position) (string, string) {
 	symbol := strings.ToUpper(strings.TrimSpace(position.Symbol))
 	currency := strings.ToUpper(strings.TrimSpace(position.Currency))
+	assetType := normalizeInstrumentAssetType(position.AssetType)
+	if externalID := strings.TrimSpace(position.ExternalID); externalID != "" {
+		return assetType, assetType + ":external:" + externalID
+	}
 	if symbol != "" {
 		if position.ConID != 0 {
-			return "security", fmt.Sprintf("security:conid:%d", position.ConID)
+			return assetType, fmt.Sprintf("%s:conid:%d", assetType, position.ConID)
 		}
-		return "security", "security:symbol:" + symbol
+		return assetType, assetType + ":symbol:" + symbol
 	}
 	if currency != "" {
 		return "cash", "cash:" + currency
@@ -62,13 +66,18 @@ func nullableFloat(value float64) any {
 
 func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT x.account_id, COALESCE(ac.connection_id, 0), x.symbol, x.name, COALESCE(x.conid, 0), x.quantity, COALESCE(x.avg_cost, 0),
+		SELECT x.account_id, COALESCE(ac.connection_id, 0), x.instrument_id, x.external_id,
+			i.asset_type, i.market, COALESCE(bi.broker_exchange, ''),
+			x.symbol, x.name, COALESCE(x.conid, 0), x.quantity, COALESCE(x.avg_cost, 0),
 			COALESCE(x.market_price, 0), x.market_value,
 			x.unrealized_pnl, x.realized_pnl, x.day_pnl, x.day_pnl_pct, x.currency,
 			a.provider_account_id, a.provider_code, x.synced_at
 		FROM broker_asset_positions x
 		JOIN broker_accounts a ON a.id = x.account_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
+		JOIN instruments i ON i.id = x.instrument_id
+		LEFT JOIN broker_instruments bi ON bi.provider_code = a.provider_code
+			AND bi.external_id = x.external_id AND bi.instrument_id = x.instrument_id
 		WHERE x.asset_type <> 'cash'
 		ORDER BY a.provider_code, a.provider_account_id, x.market_value DESC, x.symbol`)
 	if err != nil {
@@ -81,7 +90,8 @@ func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, err
 		var position broker.Position
 		var unrealized, realized, dailyPnL, dailyPnLPct sql.NullFloat64
 		if err := rows.Scan(
-			&position.BrokerAccountID, &position.ConnectionID,
+			&position.BrokerAccountID, &position.ConnectionID, &position.InstrumentID,
+			&position.ExternalID, &position.AssetType, &position.Market, &position.Exchange,
 			&position.Symbol, &position.Name, &position.ConID, &position.Quantity, &position.AvgCost,
 			&position.MarketPrice, &position.MarketValue, &unrealized, &realized,
 			&dailyPnL, &dailyPnLPct, &position.Currency, &position.Account, &position.Broker, &position.SyncedAt,

@@ -211,10 +211,12 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
 		v1.GET("/quotes/:symbol", getQuote(deps.Schwab, deps.Instruments, deps.Quotes))
 		v1.GET("/quotes/:symbol/history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles))
-		v1.GET("/portfolio/snapshot", portfolioSnapshot(deps.BrokerSync))
-		v1.GET("/positions", listPositions(deps.BrokerSync))
-		v1.GET("/brokers/sync-status", brokerSyncStatus(deps.BrokerSync))
-		v1.POST("/brokers/sync", syncBrokers(deps.BrokerSync))
+		v1.GET("/portfolio/overview", portfolioOverview(deps.BrokerSync))
+		v1.GET("/portfolio/positions", portfolioPositions(deps.BrokerSync))
+		v1.GET("/portfolio/positions/:position_id", portfolioPosition(deps.BrokerSync))
+		v1.GET("/portfolio/cash", portfolioCash(deps.BrokerSync))
+		v1.POST("/portfolio/sync", syncBrokers(deps.BrokerSync))
+		v1.GET("/portfolio/sync-status", brokerSyncStatus(deps.BrokerSync))
 		v1.GET("/account/equity", accountEquity(deps.Account))
 		v1.GET("/news/:symbol", getNews(deps.News))
 		v1.POST("/orders", placeOrder())
@@ -476,21 +478,10 @@ func preferredInstrument(symbol string, results []broker.Instrument) (broker.Ins
 	return results[0], true
 }
 
-func listPositions(svc *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		pos, err := svc.AllPositions(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, pos)
-	}
-}
-
-func portfolioSnapshot(svc *portfolio.SyncService) gin.HandlerFunc {
+func portfolioOverview(svc *portfolio.SyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if svc == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio snapshot is not available"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio overview is not available"})
 			return
 		}
 		snapshot, err := svc.Snapshot(c.Request.Context())
@@ -498,7 +489,62 @@ func portfolioSnapshot(svc *portfolio.SyncService) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, snapshot)
+		c.JSON(http.StatusOK, gin.H{
+			"summary": snapshot.Summary, "allocations": snapshot.Allocations,
+			"warnings": snapshot.Warnings,
+		})
+	}
+}
+
+func portfolioPositions(svc *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio positions are not available"})
+			return
+		}
+		positions, err := svc.AggregatedPositions(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, positions)
+	}
+}
+
+func portfolioPosition(svc *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio position is not available"})
+			return
+		}
+		position, err := svc.AggregatedPosition(c.Request.Context(), c.Param("position_id"))
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, position)
+	}
+}
+
+func portfolioCash(svc *portfolio.SyncService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "portfolio cash is not available"})
+			return
+		}
+		snapshot, err := svc.Snapshot(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"summary": snapshot.Summary, "cash_balances": snapshot.CashBalances,
+			"warnings": snapshot.Warnings,
+		})
 	}
 }
 

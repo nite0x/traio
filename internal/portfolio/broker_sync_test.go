@@ -93,7 +93,7 @@ func TestSyncBrokerRefreshesEveryAccountCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list stored balances: %v", err)
 	}
-	positions, err := svc.AllPositions(context.Background())
+	positions, err := svc.AggregatedPositions(context.Background())
 	if err != nil {
 		t.Fatalf("list stored positions: %v", err)
 	}
@@ -135,16 +135,16 @@ func TestFailedBrokerCapabilityKeepsPreviousSnapshot(t *testing.T) {
 	if err := svc.Sync(context.Background()); err == nil {
 		t.Fatal("expected account capability failure")
 	}
-	positions, err := svc.AllPositions(context.Background())
+	positions, err := svc.AggregatedPositions(context.Background())
 	if err != nil {
 		t.Fatalf("list previous positions: %v", err)
 	}
 	if len(positions) != 2 {
 		t.Fatalf("expected previous complete snapshot, got %#v", positions)
 	}
-	positionsByAccount := map[string]broker.Position{}
+	positionsByAccount := map[string]AggregatedPosition{}
 	for _, position := range positions {
-		positionsByAccount[position.Account] = position
+		positionsByAccount[position.Legs[0].Account] = position
 	}
 	if positionsByAccount["U1"].Symbol != "ASSETU1-NEW" || positionsByAccount["U2"].Symbol != "ASSETU2" {
 		t.Fatalf("expected U1 positions refreshed and U2 positions retained, got %#v", positionsByAccount)

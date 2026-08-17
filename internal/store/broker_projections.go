@@ -286,6 +286,10 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 	if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_asset_positions WHERE account_id = ?`, accountID); err != nil {
 		return err
 	}
+	var providerCode string
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code FROM broker_connections WHERE id = ?`), connectionID).Scan(&providerCode); err != nil {
+		return err
+	}
 	syncedAt := nowRFC3339()
 	inserted := 0
 	for _, position := range positions {
@@ -298,13 +302,27 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 			marketPrice = position.MarketValue / position.Quantity
 		}
 		assetType, assetKey := positionAssetIdentity(position)
+		instrument, err := s.resolveInstrumentTx(ctx, tx, InstrumentIdentity{
+			ProviderCode: providerCode,
+			ExternalID:   position.ExternalID,
+			AssetType:    assetType,
+			Market:       position.Market,
+			Symbol:       symbol,
+			Name:         position.Name,
+			Exchange:     position.Exchange,
+			Currency:     position.Currency,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve instrument %s: %w", symbol, err)
+		}
 		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_asset_positions (
-				account_id, asset_type, asset_key, symbol, name, conid, quantity,
+				account_id, instrument_id, external_id, asset_type, asset_key, symbol, name, conid, quantity,
 				avg_cost, market_price, market_value, unrealized_pnl, realized_pnl,
 				day_pnl, day_pnl_pct, currency, synced_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			accountID, assetType, assetKey, symbol, strings.TrimSpace(position.Name), nullableConID(position.ConID),
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			accountID, instrument.ID, strings.TrimSpace(position.ExternalID), assetType, assetKey,
+			symbol, strings.TrimSpace(position.Name), nullableConID(position.ConID),
 			position.Quantity, nullableFloat(position.AvgCost), nullableFloat(marketPrice),
 			position.MarketValue, nullableFloat(position.Unrealized), nullableFloat(position.Realized),
 			nullableFloatPtr(position.DailyPnL), nullableFloatPtr(position.DailyPnLPct),

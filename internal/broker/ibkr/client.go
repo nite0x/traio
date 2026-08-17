@@ -512,6 +512,9 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 				continue
 			}
 			out = append(out, broker.Position{
+				ExternalID:  strconv.FormatInt(p.ConID, 10),
+				AssetType:   "stock",
+				Market:      marketFromCurrency(p.Currency),
 				Symbol:      p.ContractDesc,
 				ConID:       p.ConID,
 				Quantity:    p.Position,
@@ -530,6 +533,13 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 		}
 	}
 	return nil, fmt.Errorf("ibkr: positions exceeded pagination limit")
+}
+
+func marketFromCurrency(currency string) string {
+	if strings.EqualFold(strings.TrimSpace(currency), "USD") {
+		return "US"
+	}
+	return strings.ToUpper(strings.TrimSpace(currency))
 }
 
 // resolveAccountID returns the configured sub-account or fetches it from the gateway.

@@ -45,9 +45,12 @@ func TestBrokerSyncRoutes(t *testing.T) {
 		"GET /api/v1/ibkr/gateways/defaults",
 		"GET /api/v1/ibkr/gateways/:gateway_id/status",
 		"POST /api/v1/ibkr/gateways/:gateway_id/start",
-		"POST /api/v1/brokers/sync",
-		"GET /api/v1/brokers/sync-status",
-		"GET /api/v1/portfolio/snapshot",
+		"GET /api/v1/portfolio/overview",
+		"GET /api/v1/portfolio/positions",
+		"GET /api/v1/portfolio/positions/:position_id",
+		"GET /api/v1/portfolio/cash",
+		"POST /api/v1/portfolio/sync",
+		"GET /api/v1/portfolio/sync-status",
 		"GET /api/v1/ibkr/gateway/login",
 		"POST /api/v1/ibkr/gateway/upgrade",
 		"POST /api/v1/ibkr/gateway/rollback",
@@ -56,9 +59,19 @@ func TestBrokerSyncRoutes(t *testing.T) {
 			t.Fatalf("missing broker sync route %s", route)
 		}
 	}
+	for _, removed := range []string{
+		"GET /api/v1/positions",
+		"GET /api/v1/portfolio/snapshot",
+		"POST /api/v1/brokers/sync",
+		"GET /api/v1/brokers/sync-status",
+	} {
+		if routes[removed] {
+			t.Fatalf("legacy route still registered: %s", removed)
+		}
+	}
 }
 
-func TestPortfolioSnapshotReadsStoredProjections(t *testing.T) {
+func TestPortfolioPageAPIsReadStoredProjections(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "snapshot-api.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -84,11 +97,30 @@ func TestPortfolioSnapshotReadsStoredProjections(t *testing.T) {
 	}
 
 	router := NewRouter(Deps{BrokerSync: portfolio.NewSyncService(st)}, ServerControl{})
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/portfolio/snapshot", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/portfolio/overview", nil)
 	res := httptest.NewRecorder()
 	router.ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"net_asset_value":1000`) || !strings.Contains(res.Body.String(), `"cash_balances"`) {
-		t.Fatalf("unexpected snapshot response: %d %s", res.Code, res.Body.String())
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"net_asset_value":1000`) {
+		t.Fatalf("unexpected overview response: %d %s", res.Code, res.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/portfolio/positions", nil)
+	res = httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	var positions []portfolio.AggregatedPosition
+	if err := json.Unmarshal(res.Body.Bytes(), &positions); err != nil || len(positions) != 1 {
+		t.Fatalf("positions API did not expose canonical positions: positions=%#v err=%v", positions, err)
+	}
+	positionID := positions[0].PositionID
+	for _, path := range []string{
+		"/api/v1/portfolio/positions/" + positionID,
+		"/api/v1/portfolio/cash",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("GET %s failed: %d %s", path, res.Code, res.Body.String())
+		}
 	}
 }
 

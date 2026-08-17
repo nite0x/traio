@@ -141,7 +141,46 @@ func (s *Store) requireCurrentBrokerSchemaSQLite() error {
 	if !hasProviderAccountID || !hasProviderCode {
 		return fmt.Errorf("legacy SQLite broker schema detected: back up and recreate the database; automatic migration is intentionally disabled")
 	}
+	positionColumns, err := s.sqliteColumns("broker_asset_positions")
+	if err != nil {
+		return err
+	}
+	if !positionColumns["instrument_id"].NotNull || !positionColumns["external_id"].NotNull {
+		return fmt.Errorf("pre-instrument SQLite broker schema detected: back up and recreate the database; automatic migration is intentionally disabled")
+	}
+	var instrumentTables int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('instruments', 'broker_instruments')`).Scan(&instrumentTables); err != nil {
+		return err
+	}
+	if instrumentTables != 2 {
+		return fmt.Errorf("incomplete instrument schema detected: back up and recreate the database")
+	}
 	return nil
+}
+
+type sqliteColumn struct {
+	NotNull bool
+}
+
+func (s *Store) sqliteColumns(table string) (map[string]sqliteColumn, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]sqliteColumn{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = sqliteColumn{NotNull: notNull == 1}
+	}
+	return columns, rows.Err()
 }
 
 func (s *Store) ensureWatchlistItemColumns() error {

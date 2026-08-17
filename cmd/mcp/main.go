@@ -68,9 +68,9 @@ func main() {
 	})
 
 	s.AddTool(mcp.NewTool("traio_positions",
-		mcp.WithDescription("List portfolio positions"),
+		mcp.WithDescription("List canonical portfolio positions grouped by instrument_id"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/positions", apiToken)
+		body, err := getJSON(client, apiBase+"/api/v1/portfolio/positions", apiToken)
 		return textResult(body, err)
 	})
 

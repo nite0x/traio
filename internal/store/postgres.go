@@ -129,5 +129,24 @@ func (s *Store) requireCurrentBrokerSchemaPostgres() error {
 	if !hasProviderAccountID || !hasProviderCode {
 		return fmt.Errorf("legacy PostgreSQL broker schema detected: back up and recreate or migrate the database; automatic migration is intentionally disabled")
 	}
+	var positionColumns int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'broker_asset_positions'
+			AND column_name IN ('instrument_id', 'external_id') AND is_nullable = 'NO'`).Scan(&positionColumns); err != nil {
+		return err
+	}
+	if positionColumns != 2 {
+		return fmt.Errorf("pre-instrument PostgreSQL broker schema detected: back up and recreate or migrate the database; automatic migration is intentionally disabled")
+	}
+	var instrumentTables int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM information_schema.tables
+		WHERE table_schema = current_schema() AND table_name IN ('instruments', 'broker_instruments')`).Scan(&instrumentTables); err != nil {
+		return err
+	}
+	if instrumentTables != 2 {
+		return fmt.Errorf("incomplete instrument schema detected: back up and recreate or migrate the database")
+	}
 	return nil
 }

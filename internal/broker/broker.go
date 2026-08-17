@@ -21,6 +21,11 @@ type Quote struct {
 type Position struct {
 	BrokerAccountID int64    `json:"broker_account_id,omitempty"`
 	ConnectionID    int64    `json:"connection_id,omitempty"`
+	InstrumentID    int64    `json:"instrument_id,omitempty"`
+	ExternalID      string   `json:"external_id,omitempty"`
+	AssetType       string   `json:"asset_type,omitempty"`
+	Market          string   `json:"market,omitempty"`
+	Exchange        string   `json:"exchange,omitempty"`
 	Symbol          string   `json:"symbol"`
 	Name            string   `json:"name,omitempty"`
 	ConID           int64    `json:"conid"`

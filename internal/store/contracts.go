@@ -79,6 +79,14 @@ type PortfolioRepository interface {
 	ListBrokerSyncStatuses(context.Context) ([]BrokerSyncStatus, error)
 }
 
+// InstrumentRepository owns Traio's canonical asset identities and the
+// provider-specific identifiers that resolve to them.
+type InstrumentRepository interface {
+	ResolveInstrument(context.Context, InstrumentIdentity) (Instrument, error)
+	GetInstrument(context.Context, int64) (Instrument, error)
+	ListInstruments(context.Context) ([]Instrument, error)
+}
+
 // Repository is the complete persistence contract assembled at process startup.
 // Consumers should accept one of the narrower interfaces above.
 type Repository interface {
@@ -88,6 +96,7 @@ type Repository interface {
 	BrokerCatalogRepository
 	BrokerRuntimeConfigRepository
 	IBKRGatewayRepository
+	InstrumentRepository
 	PortfolioRepository
 	Close() error
 }

@@ -216,6 +216,9 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 				marketPrice = position.MarketValue / quantity
 			}
 			out = append(out, broker.Position{
+				ExternalID:  schwabInstrumentExternalID(position.Instrument),
+				AssetType:   strings.ToLower(strings.TrimSpace(position.Instrument.AssetType)),
+				Market:      "US",
 				Symbol:      strings.ToUpper(position.Instrument.Symbol),
 				Name:        strings.TrimSpace(position.Instrument.Description),
 				ConID:       position.Instrument.InstrumentID,
@@ -234,6 +237,16 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 		}
 	}
 	return out, nil
+}
+
+func schwabInstrumentExternalID(instrument schwabInstrument) string {
+	if cusip := strings.TrimSpace(instrument.CUSIP); cusip != "" {
+		return cusip
+	}
+	if instrument.InstrumentID != 0 {
+		return fmt.Sprintf("%d", instrument.InstrumentID)
+	}
+	return ""
 }
 
 func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, error) {

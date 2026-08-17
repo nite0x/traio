@@ -58,7 +58,7 @@ func TestReplaceBrokerAccountPositionsWritesAssetProjection(t *testing.T) {
 	); err != nil {
 		t.Fatalf("read asset projection: %v", err)
 	}
-	if assetType != "security" || assetKey != "security:conid:265598" {
+	if assetType != "stock" || assetKey != "stock:conid:265598" {
 		t.Fatalf("unexpected asset identity: %s %s", assetType, assetKey)
 	}
 	if symbol != "AAPL" || name != "Apple Inc." || currency != "USD" || avgCost != 150 || unrealized != 60 || storedDayPnL != dayPnL || storedDayPnLPct != dayPnLPct {
@@ -130,15 +130,19 @@ func TestListBrokerPositionsReadsAssetProjection(t *testing.T) {
 	if err != nil || len(accounts) != 1 {
 		t.Fatalf("list broker account: accounts=%#v err=%v", accounts, err)
 	}
+	instrument, err := st.ResolveInstrument(ctx, InstrumentIdentity{
+		ProviderCode: "IBKR", AssetType: "stock", Market: "US", Symbol: "MSFT", Currency: "USD",
+	})
+	if err != nil {
+		t.Fatalf("resolve instrument: %v", err)
+	}
 	if _, err := st.db.Exec(`
 		INSERT INTO broker_asset_positions (
-			account_id, asset_type, asset_key, symbol, conid, currency,
+			account_id, instrument_id, external_id, asset_type, asset_key, symbol, conid, currency,
 			quantity, avg_cost, market_price, market_value, unrealized_pnl,
 			realized_pnl, synced_at
-		) VALUES
-			(?, 'cash', 'cash:USD', 'USD', NULL, 'USD', 1000, NULL, 1, 1000, NULL, NULL, '2026-01-01T00:00:00Z'),
-			(?, 'security', 'security:symbol:MSFT', 'MSFT', NULL, 'USD', 3, 200, 250, 750, 150, 0, '2026-01-01T00:00:00Z');
-	`, accounts[0].ID, accounts[0].ID); err != nil {
+		) VALUES (?, ?, '', 'stock', 'stock:symbol:MSFT', 'MSFT', NULL, 'USD', 3, 200, 250, 750, 150, 0, '2026-01-01T00:00:00Z');
+	`, accounts[0].ID, instrument.ID); err != nil {
 		t.Fatalf("seed asset projection: %v", err)
 	}
 
@@ -147,7 +151,7 @@ func TestListBrokerPositionsReadsAssetProjection(t *testing.T) {
 		t.Fatalf("list positions: %v", err)
 	}
 	if len(positions) != 1 {
-		t.Fatalf("expected only non-cash positions, got %#v", positions)
+		t.Fatalf("expected one canonical position, got %#v", positions)
 	}
 	if positions[0].Symbol != "MSFT" || positions[0].Quantity != 3 || positions[0].Unrealized != 150 {
 		t.Fatalf("unexpected position: %#v", positions[0])

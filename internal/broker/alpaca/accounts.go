@@ -28,6 +28,9 @@ type alpacaAccount struct {
 }
 
 type alpacaPosition struct {
+	AssetID       string `json:"asset_id"`
+	AssetClass    string `json:"asset_class"`
+	Exchange      string `json:"exchange"`
 	Symbol        string `json:"symbol"`
 	Qty           string `json:"qty"`
 	AvgEntryPrice string `json:"avg_entry_price"`
@@ -189,6 +192,10 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 			dayPnLPct = &value
 		}
 		out = append(out, broker.Position{
+			ExternalID:  strings.TrimSpace(position.AssetID),
+			AssetType:   strings.ToLower(strings.TrimSpace(position.AssetClass)),
+			Market:      "US",
+			Exchange:    strings.TrimSpace(position.Exchange),
 			Symbol:      strings.ToUpper(position.Symbol),
 			Quantity:    quantity,
 			AvgCost:     parseDecimalOrZero(position.AvgEntryPrice),

@@ -61,7 +61,7 @@ func TestSyncUsesOnlyPrimaryConnectionForSharedAccounts(t *testing.T) {
 			t.Fatalf("account missing connection relationships: %#v", account)
 		}
 	}
-	positions, err := svc.AllPositions(context.Background())
+	positions, err := svc.AggregatedPositions(context.Background())
 	if err != nil || len(positions) != 2 {
 		t.Fatalf("shared account positions duplicated: positions=%#v err=%v", positions, err)
 	}
@@ -89,7 +89,7 @@ func TestSyncConnectionOnlyRefreshesSelectedSource(t *testing.T) {
 	}
 }
 
-func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
+func TestAggregatedPositionsReadOnlyDatabase(t *testing.T) {
 	provider := &fakeBroker{}
 	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
 	if err := svc.Sync(context.Background()); err != nil {
@@ -97,11 +97,11 @@ func TestAllPositionsReadsOnlyDatabase(t *testing.T) {
 	}
 	callsAfterSync := provider.positionCalls
 
-	first, err := svc.AllPositions(context.Background())
+	first, err := svc.AggregatedPositions(context.Background())
 	if err != nil {
 		t.Fatalf("read positions: %v", err)
 	}
-	second, err := svc.AllPositions(context.Background())
+	second, err := svc.AggregatedPositions(context.Background())
 	if err != nil {
 		t.Fatalf("read positions again: %v", err)
 	}

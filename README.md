@@ -55,8 +55,13 @@ GET  /admin/gateways                     内嵌 Gateway 管理页面
 GET  /api/v1/watchlist/groups
 GET  /api/v1/watchlist/groups/:id/items
 GET  /api/v1/quotes/:symbol
-GET  /api/v1/positions
 GET  /api/v1/account/equity
+GET  /api/v1/portfolio/overview
+GET  /api/v1/portfolio/positions
+GET  /api/v1/portfolio/positions/:positionId
+GET  /api/v1/portfolio/cash
+POST /api/v1/portfolio/sync
+GET  /api/v1/portfolio/sync-status
 GET  /api/v1/ibkr/gateways
 POST /api/v1/ibkr/gateways
 GET  /api/v1/ibkr/gateways/:id/status
@@ -70,6 +75,16 @@ POST /api/v1/schwab/oauth/exchange
 POST /api/v1/server/shutdown
 GET  /api/v1/ws?symbols=AAPL,MSFT   WebSocket（Schwab 实时行情推送）
 ```
+
+## 统一资产身份
+
+Core 为跨券商持仓维护稳定的 `instrument_id`。同步时优先使用券商永久资产 ID，
+缺失时使用规范化的资产类型、市场和 symbol 匹配。`instruments` 保存 Traio 统一资产，
+`broker_instruments` 保存 IBKR、Schwab、Alpaca 外部 ID 到统一资产的映射。
+
+`GET /api/v1/portfolio/positions` 只按 `instrument_id` 返回聚合持仓和稳定
+`position_id`，并在 `legs` 中保留各券商账户的组成明细。原始持仓接口与旧 snapshot
+接口已移除；无法解析 `instrument_id` 的持仓会使同步失败，不会降级为 symbol 聚合。
 
 浏览器打开 `http://127.0.0.1:38181/admin/gateways` 可使用内嵌的 IBKR Gateway
 管理页面。页面使用运行目录中的 API Token 连接服务；Token 只保存在当前标签页的
@@ -89,6 +104,7 @@ OAuth token 保存在本地 SQLite `oauth_tokens` 表中，并在过期前自动
 ## 架构文档
 
 - [券商账户同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/broker-sync.md)
+- [统一资产身份与 instrument_id](https://github.com/nite0x/traio-doc/blob/main/docs/traio/instrument-identity.md)
 - [IBKR Client Portal Gateway 管理手册](https://github.com/nite0x/traio-doc/blob/main/docs/traio/ibkr-gateway-management.md)
 - [端到端加密设备同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/e2ee-device-sync.md)
 

@@ -678,6 +678,29 @@ CREATE TABLE IF NOT EXISTS broker_providers (
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS instruments (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	asset_type TEXT NOT NULL,
+	market TEXT NOT NULL,
+	symbol TEXT NOT NULL,
+	normalized_symbol TEXT NOT NULL,
+	name TEXT NOT NULL DEFAULT '',
+	currency TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'active',
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(asset_type, market, normalized_symbol)
+);
+CREATE TABLE IF NOT EXISTS broker_instruments (
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE CASCADE,
+	external_id TEXT NOT NULL,
+	instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+	broker_symbol TEXT NOT NULL DEFAULT '',
+	broker_exchange TEXT NOT NULL DEFAULT '',
+	last_seen_at TEXT NOT NULL,
+	PRIMARY KEY(provider_code, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_broker_instruments_instrument ON broker_instruments(instrument_id);
 CREATE TABLE IF NOT EXISTS broker_connections (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
@@ -753,6 +776,8 @@ CREATE TABLE IF NOT EXISTS broker_account_balances (
 );
 CREATE TABLE IF NOT EXISTS broker_asset_positions (
 	account_id INTEGER NOT NULL REFERENCES broker_accounts(id) ON DELETE CASCADE,
+	instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+	external_id TEXT NOT NULL DEFAULT '',
 	asset_type TEXT NOT NULL,
 	asset_key TEXT NOT NULL,
 	symbol TEXT NOT NULL DEFAULT '',
@@ -774,6 +799,7 @@ CREATE TABLE IF NOT EXISTS broker_asset_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol ON broker_asset_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key ON broker_asset_positions(asset_key);
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_instrument ON broker_asset_positions(instrument_id);
 CREATE TABLE IF NOT EXISTS broker_account_performance (
 	account_id INTEGER PRIMARY KEY REFERENCES broker_accounts(id) ON DELETE CASCADE,
 	daily_pnl REAL NOT NULL DEFAULT 0,
@@ -809,6 +835,29 @@ CREATE TABLE IF NOT EXISTS broker_providers (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS instruments (
+	id BIGSERIAL PRIMARY KEY,
+	asset_type TEXT NOT NULL,
+	market TEXT NOT NULL,
+	symbol TEXT NOT NULL,
+	normalized_symbol TEXT NOT NULL,
+	name TEXT NOT NULL DEFAULT '',
+	currency TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'active',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(asset_type, market, normalized_symbol)
+);
+CREATE TABLE IF NOT EXISTS broker_instruments (
+	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE CASCADE,
+	external_id TEXT NOT NULL,
+	instrument_id BIGINT NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+	broker_symbol TEXT NOT NULL DEFAULT '',
+	broker_exchange TEXT NOT NULL DEFAULT '',
+	last_seen_at TEXT NOT NULL,
+	PRIMARY KEY(provider_code, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_broker_instruments_instrument ON broker_instruments(instrument_id);
 CREATE TABLE IF NOT EXISTS broker_connections (
 	id BIGSERIAL PRIMARY KEY,
 	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
@@ -884,6 +933,8 @@ CREATE TABLE IF NOT EXISTS broker_account_balances (
 );
 CREATE TABLE IF NOT EXISTS broker_asset_positions (
 	account_id BIGINT NOT NULL REFERENCES broker_accounts(id) ON DELETE CASCADE,
+	instrument_id BIGINT NOT NULL REFERENCES instruments(id) ON DELETE RESTRICT,
+	external_id TEXT NOT NULL DEFAULT '',
 	asset_type TEXT NOT NULL,
 	asset_key TEXT NOT NULL,
 	symbol TEXT NOT NULL DEFAULT '',
@@ -905,6 +956,7 @@ CREATE TABLE IF NOT EXISTS broker_asset_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_symbol ON broker_asset_positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_asset_key ON broker_asset_positions(asset_key);
+CREATE INDEX IF NOT EXISTS idx_broker_asset_positions_instrument ON broker_asset_positions(instrument_id);
 CREATE TABLE IF NOT EXISTS broker_account_performance (
 	account_id BIGINT PRIMARY KEY REFERENCES broker_accounts(id) ON DELETE CASCADE,
 	daily_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,

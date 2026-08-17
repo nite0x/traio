@@ -15,7 +15,7 @@ import (
 type Snapshot struct {
 	Summary      SnapshotSummary       `json:"summary"`
 	Allocations  []SnapshotAllocation  `json:"allocations"`
-	Positions    []broker.Position     `json:"positions"`
+	Positions    []AggregatedPosition  `json:"positions"`
 	CashBalances []SnapshotCashBalance `json:"cash_balances"`
 	Warnings     []string              `json:"warnings"`
 }
@@ -81,7 +81,6 @@ func (s *SyncService) Snapshot(ctx context.Context) (Snapshot, error) {
 	result := Snapshot{
 		Summary:      SnapshotSummary{BaseCurrency: snapshotBaseCurrency(accounts)},
 		Allocations:  []SnapshotAllocation{},
-		Positions:    positions,
 		CashBalances: make([]SnapshotCashBalance, 0, len(balances)),
 		Warnings:     []string{},
 	}
@@ -160,6 +159,10 @@ func (s *SyncService) Snapshot(ctx context.Context) (Snapshot, error) {
 	result.Summary.SyncedAccounts = len(syncedAccounts)
 	result.Summary.UnrealizedPnLPercent = percentOfCost(result.Summary.UnrealizedPnL, result.Summary.HoldingsValue)
 	result.Summary.DailyPnLPercent = percentOfPriorValue(result.Summary.DailyPnL, result.Summary.NetAssetValue)
+	result.Positions, err = aggregatePositions(positions, result.Summary.NetAssetValue)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("aggregate positions: %w", err)
+	}
 
 	for brokerName, amount := range allocationAmounts {
 		percentage := 0.0

@@ -26,8 +26,7 @@ type Repository interface {
 	GetBrokerConnection(context.Context, int64) (store.BrokerConnection, error)
 }
 
-// SyncService separates broker synchronization from frontend reads.
-// Sync calls broker APIs and updates the repository; AllPositions only reads it.
+// SyncService separates broker synchronization from portfolio reads.
 type SyncService struct {
 	store     Repository
 	sourcesMu sync.RWMutex
@@ -281,14 +280,6 @@ func (s *SyncService) recordBrokerResourceError(
 		return fmt.Errorf("%w (record sync status: %v)", syncErr, err)
 	}
 	return syncErr
-}
-
-// AllPositions reads the latest successful normalized projection from SQLite.
-func (s *SyncService) AllPositions(ctx context.Context) ([]broker.Position, error) {
-	if s.store == nil {
-		return nil, fmt.Errorf("broker store is not available")
-	}
-	return s.store.ListBrokerPositions(ctx)
 }
 
 func (s *SyncService) SyncStatus(ctx context.Context) ([]store.BrokerSyncStatus, error) {

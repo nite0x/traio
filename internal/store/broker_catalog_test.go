@@ -121,6 +121,37 @@ func TestOpenRejectsNumericProviderBrokerSchemaWithoutMigrating(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNullableInstrumentIDSchemaWithoutMigrating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nullable-instrument.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE broker_accounts (
+			id INTEGER PRIMARY KEY,
+			provider_code TEXT NOT NULL,
+			provider_account_id TEXT NOT NULL
+		);
+		CREATE TABLE broker_asset_positions (
+			account_id INTEGER NOT NULL,
+			instrument_id INTEGER,
+			external_id TEXT NOT NULL DEFAULT '',
+			asset_type TEXT NOT NULL,
+			asset_key TEXT NOT NULL,
+			symbol TEXT NOT NULL DEFAULT ''
+		);`); err != nil {
+		t.Fatalf("create nullable instrument schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	_, err = Open(path)
+	if err == nil || !strings.Contains(err.Error(), "pre-instrument SQLite broker schema") {
+		t.Fatalf("expected explicit instrument schema reset error, got %v", err)
+	}
+}
+
 func TestBrokerSchemasUseCanonicalProviderAccountModel(t *testing.T) {
 	wantColumns := map[string][]string{
 		"broker_providers":           {"code", "provider_fields", "connection_fields", "config_json", "secrets_json"},
