@@ -278,10 +278,6 @@ func (c *Client) HistoricalEquity(context.Context) ([]broker.AccountEquityPoint,
 	return []broker.AccountEquityPoint{}, nil
 }
 
-func (c *Client) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
-	return "", fmt.Errorf("schwab: order placement is not implemented")
-}
-
 func firstNonZero(values ...float64) float64 {
 	for _, value := range values {
 		if value != 0 {

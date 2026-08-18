@@ -130,6 +130,7 @@ func main() {
 		RuntimeDir:      baseDir,
 		WebDir:          config.ResolveWebDir(),
 		Auth:            authService,
+		Trading:         brokers.Trading,
 	}
 
 	addr := config.ResolveServerListenAddr()
