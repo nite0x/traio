@@ -377,7 +377,7 @@ func (b *Brokers) BeginConnectionLogin(ctx context.Context, connectionID int64, 
 		if client == nil {
 			return broker.LoginAction{}, fmt.Errorf("Alpaca connection %d is not loaded", connectionID)
 		}
-		return broker.LoginAction{Authenticated: client.Configured()}, nil
+		return client.BeginLogin(ctx)
 	default:
 		return broker.LoginAction{}, fmt.Errorf("unsupported broker provider %s", connection.ProviderCode)
 	}
@@ -411,7 +411,7 @@ func (b *Brokers) ConnectionLoginStatus(ctx context.Context, connectionID int64)
 		if client == nil {
 			return broker.LoginAction{}, fmt.Errorf("Alpaca connection %d is not loaded", connectionID)
 		}
-		return broker.LoginAction{Authenticated: client.Configured()}, nil
+		return client.LoginStatus(ctx)
 	default:
 		return broker.LoginAction{}, fmt.Errorf("unsupported broker provider %s", connection.ProviderCode)
 	}

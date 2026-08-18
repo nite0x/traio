@@ -21,11 +21,17 @@ func alpacaStatus(client *alpaca.Client) gin.HandlerFunc {
 			c.JSON(http.StatusOK, status)
 			return
 		}
+		login, err := client.LoginStatus(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "configured": true})
+			return
+		}
 		summary, err := client.AccountSummary(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "configured": true})
 			return
 		}
+		status["authenticated"] = login.Authenticated
 		status["account_id"] = summary.AccountID
 		status["equity"] = summary.NetLiquidation
 		status["currency"] = summary.Currency
