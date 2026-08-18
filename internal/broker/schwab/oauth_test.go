@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,6 +107,57 @@ func TestRefreshAndAuthenticatedRequest(t *testing.T) {
 	token, _ := client.Token()
 	if token.RefreshToken != "refresh-1" {
 		t.Fatalf("refresh token was not preserved: %+v", token)
+	}
+}
+
+func TestConcurrentAuthenticatedRequestsShareOneRefresh(t *testing.T) {
+	var refreshCalls atomic.Int32
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	client := testClient(func(r *http.Request) *http.Response {
+		if r.URL.Path == "/token" {
+			if refreshCalls.Add(1) == 1 {
+				close(refreshStarted)
+			}
+			<-releaseRefresh
+			return jsonResponse(http.StatusOK, `{"expires_in":1800,"token_type":"Bearer","access_token":"access-2"}`)
+		}
+		return jsonResponse(http.StatusOK, `{"ok":true}`)
+	})
+	client.SetToken(Token{
+		AccessToken:  "expired",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+	})
+
+	const requests = 8
+	start := make(chan struct{})
+	errs := make(chan error, requests)
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := client.Do(context.Background(), http.MethodGet, "https://api.test/api", nil)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	<-refreshStarted
+	close(releaseRefresh)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("authenticated request: %v", err)
+		}
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("refresh calls: got %d, want 1", got)
 	}
 }
 

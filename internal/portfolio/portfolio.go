@@ -172,9 +172,28 @@ func (s *SyncService) syncSources(ctx context.Context, sources []Source) error {
 }
 
 func (s *SyncService) syncBrokerResources(ctx context.Context, name string, connectionID int64, provider broker.Broker) error {
-	listed, err := provider.ListAccounts(ctx)
-	if err != nil {
-		return s.recordBrokerResourceError(ctx, connectionID, "", store.SyncDataAccounts, fmt.Errorf("list accounts: %w", err))
+	var (
+		listed    []broker.Account
+		snapshots map[string]broker.AccountSnapshot
+	)
+	if snapshotProvider, ok := provider.(broker.AccountSnapshotProvider); ok {
+		brokerSnapshots, err := snapshotProvider.ListAccountSnapshots(ctx)
+		if err != nil {
+			return s.recordBrokerResourceError(ctx, connectionID, "", store.SyncDataAccounts, fmt.Errorf("list account snapshots: %w", err))
+		}
+		listed = make([]broker.Account, 0, len(brokerSnapshots))
+		snapshots = make(map[string]broker.AccountSnapshot, len(brokerSnapshots))
+		for _, snapshot := range brokerSnapshots {
+			accountID := strings.TrimSpace(snapshot.Account.ID)
+			listed = append(listed, snapshot.Account)
+			snapshots[accountID] = snapshot
+		}
+	} else {
+		var err error
+		listed, err = provider.ListAccounts(ctx)
+		if err != nil {
+			return s.recordBrokerResourceError(ctx, connectionID, "", store.SyncDataAccounts, fmt.Errorf("list accounts: %w", err))
+		}
 	}
 	if len(listed) == 0 {
 		return s.recordBrokerResourceError(ctx, connectionID, "", store.SyncDataAccounts, fmt.Errorf("list accounts: no accounts returned"))
@@ -202,7 +221,12 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 			continue
 		}
 
-		account, err := provider.GetAccount(ctx, accountID)
+		snapshot, hasSnapshot := snapshots[accountID]
+		account := snapshot.Account
+		err = nil
+		if !hasSnapshot {
+			account, err = provider.GetAccount(ctx, accountID)
+		}
 		if err != nil {
 			err = fmt.Errorf("account %s details: %w", accountID, err)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataAccountDetails, err).Error())
@@ -222,7 +246,12 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 			}
 		}
 
-		balances, err := provider.GetCashBalances(ctx, accountID)
+		balances := snapshot.CashBalances
+		if !hasSnapshot {
+			balances, err = provider.GetCashBalances(ctx, accountID)
+		} else {
+			err = nil
+		}
 		if err != nil {
 			err = fmt.Errorf("account %s cash balances: %w", accountID, err)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataCashBalances, err).Error())
@@ -236,7 +265,12 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 			}
 		}
 
-		positions, err := provider.ListAccountPositions(ctx, accountID)
+		positions := snapshot.Positions
+		if !hasSnapshot {
+			positions, err = provider.ListAccountPositions(ctx, accountID)
+		} else {
+			err = nil
+		}
 		if err != nil {
 			err = fmt.Errorf("account %s positions: %w", accountID, err)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataPositions, err).Error())
@@ -251,7 +285,12 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 			}
 		}
 
-		performance, err := provider.GetDailyPerformance(ctx, accountID)
+		performance := snapshot.DailyPerformance
+		if !hasSnapshot {
+			performance, err = provider.GetDailyPerformance(ctx, accountID)
+		} else {
+			err = nil
+		}
 		if err != nil {
 			err = fmt.Errorf("account %s daily performance: %w", accountID, err)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataDailyPerformance, err).Error())

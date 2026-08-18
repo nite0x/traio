@@ -71,6 +71,7 @@ type currentBalances struct {
 }
 
 var _ broker.Broker = (*Client)(nil)
+var _ broker.AccountSnapshotProvider = (*Client)(nil)
 
 func (c *Client) BeginLogin(context.Context) (broker.LoginAction, error) {
 	_, authenticated := c.Token()
@@ -88,9 +89,30 @@ func (c *Client) ListAccounts(ctx context.Context) ([]broker.Account, error) {
 		if strings.TrimSpace(account.AccountNumber) == "" {
 			continue
 		}
-		out = append(out, broker.Account{
-			ID: account.AccountNumber, Broker: "SCHWAB", DisplayName: account.AccountNumber,
-			AccountType: account.Type, Status: "open", BaseCurrency: "USD",
+		out = append(out, schwabAccountMetadata(account))
+	}
+	return out, nil
+}
+
+// ListAccountSnapshots fetches all data required by the portfolio projection
+// from Schwab's positions-expanded accounts endpoint in one consistent read.
+func (c *Client) ListAccountSnapshots(ctx context.Context) ([]broker.AccountSnapshot, error) {
+	accounts, err := c.accounts(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	asOf := time.Now().UTC().Format(time.RFC3339)
+	out := make([]broker.AccountSnapshot, 0, len(accounts))
+	for _, envelope := range accounts {
+		account := envelope.SecuritiesAccount
+		if strings.TrimSpace(account.AccountNumber) == "" {
+			continue
+		}
+		out = append(out, broker.AccountSnapshot{
+			Account:          schwabAccountMetadata(account),
+			CashBalances:     schwabCashBalances(account, asOf),
+			Positions:        schwabPositions(account, asOf),
+			DailyPerformance: schwabDailyPerformance(account, asOf),
 		})
 	}
 	return out, nil
@@ -114,26 +136,15 @@ func (c *Client) GetCashBalances(ctx context.Context, accountID string) ([]broke
 	if err != nil {
 		return nil, err
 	}
-	return []broker.CashBalance{{
-		AccountID: accountID, Currency: "USD",
-		Total:   account.CurrentBalances.CashBalance + account.CurrentBalances.MoneyMarketFund,
-		Settled: account.CurrentBalances.CashBalance, ExchangeRate: 1,
-		IsBaseCurrency: true, AsOf: time.Now().UTC().Format(time.RFC3339),
-	}}, nil
+	return schwabCashBalances(account, time.Now().UTC().Format(time.RFC3339)), nil
 }
 
 func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]broker.Position, error) {
-	positions, err := c.ListPositions(ctx)
+	account, err := c.findAccount(ctx, accountID, true)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]broker.Position, 0, len(positions))
-	for _, position := range positions {
-		if position.Account == accountID {
-			out = append(out, position)
-		}
-	}
-	return out, nil
+	return schwabPositions(account, time.Now().UTC().Format(time.RFC3339)), nil
 }
 
 func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (broker.DailyPerformance, error) {
@@ -141,20 +152,7 @@ func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (bro
 	if err != nil {
 		return broker.DailyPerformance{}, err
 	}
-	performance := broker.DailyPerformance{
-		AccountID:       accountID,
-		NetLiquidation:  firstNonZero(account.CurrentBalances.LiquidationValue, account.CurrentBalances.Equity),
-		UnrealizedPnL:   account.CurrentBalances.UnrealizedProfitLoss,
-		ExcessLiquidity: account.CurrentBalances.AvailableFunds,
-		MarketValue:     account.CurrentBalances.LongMarketValue + account.CurrentBalances.ShortMarketValue,
-		AsOf:            time.Now().UTC().Format(time.RFC3339),
-	}
-	for _, position := range account.Positions {
-		if position.CurrentDayProfitLoss != nil {
-			performance.DailyPnL += *position.CurrentDayProfitLoss
-		}
-	}
-	return performance, nil
+	return schwabDailyPerformance(account, time.Now().UTC().Format(time.RFC3339)), nil
 }
 
 func (c *Client) findAccount(ctx context.Context, accountID string, positions bool) (securitiesAccount, error) {
@@ -197,46 +195,88 @@ func (c *Client) ListPositions(ctx context.Context) ([]broker.Position, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	out := make([]broker.Position, 0)
 	for _, envelope := range accounts {
-		account := envelope.SecuritiesAccount
-		for _, position := range account.Positions {
-			quantity := position.LongQuantity - position.ShortQuantity
-			if quantity == 0 {
-				continue
-			}
-			averagePrice := position.AveragePrice
-			if averagePrice == 0 {
-				if quantity > 0 {
-					averagePrice = firstNonZero(position.AverageLongPrice, position.TaxLotAverageLongPrice)
-				} else {
-					averagePrice = firstNonZero(position.AverageShortPrice, position.TaxLotAverageShortPrice)
-				}
-			}
-			marketPrice := 0.0
-			if quantity != 0 {
-				marketPrice = position.MarketValue / quantity
-			}
-			out = append(out, broker.Position{
-				ExternalID:  schwabInstrumentExternalID(position.Instrument),
-				AssetType:   strings.ToLower(strings.TrimSpace(position.Instrument.AssetType)),
-				Market:      "US",
-				Symbol:      strings.ToUpper(position.Instrument.Symbol),
-				Name:        strings.TrimSpace(position.Instrument.Description),
-				ConID:       position.Instrument.InstrumentID,
-				Quantity:    quantity,
-				AvgCost:     averagePrice,
-				MarketPrice: marketPrice,
-				MarketValue: position.MarketValue,
-				Unrealized:  position.LongOpenProfitLoss + position.ShortOpenProfitLoss,
-				DailyPnL:    position.CurrentDayProfitLoss,
-				DailyPnLPct: position.CurrentDayProfitLossPct,
-				Currency:    "USD",
-				Account:     account.AccountNumber,
-				Broker:      "SCHWAB",
-				SyncedAt:    now,
-			})
-		}
+		out = append(out, schwabPositions(envelope.SecuritiesAccount, now)...)
 	}
 	return out, nil
+}
+
+func schwabAccountMetadata(account securitiesAccount) broker.Account {
+	return broker.Account{
+		ID:           strings.TrimSpace(account.AccountNumber),
+		Broker:       "SCHWAB",
+		DisplayName:  strings.TrimSpace(account.AccountNumber),
+		AccountType:  strings.TrimSpace(account.Type),
+		Status:       "open",
+		BaseCurrency: "USD",
+	}
+}
+
+func schwabCashBalances(account securitiesAccount, asOf string) []broker.CashBalance {
+	return []broker.CashBalance{{
+		AccountID:      strings.TrimSpace(account.AccountNumber),
+		Currency:       "USD",
+		Total:          account.CurrentBalances.CashBalance + account.CurrentBalances.MoneyMarketFund,
+		Settled:        account.CurrentBalances.CashBalance,
+		ExchangeRate:   1,
+		IsBaseCurrency: true,
+		AsOf:           asOf,
+	}}
+}
+
+func schwabPositions(account securitiesAccount, asOf string) []broker.Position {
+	out := make([]broker.Position, 0, len(account.Positions))
+	for _, position := range account.Positions {
+		quantity := position.LongQuantity - position.ShortQuantity
+		if quantity == 0 {
+			continue
+		}
+		averagePrice := position.AveragePrice
+		if averagePrice == 0 {
+			if quantity > 0 {
+				averagePrice = firstNonZero(position.AverageLongPrice, position.TaxLotAverageLongPrice)
+			} else {
+				averagePrice = firstNonZero(position.AverageShortPrice, position.TaxLotAverageShortPrice)
+			}
+		}
+		marketPrice := position.MarketValue / quantity
+		out = append(out, broker.Position{
+			ExternalID:  schwabInstrumentExternalID(position.Instrument),
+			AssetType:   strings.ToLower(strings.TrimSpace(position.Instrument.AssetType)),
+			Market:      "US",
+			Symbol:      strings.ToUpper(strings.TrimSpace(position.Instrument.Symbol)),
+			Name:        strings.TrimSpace(position.Instrument.Description),
+			ConID:       position.Instrument.InstrumentID,
+			Quantity:    quantity,
+			AvgCost:     averagePrice,
+			MarketPrice: marketPrice,
+			MarketValue: position.MarketValue,
+			Unrealized:  position.LongOpenProfitLoss + position.ShortOpenProfitLoss,
+			DailyPnL:    position.CurrentDayProfitLoss,
+			DailyPnLPct: position.CurrentDayProfitLossPct,
+			Currency:    "USD",
+			Account:     strings.TrimSpace(account.AccountNumber),
+			Broker:      "SCHWAB",
+			SyncedAt:    asOf,
+		})
+	}
+	return out
+}
+
+func schwabDailyPerformance(account securitiesAccount, asOf string) broker.DailyPerformance {
+	performance := broker.DailyPerformance{
+		AccountID:       strings.TrimSpace(account.AccountNumber),
+		NetLiquidation:  firstNonZero(account.CurrentBalances.LiquidationValue, account.CurrentBalances.Equity),
+		UnrealizedPnL:   account.CurrentBalances.UnrealizedProfitLoss,
+		ExcessLiquidity: account.CurrentBalances.AvailableFunds,
+		MarketValue:     account.CurrentBalances.LongMarketValue + account.CurrentBalances.ShortMarketValue,
+		AsOf:            asOf,
+	}
+	for _, position := range account.Positions {
+		if position.CurrentDayProfitLoss != nil {
+			performance.DailyPnL += *position.CurrentDayProfitLoss
+		}
+	}
+	return performance
 }
 
 func schwabInstrumentExternalID(instrument schwabInstrument) string {
@@ -276,10 +316,6 @@ func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, err
 
 func (c *Client) HistoricalEquity(context.Context) ([]broker.AccountEquityPoint, error) {
 	return []broker.AccountEquityPoint{}, nil
-}
-
-func (c *Client) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
-	return "", fmt.Errorf("schwab: order placement is not implemented")
 }
 
 func firstNonZero(values ...float64) float64 {

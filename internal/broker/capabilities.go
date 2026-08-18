@@ -34,6 +34,23 @@ type PerformanceProvider interface {
 	GetDailyPerformance(ctx context.Context, accountID string) (DailyPerformance, error)
 }
 
+// AccountSnapshotProvider is an optional bulk capability for brokers that can
+// return all projection data in one upstream request. SyncService prefers this
+// over issuing one request per capability and account, so every stored resource
+// in a synchronization cycle is derived from the same broker snapshot.
+type AccountSnapshotProvider interface {
+	ListAccountSnapshots(ctx context.Context) ([]AccountSnapshot, error)
+}
+
+// AccountSnapshot contains the complete set of resources persisted by the
+// periodic broker synchronization loop for one account.
+type AccountSnapshot struct {
+	Account          Account          `json:"account"`
+	CashBalances     []CashBalance    `json:"cash_balances"`
+	Positions        []Position       `json:"positions"`
+	DailyPerformance DailyPerformance `json:"daily_performance"`
+}
+
 // LoginAction describes the UI action needed to finish broker authentication.
 type LoginAction struct {
 	URL           string `json:"url,omitempty"`

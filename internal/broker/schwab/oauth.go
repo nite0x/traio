@@ -252,7 +252,24 @@ func (c *Client) validAccessToken(ctx context.Context) (string, error) {
 	if token.ExpiresAt.IsZero() || time.Now().Add(refreshBeforeExpiry).Before(token.ExpiresAt) {
 		return token.AccessToken, nil
 	}
-	refreshed, err := c.RefreshAccessToken(ctx)
+
+	// Several resource reads are started together during synchronization. Only
+	// the first one should refresh; waiters must reuse the token it just stored.
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.mu.RLock()
+	token = cloneToken(c.token)
+	c.mu.RUnlock()
+	if token == nil || token.AccessToken == "" {
+		return "", errors.New("schwab: access token is required")
+	}
+	if token.ExpiresAt.IsZero() || time.Now().Add(refreshBeforeExpiry).Before(token.ExpiresAt) {
+		return token.AccessToken, nil
+	}
+	if token.RefreshToken == "" {
+		return "", errors.New("schwab: refresh token is required")
+	}
+	refreshed, err := c.refreshToken(ctx, token.RefreshToken)
 	if err != nil {
 		return "", err
 	}

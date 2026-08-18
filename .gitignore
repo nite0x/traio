@@ -20,6 +20,7 @@
 # Config (local secrets)
 config.yaml
 api-token
+api-url
 
 # SQLite
 *.db

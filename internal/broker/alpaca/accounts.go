@@ -50,8 +50,25 @@ type portfolioHistory struct {
 
 var _ broker.Broker = (*Client)(nil)
 
-func (c *Client) BeginLogin(context.Context) (broker.LoginAction, error) {
-	return broker.LoginAction{Authenticated: c.Configured()}, nil
+func (c *Client) BeginLogin(ctx context.Context) (broker.LoginAction, error) {
+	return c.LoginStatus(ctx)
+}
+
+// LoginStatus verifies the configured API credentials against Alpaca instead
+// of treating the mere presence of a key pair as an authenticated session.
+func (c *Client) LoginStatus(ctx context.Context) (broker.LoginAction, error) {
+	if !c.Configured() {
+		return broker.LoginAction{}, nil
+	}
+	account, err := c.fetchAccount(ctx)
+	if err != nil {
+		return broker.LoginAction{}, err
+	}
+	accountID := alpacaAccountID(account)
+	if accountID == "" {
+		return broker.LoginAction{}, fmt.Errorf("alpaca: account response has no account identifier")
+	}
+	return broker.LoginAction{Authenticated: true, AccountID: accountID}, nil
 }
 
 func (c *Client) ListAccounts(ctx context.Context) ([]broker.Account, error) {
@@ -264,10 +281,6 @@ func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPo
 		})
 	}
 	return out, nil
-}
-
-func (c *Client) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
-	return "", fmt.Errorf("alpaca: order placement is not implemented")
 }
 
 func (c *Client) fetchAccount(ctx context.Context) (alpacaAccount, error) {

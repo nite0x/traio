@@ -86,7 +86,7 @@ var defaultBrokerProviders = []providerSeed{
 	{
 		code: "SCHWAB", name: "Charles Schwab", displayName: "Charles Schwab",
 		displayInfo:  `{"short_name":"Schwab"}`,
-		capabilities: []string{"accounts", "oauth"},
+		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance", "oauth"},
 		providerFields: []BrokerFieldDefinition{
 			{Key: "client_id", Label: "Client ID", Type: "string", Secret: true, Required: true},
 			{Key: "client_secret", Label: "Client Secret", Type: "string", Secret: true, Required: true},
@@ -102,7 +102,7 @@ var defaultBrokerProviders = []providerSeed{
 	{
 		code: "ALPACA", name: "Alpaca Markets", displayName: "Alpaca",
 		displayInfo:  `{"short_name":"Alpaca"}`,
-		capabilities: []string{"accounts", "trading"},
+		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance", "trading"},
 		providerFields: []BrokerFieldDefinition{
 			{Key: "paper_base_url", Label: "Paper API 地址", Type: "url"},
 			{Key: "live_base_url", Label: "Live API 地址", Type: "url"},

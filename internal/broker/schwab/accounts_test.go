@@ -7,6 +7,61 @@ import (
 	"time"
 )
 
+func TestListAccountSnapshotsUsesOneExpandedAccountsRequest(t *testing.T) {
+	requests := 0
+	client := testClient(func(r *http.Request) *http.Response {
+		requests++
+		if r.URL.Path != "/trader/accounts" || r.URL.Query().Get("fields") != "positions" {
+			t.Fatalf("unexpected Schwab snapshot request: %s", r.URL.String())
+		}
+		return jsonResponse(http.StatusOK, `[{
+			"securitiesAccount": {
+				"accountNumber": "123456",
+				"type": "MARGIN",
+				"positions": [{
+					"longQuantity": 10,
+					"averagePrice": 100,
+					"marketValue": 1250,
+					"currentDayProfitLoss": 50,
+					"longOpenProfitLoss": 250,
+					"instrument": {"cusip": "037833100", "symbol": "AAPL", "assetType": "EQUITY"}
+				}],
+				"currentBalances": {
+					"cashBalance": 500,
+					"moneyMarketFund": 100,
+					"liquidationValue": 1850,
+					"longMarketValue": 1250,
+					"availableFunds": 700,
+					"unrealizedProfitLoss": 250
+				}
+			}
+		}]`)
+	})
+	client.traderURL = "https://api.test/trader"
+	client.SetToken(Token{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)})
+
+	snapshots, err := client.ListAccountSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("snapshot requests: got %d, want 1", requests)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("unexpected snapshots: %#v", snapshots)
+	}
+	snapshot := snapshots[0]
+	if snapshot.Account.ID != "123456" || len(snapshot.CashBalances) != 1 || snapshot.CashBalances[0].Total != 600 ||
+		len(snapshot.Positions) != 1 || snapshot.Positions[0].ExternalID != "037833100" ||
+		snapshot.DailyPerformance.DailyPnL != 50 || snapshot.DailyPerformance.NetLiquidation != 1850 {
+		t.Fatalf("unexpected normalized snapshot: %#v", snapshot)
+	}
+	if snapshot.CashBalances[0].AsOf == "" || snapshot.Positions[0].SyncedAt != snapshot.CashBalances[0].AsOf ||
+		snapshot.DailyPerformance.AsOf != snapshot.CashBalances[0].AsOf {
+		t.Fatalf("snapshot resources do not share one timestamp: %#v", snapshot)
+	}
+}
+
 func TestListPositionsAndAccountSummary(t *testing.T) {
 	client := testClient(func(r *http.Request) *http.Response {
 		return jsonResponse(http.StatusOK, `[{

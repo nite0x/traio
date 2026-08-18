@@ -21,6 +21,25 @@ type fakeBroker struct {
 	positionVersion  string
 }
 
+type fakeSnapshotBroker struct {
+	fakeBroker
+	snapshotCalls int
+}
+
+func (f *fakeSnapshotBroker) ListAccountSnapshots(context.Context) ([]broker.AccountSnapshot, error) {
+	f.snapshotCalls++
+	return []broker.AccountSnapshot{{
+		Account: broker.Account{
+			ID: "S1", DisplayName: "Schwab S1", AccountType: "MARGIN", Status: "open", BaseCurrency: "USD",
+		},
+		CashBalances: []broker.CashBalance{{Currency: "USD", Total: 250, Settled: 200, ExchangeRate: 1, IsBaseCurrency: true}},
+		Positions: []broker.Position{{
+			ExternalID: "037833100", Symbol: "AAPL", Quantity: 2, MarketValue: 400, Currency: "USD",
+		}},
+		DailyPerformance: broker.DailyPerformance{DailyPnL: 12, NetLiquidation: 650, MarketValue: 400},
+	}}, nil
+}
+
 func (f *fakeBroker) BeginLogin(context.Context) (broker.LoginAction, error) {
 	f.loginCalls++
 	return broker.LoginAction{}, nil
@@ -120,6 +139,39 @@ func TestSyncBrokerRefreshesEveryAccountCapability(t *testing.T) {
 		assertSyncStatus(t, statuses, accountID, store.SyncDataCashBalances, "", 2)
 		assertSyncStatus(t, statuses, accountID, store.SyncDataPositions, "", 1)
 		assertSyncStatus(t, statuses, accountID, store.SyncDataDailyPerformance, "", 1)
+	}
+}
+
+func TestSyncBrokerPrefersConsistentAccountSnapshots(t *testing.T) {
+	provider := &fakeSnapshotBroker{}
+	svc := newTestSyncService(t, Source{Name: "SCHWAB", Broker: provider})
+
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("sync broker snapshot: %v", err)
+	}
+	if provider.snapshotCalls != 1 || provider.listAccountCalls != 0 || provider.detailCalls != 0 ||
+		provider.balanceCalls != 0 || provider.positionCalls != 0 || provider.performanceCalls != 0 {
+		t.Fatalf("sync did not use bulk snapshot exclusively: %#v", provider)
+	}
+	accounts, err := svc.store.ListBrokerAccounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	balances, err := svc.store.ListBrokerAccountBalances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions, err := svc.AggregatedPositions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	performance, err := svc.store.ListBrokerAccountPerformance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].DisplayName != "Schwab S1" || len(balances) != 1 || balances[0].TotalCashValue != 250 ||
+		len(positions) != 1 || positions[0].Symbol != "AAPL" || len(performance) != 1 || performance[0].DailyPnL != 12 {
+		t.Fatalf("unexpected stored snapshot accounts=%#v balances=%#v positions=%#v performance=%#v", accounts, balances, positions, performance)
 	}
 }
 

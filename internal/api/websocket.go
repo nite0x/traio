@@ -9,7 +9,6 @@ import (
 	"github.com/gorilla/websocket"
 	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
-	"github.com/nite/traio/internal/broker/schwab"
 )
 
 var upgrader = websocket.Upgrader{
@@ -21,7 +20,7 @@ var upgrader = websocket.Upgrader{
 }
 
 // wsQuotes upgrades to WebSocket and forwards normalized Schwab quote updates.
-func wsQuotes(client *schwab.Client, authService *traioauth.Service) gin.HandlerFunc {
+func wsQuotes(resolve schwabClientResolver, authService *traioauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -31,6 +30,7 @@ func wsQuotes(client *schwab.Client, authService *traioauth.Service) gin.Handler
 
 		var quotes <-chan broker.Quote
 		cancel := func() {}
+		client := resolve()
 		if client != nil {
 			quotes, cancel = client.SubscribeQuotes(strings.Split(c.Query("symbols"), ","))
 		}

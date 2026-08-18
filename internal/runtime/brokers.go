@@ -35,6 +35,7 @@ type Brokers struct {
 	Instruments broker.InstrumentProvider
 	Quotes      broker.BatchMarketDataProvider
 	Candles     broker.CandleProvider
+	Trading     *broker.TradingService
 
 	snap  *snaptrade.Client
 	store BrokerRuntimeStore
@@ -54,6 +55,7 @@ type BrokerRuntimeStore interface {
 
 func BuildBrokers(cfg config.Config, st BrokerRuntimeStore, runtimeDir string) (*Brokers, error) {
 	registry := &Brokers{
+		Trading:           broker.NewTradingService(),
 		snap:              snaptrade.New(cfg.SnapTrade),
 		store:             st,
 		ibkrConnections:   map[int64]*ibkr.Broker{},
@@ -170,6 +172,17 @@ func (b *Brokers) Reload(ctx context.Context) error {
 	b.alpacaConnections = alpacaConnections
 	b.selectLegacyDefaultsLocked()
 	b.mu.Unlock()
+	traders := make(map[int64]broker.TradingProvider, len(ibkrConnections)+len(schwabConnections)+len(alpacaConnections))
+	for id, client := range ibkrConnections {
+		traders[id] = client
+	}
+	for id, client := range schwabConnections {
+		traders[id] = client
+	}
+	for id, client := range alpacaConnections {
+		traders[id] = client
+	}
+	b.Trading.Replace(traders)
 	for id, manager := range previousGateways {
 		if manager != ibkrGateways[id] {
 			if err := manager.Shutdown(); err != nil {
@@ -310,6 +323,22 @@ func (b *Brokers) selectLegacyDefaultsLocked() {
 	}
 }
 
+// SchwabClient returns the currently selected enabled Schwab connection.
+// Unlike the legacy Schwab field, callers can use this accessor after Reload
+// without retaining the pointer that existed when the API router was built.
+func (b *Brokers) SchwabClient() *schwab.Client {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.Schwab
+}
+
+// AlpacaClient returns the currently selected enabled Alpaca connection.
+func (b *Brokers) AlpacaClient() *alpaca.Client {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.Alpaca
+}
+
 func (b *Brokers) SyncSources() []portfolio.Source {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -377,7 +406,7 @@ func (b *Brokers) BeginConnectionLogin(ctx context.Context, connectionID int64, 
 		if client == nil {
 			return broker.LoginAction{}, fmt.Errorf("Alpaca connection %d is not loaded", connectionID)
 		}
-		return broker.LoginAction{Authenticated: client.Configured()}, nil
+		return client.BeginLogin(ctx)
 	default:
 		return broker.LoginAction{}, fmt.Errorf("unsupported broker provider %s", connection.ProviderCode)
 	}
@@ -411,7 +440,7 @@ func (b *Brokers) ConnectionLoginStatus(ctx context.Context, connectionID int64)
 		if client == nil {
 			return broker.LoginAction{}, fmt.Errorf("Alpaca connection %d is not loaded", connectionID)
 		}
-		return broker.LoginAction{Authenticated: client.Configured()}, nil
+		return client.LoginStatus(ctx)
 	default:
 		return broker.LoginAction{}, fmt.Errorf("unsupported broker provider %s", connection.ProviderCode)
 	}
