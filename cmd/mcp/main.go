@@ -17,7 +17,11 @@ import (
 
 func main() {
 	runtimeDir := config.ResolveRuntimeDir()
-	apiBase := runtime.ResolveAPIBase(runtimeDir)
+	apiBase, err := runtime.ResolveAPIBase(runtimeDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "traio-mcp: API address: %v\n", err)
+		os.Exit(1)
+	}
 	apiToken, err := runtime.ReadAPIToken(runtimeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "traio-mcp: API token: %v\n", err)

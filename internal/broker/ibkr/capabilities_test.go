@@ -57,6 +57,10 @@ func TestClientBrokerCapabilities(t *testing.T) {
 				"conid":265598,
 				"acctId":"U1",
 				"contractDesc":"AAPL",
+				"ticker":"AAPL",
+				"name":"APPLE INC",
+				"assetClass":"STK",
+				"type":"COMMON",
 				"position":2,
 				"mktPrice":210,
 				"mktValue":420,
@@ -78,6 +82,12 @@ func TestClientBrokerCapabilities(t *testing.T) {
 					"mv": 2500
 				}
 			}
+		}`))
+	})
+	mux.HandleFunc("/v1/api/portfolio/U1/summary", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"netliquidation": {"amount": 10063.5, "value": null, "currency": "USD"},
+			"grosspositionvalue": {"amount": 2541.25, "value": null, "currency": "USD"}
 		}`))
 	})
 
@@ -114,7 +124,7 @@ func TestClientBrokerCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list account positions: %v", err)
 	}
-	if len(positions) != 1 || positions[0].Account != "U1" || positions[0].Symbol != "AAPL" || positions[0].Unrealized != 40 {
+	if len(positions) != 1 || positions[0].Account != "U1" || positions[0].Symbol != "AAPL" || positions[0].Name != "APPLE INC" || positions[0].AssetType != "stock" || positions[0].Unrealized != 40 {
 		t.Fatalf("unexpected positions: %#v", positions)
 	}
 
@@ -122,8 +132,23 @@ func TestClientBrokerCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get daily performance: %v", err)
 	}
-	if performance.AccountID != "U1" || performance.DailyPnL != 15.7 || performance.NetLiquidation != 10000 || performance.MarketValue != 2500 {
+	if performance.AccountID != "U1" || performance.DailyPnL != 15.7 || performance.NetLiquidation != 10063.5 || performance.MarketValue != 2541.25 {
 		t.Fatalf("unexpected daily performance: %#v", performance)
+	}
+}
+
+func TestIBKRPositionAssetType(t *testing.T) {
+	for _, test := range []struct {
+		assetClass, positionType, want string
+	}{
+		{assetClass: "STK", positionType: "ETF", want: "etf"},
+		{assetClass: "STK", positionType: "COMMON", want: "stock"},
+		{assetClass: "OPT", want: "option"},
+		{assetClass: "FUT", want: "future"},
+	} {
+		if got := ibkrPositionAssetType(test.assetClass, test.positionType); got != test.want {
+			t.Fatalf("asset class %q type %q: got %q, want %q", test.assetClass, test.positionType, got, test.want)
+		}
 	}
 }
 
@@ -137,17 +162,22 @@ func TestGatewayLoginURL(t *testing.T) {
 func TestDailyPerformanceReusesOneIBKRSnapshotAcrossAccounts(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/api/iserver/account/pnl/partitioned" {
+		switch r.URL.Path {
+		case "/v1/api/iserver/account/pnl/partitioned":
+			requests.Add(1)
+			_, _ = w.Write([]byte(`{
+				"upnl": {
+					"U1.Core": {"dpl": 10, "nl": 1000},
+					"U2.Core": {"dpl": 20, "nl": 2000}
+				}
+			}`))
+		case "/v1/api/portfolio/U1/summary":
+			_, _ = w.Write([]byte(`{"netliquidation":{"amount":1100},"grosspositionvalue":{"amount":100}}`))
+		case "/v1/api/portfolio/U2/summary":
+			_, _ = w.Write([]byte(`{"netliquidation":{"amount":2200},"grosspositionvalue":{"amount":200}}`))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		requests.Add(1)
-		_, _ = w.Write([]byte(`{
-			"upnl": {
-				"U1.Core": {"dpl": 10, "nl": 1000},
-				"U2.Core": {"dpl": 20, "nl": 2000}
-			}
-		}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -161,7 +191,7 @@ func TestDailyPerformanceReusesOneIBKRSnapshotAcrossAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second account performance: %v", err)
 	}
-	if requests.Load() != 1 || first.DailyPnL != 10 || second.DailyPnL != 20 {
+	if requests.Load() != 1 || first.DailyPnL != 10 || second.DailyPnL != 20 || first.NetLiquidation != 1100 || second.NetLiquidation != 2200 {
 		t.Fatalf("unexpected cached performance requests=%d first=%#v second=%#v", requests.Load(), first, second)
 	}
 }

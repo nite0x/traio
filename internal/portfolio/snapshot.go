@@ -128,8 +128,15 @@ func (s *SyncService) Snapshot(ctx context.Context) (Snapshot, error) {
 		performance, ok := performanceByAccount[account.ID]
 		if ok {
 			result.Summary.NetAssetValue += performance.NetLiquidation
-			result.Summary.HoldingsValue += performance.MarketValue
-			result.Summary.UnrealizedPnL += performance.UnrealizedPnL
+			holdings := performance.MarketValue
+			unrealized := performance.UnrealizedPnL
+			if accountHasPositions[account.ID] {
+				// Keep overview totals internally consistent with the position rows.
+				holdings = positionValueByAccount[account.ID]
+				unrealized = positionPnLByAccount[account.ID]
+			}
+			result.Summary.HoldingsValue += holdings
+			result.Summary.UnrealizedPnL += unrealized
 			result.Summary.DailyPnL += performance.DailyPnL
 			allocationAmounts[account.Broker] += performance.NetLiquidation
 			oldestProjection = olderTimestamp(oldestProjection, performance.SyncedAt)

@@ -3,11 +3,15 @@ module github.com/nite/traio
 go 1.26
 
 require (
+	github.com/coreos/go-oidc/v3 v3.16.0
 	github.com/gin-gonic/gin v1.10.0
+	github.com/go-jose/go-jose/v4 v4.1.3
 	github.com/gofrs/flock v0.13.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mark3labs/mcp-go v0.54.1
+	golang.org/x/crypto v0.51.0
+	golang.org/x/oauth2 v0.30.0
 	modernc.org/sqlite v1.51.0
 )
 
@@ -43,7 +47,6 @@ require (
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect

@@ -10,6 +10,7 @@ import (
 // ErrNotFound is returned when a repository lookup has no matching record.
 // It keeps database/sql errors from leaking into service and runtime packages.
 var ErrNotFound = errors.New("store: not found")
+var ErrForbidden = errors.New("store: forbidden")
 
 // WatchlistRepository persists watchlist groups and items.
 type WatchlistRepository interface {
@@ -24,6 +25,28 @@ type SettingsRepository interface {
 	GetSettings(context.Context) ([]byte, error)
 	SaveSettings(context.Context, []byte) error
 	HasSettings(context.Context) (bool, error)
+}
+
+// AuthRepository persists users, workspace membership, browser sessions,
+// short-lived OIDC login flows, and security audit events.
+type AuthRepository interface {
+	UpsertOIDCIdentity(context.Context, string, string, string, string) (AuthIdentity, error)
+	HasPasswordIdentity(context.Context) (bool, error)
+	BootstrapPasswordIdentity(context.Context, PasswordCredential) (AuthIdentity, bool, error)
+	GetPasswordIdentity(context.Context, string) (AuthIdentity, string, error)
+	GetAuthSession(context.Context, string) (AuthIdentity, AuthSession, error)
+	CreateAuthSession(context.Context, AuthSession) error
+	TouchAuthSession(context.Context, string, string) error
+	DeleteAuthSession(context.Context, string) error
+	CreateAuthFlow(context.Context, AuthFlow) error
+	ConsumeAuthFlow(context.Context, string, string) (AuthFlow, error)
+	CreateBrokerOAuthFlow(context.Context, BrokerOAuthFlow) error
+	ConsumeBrokerOAuthFlow(context.Context, string, string) (BrokerOAuthFlow, error)
+	ListWorkspaceMembers(context.Context, int64) ([]WorkspaceMember, error)
+	InviteWorkspaceMember(context.Context, WorkspaceInvite) error
+	UpdateWorkspaceMemberRole(context.Context, int64, int64, string) error
+	DeleteWorkspaceMember(context.Context, int64, int64) error
+	AppendAuditEvent(context.Context, AuditEvent) error
 }
 
 // CandleCacheRepository provides the historical market-data cache used by the API.
@@ -90,6 +113,7 @@ type InstrumentRepository interface {
 // Repository is the complete persistence contract assembled at process startup.
 // Consumers should accept one of the narrower interfaces above.
 type Repository interface {
+	AuthRepository
 	WatchlistRepository
 	SettingsRepository
 	CandleCacheRepository

@@ -39,33 +39,16 @@ func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, err
 }
 
 func (c *Client) accountSummary(ctx context.Context, accountID string) (broker.AccountSummary, error) {
-	u := fmt.Sprintf("%s/v1/api/portfolio/%s/summary", c.cfg.GatewayURL, accountID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return broker.AccountSummary{}, err
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return broker.AccountSummary{}, fmt.Errorf("ibkr: account summary request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return broker.AccountSummary{}, fmt.Errorf("ibkr: gateway not authenticated")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return broker.AccountSummary{}, fmt.Errorf("ibkr: account summary status %d", resp.StatusCode)
-	}
-
 	var raw map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return broker.AccountSummary{}, fmt.Errorf("ibkr: decode account summary: %w", err)
+	path := "/portfolio/" + url.PathEscape(accountID) + "/summary"
+	if err := c.getGatewayJSON(ctx, path, "account summary", &raw); err != nil {
+		return broker.AccountSummary{}, err
 	}
 
 	return broker.AccountSummary{
 		AccountID:          accountID,
 		Currency:           firstAccountCurrency(raw),
-		NetLiquidation:     firstAccountFloat(raw, "NetLiquidation", "netliquidation", "netLiquidation", "NLV", "CurrentAvailableFunds"),
+		NetLiquidation:     firstAccountFloat(raw, "NetLiquidation", "netliquidation", "netLiquidation", "NLV"),
 		TotalCashValue:     firstAccountFloat(raw, "TotalCashValue", "totalcashvalue", "totalCashValue", "CashBalance"),
 		GrossPositionValue: firstAccountFloat(raw, "GrossPositionValue", "grosspositionvalue", "grossPositionValue"),
 		UnrealizedPnL:      firstAccountFloat(raw, "UnrealizedPnL", "unrealizedpnl", "unrealizedPnl", "UnrealizedPnL-S"),
@@ -495,6 +478,11 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 			ConID         int64   `json:"conid"`
 			AccountID     string  `json:"acctId"`
 			ContractDesc  string  `json:"contractDesc"`
+			Ticker        string  `json:"ticker"`
+			Name          string  `json:"name"`
+			FullName      string  `json:"fullName"`
+			AssetClass    string  `json:"assetClass"`
+			Type          string  `json:"type"`
 			Position      float64 `json:"position"`
 			MktPrice      float64 `json:"mktPrice"`
 			MktValue      float64 `json:"mktValue"`
@@ -508,14 +496,16 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 		}
 
 		for _, p := range raw {
-			if p.ContractDesc == "" || p.Position == 0 {
+			symbol := strings.TrimSpace(firstNonEmpty(p.Ticker, p.ContractDesc))
+			if symbol == "" || p.Position == 0 {
 				continue
 			}
 			out = append(out, broker.Position{
 				ExternalID:  strconv.FormatInt(p.ConID, 10),
-				AssetType:   "stock",
+				AssetType:   ibkrPositionAssetType(p.AssetClass, p.Type),
 				Market:      marketFromCurrency(p.Currency),
-				Symbol:      p.ContractDesc,
+				Symbol:      symbol,
+				Name:        strings.TrimSpace(firstNonEmpty(p.Name, p.FullName)),
 				ConID:       p.ConID,
 				Quantity:    p.Position,
 				AvgCost:     p.AvgCost,
@@ -533,6 +523,24 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 		}
 	}
 	return nil, fmt.Errorf("ibkr: positions exceeded pagination limit")
+}
+
+func ibkrPositionAssetType(assetClass, positionType string) string {
+	if strings.EqualFold(strings.TrimSpace(positionType), "ETF") {
+		return "etf"
+	}
+	switch strings.ToUpper(strings.TrimSpace(assetClass)) {
+	case "OPT", "OPTION":
+		return "option"
+	case "FUT", "FUTURE":
+		return "future"
+	case "BOND":
+		return "bond"
+	case "CASH":
+		return "cash"
+	default:
+		return "stock"
+	}
 }
 
 func marketFromCurrency(currency string) string {

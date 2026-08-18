@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nite/traio/internal/ai"
 	"github.com/nite/traio/internal/api"
+	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/runtime"
@@ -39,6 +41,14 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	defer st.Close()
+	authConfig, err := config.ResolveAuthConfig()
+	if err != nil {
+		log.Fatalf("authentication config: %v", err)
+	}
+	authService, err := traioauth.NewService(context.Background(), st, authConfig)
+	if err != nil {
+		log.Fatalf("authentication: %v", err)
+	}
 
 	settingsMgr := settings.NewManager(st, baseDir)
 	if err := settingsMgr.Load(context.Background()); err != nil {
@@ -118,11 +128,29 @@ func main() {
 		AllowedAPIHosts: config.ResolveAllowedAPIHosts(),
 		IBKRLoginProxy:  ibkrLoginProxy,
 		RuntimeDir:      baseDir,
+		WebDir:          config.ResolveWebDir(),
+		Auth:            authService,
 	}
+
+	addr := config.ResolveServerListenAddr()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", addr, err)
+	}
+	defer listener.Close()
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		log.Fatalf("unexpected listener address %T", listener.Addr())
+	}
+	apiURL := config.LocalAPIURL(tcpAddr.Port)
+	if err := runtime.WriteAPIURL(baseDir, apiURL); err != nil {
+		log.Fatalf("write API URL: %v", err)
+	}
+	defer runtime.RemoveAPIURL(baseDir)
 
 	router := api.NewRouter(deps, api.ServerControl{
 		StartedAt: startedAt,
-		APIURL:    config.ResolveServerAPIURL(),
+		APIURL:    apiURL,
 		Shutdown: func() {
 			quit <- syscall.SIGTERM
 		},
@@ -132,15 +160,13 @@ func main() {
 		log.Printf("write pid: %v", err)
 	}
 
-	addr := config.ResolveServerListenAddr()
-	apiURL := config.ResolveServerAPIURL()
-	srv := &http.Server{Addr: addr, Handler: router}
+	srv := &http.Server{Handler: router}
 	go func() {
 		log.Printf("traio server listening on %s (%s)", addr, apiURL)
 		if ibkrLoginProxy != nil {
 			log.Printf("IBKR login proxy enabled at %s", ibkrLoginProxy.ExternalURL())
 		}
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()

@@ -5,7 +5,7 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 ## 仓库边界
 
 - `cmd/server` 和 `internal/` 是服务核心。
-- `cmd/mcp` 是服务的开源 MCP 适配器，不被服务核心反向依赖。
+- `cmd/mcp` 是开发期的 stdio MCP 适配器，不被服务核心反向依赖；本地安装包与标准服务构建都不会携带或启动它。
 - 服务架构、API 规格和接入文档统一保存在 [`traio-doc`](https://github.com/nite0x/traio-doc/tree/main/docs/traio)。
 - Tauri 桌面客户端位于独立的 `traio-desktop` 仓库；移动客户端位于独立的 `traio-app` 仓库。
 - 本地数据库、配置、编译产物和 IBKR Gateway 安装目录均已忽略，不属于 Git 仓库内容。
@@ -15,7 +15,7 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 | 层 | 技术栈 | 职责 |
 |----|--------|------|
 | **Go 后端** | Gin + SQLite + gorilla/websocket | REST API / WebSocket / 券商集成 / 数据存储 |
-| **MCP** | — | 外部工具接入（Claude 等） |
+| **MCP（独立部署）** | — | 通过稳定服务域名接入外部工具（Claude 等） |
 
 `traio-desktop` 会将这里的 `cmd/server` 编译为 Tauri sidecar。
 
@@ -47,7 +47,7 @@ traio/
 
 ## 后端 API
 
-开发模式默认监听 `127.0.0.1:38181`；桌面发布版默认使用 `127.0.0.1:38180`。可通过 `TRAIO_SERVER_PORT` 覆盖。
+开发模式默认监听 `127.0.0.1:38181`；桌面发布版由系统分配一个空闲 loopback 端口，并将实际地址写入运行目录的 `api-url` 文件。可通过 `TRAIO_SERVER_PORT` 覆盖。
 
 ```
 GET  /health
@@ -90,7 +90,7 @@ Core 为跨券商持仓维护稳定的 `instrument_id`。同步时优先使用�
 管理页面。页面使用运行目录中的 API Token 连接服务；Token 只保存在当前标签页的
 `sessionStorage`，关闭标签页后清除。
 
-完整 MCP 接入见 [`traio-doc/docs/traio/mcp.md`](https://github.com/nite0x/traio-doc/blob/main/docs/traio/mcp.md)。
+MCP 应作为独立服务部署并使用稳定域名配置 `TRAIO_API`；桌面本地安装包不暴露 MCP。完整接入见 [`traio-doc/docs/traio/mcp.md`](https://github.com/nite0x/traio-doc/blob/main/docs/traio/mcp.md)。
 
 ## Schwab 实时行情
 
@@ -202,8 +202,103 @@ TRAIO_IBKR_GATEWAY_LIFECYCLE=persistent
 
 > Gateway 版权归 Interactive Brokers。**不要将 `third_party/clientportal.gw/` 提交到 git。**
 
+## Docker 部署（包含 Web 前端）
+
+Docker 镜像使用 `traio-desktop` 作为额外构建上下文：Node 阶段执行
+`npm run build:web`，Go 阶段构建 `traio-server`，最终镜像保留 Go
+二进制、Java 运行时、必要系统工具和编译后的前端文件。前端位于 `/opt/traio/web`，由 Go
+服务提供静态资源和 React Router fallback；浏览器通过同源 `/api/v1` 访问 API。
+
+两个仓库需要位于同一父目录：
+
+```text
+open/
+├── traio/
+└── traio-desktop/
+```
+
+在 `traio` 目录构建 EC2 使用的 amd64 镜像：
+
+```bash
+docker buildx build \
+  --platform linux/amd64 \
+  --build-context frontend=../traio-desktop \
+  --tag traio-server:local \
+  --load \
+  .
+```
+
+本地启动：
+
+```bash
+cp docker.env.example .env
+docker compose up -d --no-build
+docker compose ps
+curl http://127.0.0.1:8080/health
+```
+
+Compose 只把容器端口发布到宿主机 `127.0.0.1:8080`。当前 API 认证恢复前，
+不要改成 `0.0.0.0:8080` 或在安全组中开放该端口。SQLite、API Token 和
+IBKR Gateway 运行目录保存在 `traio-data` volume 中，重新创建容器不会丢失。
+
+上传到没有源码的服务器：
+
+```bash
+docker save traio-server:local | gzip > traio-server-linux-amd64.tar.gz
+ssh ubuntu@SERVER 'mkdir -p ~/traio-deploy'
+scp traio-server-linux-amd64.tar.gz compose.yaml docker.env.example ubuntu@SERVER:~/traio-deploy/
+```
+
+服务器加载并启动：
+
+```bash
+cd ~/traio-deploy
+cp docker.env.example .env
+gunzip -c traio-server-linux-amd64.tar.gz | docker load
+docker compose up -d --no-build
+docker compose ps
+```
+
+配置公网域名后，在 `.env` 中设置独立的 API 和 IBKR Proxy host：
+
+```dotenv
+TRAIO_ALLOWED_API_HOSTS=traio.nite0x.com
+TRAIO_IBKR_PROXY_URL=https://traio-ibkr.nite0x.com
+```
+
+个人部署推荐使用内置账号登录。在 `.env` 中填写：
+
+```dotenv
+TRAIO_AUTH_MODE=password
+TRAIO_BOOTSTRAP_ADMIN_USERNAME=owner
+TRAIO_BOOTSTRAP_ADMIN_PASSWORD=请替换为至少12位的长密码
+TRAIO_BOOTSTRAP_ADMIN_NAME=Owner
+TRAIO_COOKIE_SECURE=false
+TRAIO_SESSION_TTL=12h
+```
+
+首次启动会创建默认 Workspace Owner，数据库只保存 Argon2id 密码哈希。成功启动后可以从
+`.env` 删除 bootstrap 用户名和密码；已有账号仍可正常登录。通过 HTTPS 域名访问时必须设置
+`TRAIO_COOKIE_SECURE=true`。也可以用 `TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE` 从文件读取密码。
+
+需要企业单点登录时，把认证模式改为 OIDC，并在身份提供商中登记 callback：
+
+```dotenv
+TRAIO_AUTH_MODE=oidc
+TRAIO_OIDC_ISSUER_URL=https://identity.example.com/application/o/traio/
+TRAIO_OIDC_CLIENT_ID=traio
+TRAIO_OIDC_CLIENT_SECRET=
+TRAIO_OIDC_REDIRECT_URL=https://traio.nite0x.com/auth/callback
+TRAIO_SESSION_TTL=12h
+```
+
+两种服务端登录都只在浏览器中设置 `HttpOnly` Session Cookie，写请求额外校验 CSRF Token。
+OIDC 登录采用 Authorization Code + PKCE；第一个成功登录的 OIDC 账号成为默认 Workspace Owner，
+后续账号必须先由 Owner/Admin 在「设置 → 成员」中按邮箱邀请。角色为 Owner、Admin、
+Member、Viewer。桌面 `.app` 不走浏览器登录，继续使用运行时生成的本机 API Token。
+
 ## 技术栈
 
 - **服务核心**：Go、Gin、SQLite（modernc）、gorilla/websocket
-- **辅助工具**：MCP stdio server
+- **辅助服务**：独立部署的 MCP server
 - **数据源**：Schwab、SnapTrade、IBKR CPAPI、Finnhub、EDGAR、Claude

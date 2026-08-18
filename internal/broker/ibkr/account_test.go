@@ -41,3 +41,13 @@ func TestFirstAccountFloatFromIBKRSummaryShape(t *testing.T) {
 		t.Fatalf("total cash: got %v", got)
 	}
 }
+
+func TestNetLiquidationDoesNotFallBackToAvailableFunds(t *testing.T) {
+	raw := map[string]any{
+		"currentavailablefunds": map[string]any{"amount": 1_000_000.0},
+	}
+
+	if got := firstAccountFloat(raw, "NetLiquidation", "netliquidation", "netLiquidation", "NLV"); got != 0 {
+		t.Fatalf("net liquidation: got %v, want 0", got)
+	}
+}

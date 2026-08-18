@@ -1,0 +1,53 @@
+services:
+  traio:
+    image: ${TRAIO_IMAGE:-traio-server:local}
+    restart: unless-stopped
+    init: true
+    environment:
+      GIN_MODE: release
+      TRAIO_DEPLOYMENT_MODE: server
+      TRAIO_RUNTIME_DIR: /var/lib/traio
+      TRAIO_LISTEN_ADDR: 0.0.0.0:8080
+      TRAIO_WEB_DIR: /opt/traio/web
+      TRAIO_IBKR_GATEWAY_LIFECYCLE: managed
+      TRAIO_AUTH_MODE: ${TRAIO_AUTH_MODE:-password}
+      TRAIO_BOOTSTRAP_ADMIN_USERNAME: ${TRAIO_BOOTSTRAP_ADMIN_USERNAME:-}
+      TRAIO_BOOTSTRAP_ADMIN_PASSWORD: ${TRAIO_BOOTSTRAP_ADMIN_PASSWORD:-}
+      TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE: ${TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE:-}
+      TRAIO_BOOTSTRAP_ADMIN_EMAIL: ${TRAIO_BOOTSTRAP_ADMIN_EMAIL:-}
+      TRAIO_BOOTSTRAP_ADMIN_NAME: ${TRAIO_BOOTSTRAP_ADMIN_NAME:-}
+      TRAIO_COOKIE_SECURE: ${TRAIO_COOKIE_SECURE:-false}
+      TRAIO_OIDC_ISSUER_URL: ${TRAIO_OIDC_ISSUER_URL:-}
+      TRAIO_OIDC_CLIENT_ID: ${TRAIO_OIDC_CLIENT_ID:-}
+      TRAIO_OIDC_CLIENT_SECRET: ${TRAIO_OIDC_CLIENT_SECRET:-}
+      TRAIO_OIDC_REDIRECT_URL: ${TRAIO_OIDC_REDIRECT_URL:-}
+      TRAIO_SESSION_TTL: ${TRAIO_SESSION_TTL:-12h}
+      TRAIO_ALLOWED_API_HOSTS: ${TRAIO_ALLOWED_API_HOSTS:-}
+      TRAIO_IBKR_PROXY_URL: ${TRAIO_IBKR_PROXY_URL:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - traio-data:/var/lib/traio
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  traio-data:

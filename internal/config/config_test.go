@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -16,6 +17,13 @@ func TestResolveServerPortEnvOverride(t *testing.T) {
 	t.Setenv("TRAIO_SERVER_PORT", "40000")
 	if got := ResolveServerPort(); got != 40000 {
 		t.Fatalf("got %d, want %d", got, 40000)
+	}
+}
+
+func TestPackagedServerPortUsesSystemAssignment(t *testing.T) {
+	t.Setenv("TRAIO_SERVER_PORT", "")
+	if got := resolveServerPort(true); got != 0 {
+		t.Fatalf("got %d, want 0", got)
 	}
 }
 
@@ -180,5 +188,77 @@ func TestResolveBootstrapDatabaseUsesEnvironment(t *testing.T) {
 	got := ResolveBootstrapDatabase(t.TempDir())
 	if got.Driver != "postgres" || got.DataSource != "postgres://traio@example/traio" {
 		t.Fatalf("unexpected database config: %#v", got)
+	}
+}
+
+func TestResolveWebDir(t *testing.T) {
+	t.Setenv("TRAIO_WEB_DIR", " /opt/traio/web ")
+	if got := ResolveWebDir(); got != "/opt/traio/web" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveAuthConfigDefaultsByDeployment(t *testing.T) {
+	t.Setenv("TRAIO_AUTH_MODE", "")
+	t.Setenv("TRAIO_DEPLOYMENT_MODE", "")
+	local, err := ResolveAuthConfig()
+	if err != nil || local.Mode != "local" {
+		t.Fatalf("local auth config: %#v err=%v", local, err)
+	}
+
+	t.Setenv("TRAIO_DEPLOYMENT_MODE", DeploymentModeServer)
+	if _, err := ResolveAuthConfig(); err == nil {
+		t.Fatal("server mode without OIDC configuration should fail")
+	}
+	t.Setenv("TRAIO_OIDC_ISSUER_URL", "https://id.example")
+	t.Setenv("TRAIO_OIDC_CLIENT_ID", "traio")
+	t.Setenv("TRAIO_OIDC_REDIRECT_URL", "https://traio.example/auth/callback")
+	server, err := ResolveAuthConfig()
+	if err != nil || server.Mode != "oidc" || !server.CookieSecure {
+		t.Fatalf("server auth config: %#v err=%v", server, err)
+	}
+}
+
+func TestResolveAuthConfigRejectsDisabledServerAuth(t *testing.T) {
+	t.Setenv("TRAIO_DEPLOYMENT_MODE", DeploymentModeServer)
+	t.Setenv("TRAIO_AUTH_MODE", "disabled-dev")
+	if _, err := ResolveAuthConfig(); err == nil {
+		t.Fatal("disabled server authentication should fail")
+	}
+}
+
+func TestResolvePasswordAuthConfig(t *testing.T) {
+	t.Setenv("TRAIO_AUTH_MODE", "password")
+	t.Setenv("TRAIO_BOOTSTRAP_ADMIN_USERNAME", " owner ")
+	t.Setenv("TRAIO_BOOTSTRAP_ADMIN_PASSWORD", "a-secure-password")
+	t.Setenv("TRAIO_COOKIE_SECURE", "true")
+	config, err := ResolveAuthConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Mode != "password" || config.BootstrapUsername != "owner" || config.BootstrapPassword != "a-secure-password" || !config.CookieSecure {
+		t.Fatalf("unexpected password auth config: %#v", config)
+	}
+}
+
+func TestResolvePasswordAuthConfigReadsSecretFile(t *testing.T) {
+	secretFile := filepath.Join(t.TempDir(), "admin-password")
+	if err := os.WriteFile(secretFile, []byte("a-file-password\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TRAIO_AUTH_MODE", "password")
+	t.Setenv("TRAIO_BOOTSTRAP_ADMIN_USERNAME", "owner")
+	t.Setenv("TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE", secretFile)
+	config, err := ResolveAuthConfig()
+	if err != nil || config.BootstrapPassword != "a-file-password" {
+		t.Fatalf("unexpected password file config: %#v err=%v", config, err)
+	}
+}
+
+func TestResolvePasswordAuthConfigRejectsPartialBootstrap(t *testing.T) {
+	t.Setenv("TRAIO_AUTH_MODE", "password")
+	t.Setenv("TRAIO_BOOTSTRAP_ADMIN_USERNAME", "owner")
+	if _, err := ResolveAuthConfig(); err == nil {
+		t.Fatal("partial built-in login bootstrap should fail")
 	}
 }

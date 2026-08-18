@@ -562,7 +562,7 @@ func TestIBKRGatewayStartReturnsOperationError(t *testing.T) {
 	}
 }
 
-func TestAPIAuthenticationTemporarilyDisabled(t *testing.T) {
+func TestLocalAPIAuthenticationIsEnforced(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef"
 	gw := &fakeGatewayController{}
 
@@ -570,11 +570,13 @@ func TestAPIAuthenticationTemporarilyDisabled(t *testing.T) {
 		name  string
 		host  string
 		token string
+		want  int
 	}{
-		{name: "missing token", host: "127.0.0.1:38180"},
-		{name: "wrong token", host: "127.0.0.1:38180", token: "wrong"},
-		{name: "valid token", host: "127.0.0.1:38180", token: token},
-		{name: "remote host", host: "example.com"},
+		{name: "missing token", host: "127.0.0.1:38180", want: http.StatusUnauthorized},
+		{name: "wrong token", host: "127.0.0.1:38180", token: "wrong", want: http.StatusUnauthorized},
+		{name: "valid token", host: "127.0.0.1:38180", token: token, want: http.StatusOK},
+		{name: "remote host", host: "example.com", token: token, want: http.StatusMisdirectedRequest},
+		{name: "allowed remote host", host: "api.example.com", token: token, want: http.StatusOK},
 	}
 
 	for _, tt := range tests {
@@ -587,8 +589,8 @@ func TestAPIAuthenticationTemporarilyDisabled(t *testing.T) {
 			}
 			res := httptest.NewRecorder()
 			router.ServeHTTP(res, req)
-			if res.Code != http.StatusOK {
-				t.Fatalf("expected authentication bypass, got %d: %s", res.Code, res.Body.String())
+			if res.Code != tt.want {
+				t.Fatalf("expected %d, got %d: %s", tt.want, res.Code, res.Body.String())
 			}
 		})
 	}

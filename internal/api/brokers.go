@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/store"
@@ -327,7 +328,7 @@ type connectionLoginRequest struct {
 	State string `json:"state"`
 }
 
-func beginBrokerConnectionLogin(runtime brokerConnectionRuntime, proxy *IBKRLoginProxy) gin.HandlerFunc {
+func beginBrokerConnectionLogin(catalog brokerStore, runtime brokerConnectionRuntime, proxy *IBKRLoginProxy, authService *traioauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if runtime == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker runtime unavailable"})
@@ -344,6 +345,21 @@ func beginBrokerConnectionLogin(runtime brokerConnectionRuntime, proxy *IBKRLogi
 				return
 			}
 		}
+		if authService != nil && authService.UsesSessions() && catalog != nil {
+			connection, err := catalog.GetBrokerConnection(c.Request.Context(), connectionID)
+			if err != nil {
+				writeBrokerStoreError(c, err)
+				return
+			}
+			if connection.ProviderCode == "SCHWAB" {
+				principal, _ := currentPrincipal(c)
+				req.State, err = authService.BeginBrokerOAuth(c.Request.Context(), principal, connectionID)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "create broker OAuth state"})
+					return
+				}
+			}
+		}
 		action, err := runtime.BeginConnectionLogin(c.Request.Context(), connectionID, req.State)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -358,7 +374,8 @@ func beginBrokerConnectionLogin(runtime brokerConnectionRuntime, proxy *IBKRLogi
 			// The local login proxy is intentionally restricted to loopback
 			// Gateways. Remote endpoints keep their own login URL.
 			if isIBKR && validateIBKRGatewayTarget(target) == nil {
-				action.URL, err = proxy.IssueLoginURL(connectionID)
+				principal, _ := currentPrincipal(c)
+				action.URL, err = proxy.IssueLoginURLForPrincipal(connectionID, principal.WorkspaceID, principal.UserID)
 				if err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return

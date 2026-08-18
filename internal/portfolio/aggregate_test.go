@@ -65,3 +65,40 @@ func TestAggregatePositionsRejectsMissingInstrumentID(t *testing.T) {
 		t.Fatalf("expected missing instrument_id error, got %v", err)
 	}
 }
+
+func TestSnapshotUsesPositionTotalsInsteadOfAccountPerformanceEstimates(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "position-totals.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	connection, err := st.UpsertBrokerConnection(ctx, store.BrokerConnection{
+		ProviderCode: "IBKR", ConnectionKey: "ibkr", Name: "IBKR", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceBrokerConnectionAccounts(ctx, connection.ID, []broker.Account{{ID: "U1", BaseCurrency: "USD"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceBrokerConnectionAccountPositions(ctx, connection.ID, "U1", []broker.Position{
+		{ExternalID: "1", AssetType: "stock", Market: "US", Symbol: "AAPL", Quantity: 100, MarketValue: 30_705, Unrealized: -12, Currency: "USD"},
+		{ExternalID: "2", AssetType: "etf", Market: "US", Symbol: "QQQ", Quantity: 100, MarketValue: 73_423, Unrealized: -62, Currency: "USD"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceBrokerConnectionAccountPerformance(ctx, connection.ID, broker.DailyPerformance{
+		AccountID: "U1", NetLiquidation: 1_000_614.64, MarketValue: 104_200, UnrealizedPnL: -43, DailyPnL: -43,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := NewSyncService(st).Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Summary.NetAssetValue != 1_000_614.64 || snapshot.Summary.HoldingsValue != 104_128 || snapshot.Summary.UnrealizedPnL != -74 || snapshot.Summary.DailyPnL != -43 {
+		t.Fatalf("unexpected summary: %#v", snapshot.Summary)
+	}
+}

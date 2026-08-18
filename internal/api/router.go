@@ -5,15 +5,18 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nite/traio/internal/account"
 	"github.com/nite/traio/internal/ai"
+	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/alpaca"
 	"github.com/nite/traio/internal/broker/schwab"
@@ -45,6 +48,8 @@ type Deps struct {
 	AllowedAPIHosts      []string
 	IBKRLoginProxy       *IBKRLoginProxy
 	RuntimeDir           string
+	WebDir               string
+	Auth                 *traioauth.Service
 	gatewayPortAvailable gatewayPortAvailableFunc
 }
 
@@ -57,15 +62,27 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		if origin != "" {
 			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Vary", "Origin")
 		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 		c.Next()
+	}
+}
+
+// secureLogger deliberately excludes query strings because OAuth callbacks and
+// IBKR proxy entry URLs carry short-lived credentials in their query values.
+func secureLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		started := time.Now()
+		path := c.Request.URL.Path
+		c.Next()
+		log.Printf("http method=%s path=%s status=%d latency=%s client=%s", c.Request.Method, path, c.Writer.Status(), time.Since(started).Round(time.Microsecond), c.ClientIP())
 	}
 }
 
@@ -82,7 +99,13 @@ func sameOrigin(origin string, request *http.Request) bool {
 
 func allowedOrigin(origin string) bool {
 	switch origin {
-	case "http://localhost:1420", "http://127.0.0.1:1420", "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
+	case "http://localhost:1420",
+		"http://127.0.0.1:1420",
+		"http://localhost:1422",
+		"http://127.0.0.1:1422",
+		"tauri://localhost",
+		"http://tauri.localhost",
+		"https://tauri.localhost":
 		return true
 	default:
 		return false
@@ -92,6 +115,7 @@ func allowedOrigin(origin string) bool {
 func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if token == "" || c.Request.Method == http.MethodOptions {
+			setPrincipal(c, traioauth.LocalPrincipal())
 			c.Next()
 			return
 		}
@@ -108,6 +132,7 @@ func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
 		// control endpoints require the runtime token. WebSockets cannot attach
 		// an Authorization header, so only that route accepts it as a subprotocol.
 		if c.Request.Method == http.MethodGet && c.FullPath() == "/api/v1/ibkr/gateway/login" {
+			setPrincipal(c, traioauth.LocalPrincipal())
 			c.Next()
 			return
 		}
@@ -119,6 +144,7 @@ func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid API token"})
 			return
 		}
+		setPrincipal(c, traioauth.LocalPrincipal())
 		c.Next()
 	}
 }
@@ -159,7 +185,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		portAvailable = loopbackGatewayPortAvailable
 	}
 	r := gin.New()
-	r.Use(gin.Recovery(), gin.Logger())
+	r.Use(gin.Recovery(), secureLogger())
 	if deps.IBKRLoginProxy != nil {
 		r.Use(deps.IBKRLoginProxy.Middleware())
 	}
@@ -168,44 +194,43 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
 	})
-	registerAdminRoutes(r)
+	registerAuthRoutes(r, deps)
+	admin := r.Group("", authenticationMiddleware(deps), requirePermission(traioauth.PermissionSystem))
+	registerAdminRoutes(admin)
 
-	// API authentication is temporarily disabled to avoid blocking local debugging.
-	// Restore the middleware below when authentication is enabled again.
-	// v1 := r.Group("/api/v1", localAPIMiddleware(deps.APIToken, deps.AllowedAPIHosts...))
-	v1 := r.Group("/api/v1")
+	v1 := r.Group("/api/v1", authenticationMiddleware(deps), requirePermission(traioauth.PermissionView))
 	{
 		v1.GET("/brokers", listBrokerProviders(deps.Brokers))
-		v1.PUT("/brokers/:code", updateBrokerProvider(deps.Brokers, deps.OnBrokersChanged))
+		v1.PUT("/brokers/:code", requirePermission(traioauth.PermissionBrokerManage), updateBrokerProvider(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-connections", listBrokerConnections(deps.Brokers))
 		v1.GET("/broker-connections/:connection_id", getBrokerConnection(deps.Brokers))
-		v1.POST("/brokers/:code/connections", createBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
-		v1.PUT("/broker-connections/:connection_id", updateBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.POST("/brokers/:code/connections", requirePermission(traioauth.PermissionBrokerManage), createBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.PUT("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), updateBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-connections/:connection_id/delete-impact", brokerConnectionDeleteImpact(deps.Brokers))
-		v1.DELETE("/broker-connections/:connection_id", deleteBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
-		v1.POST("/broker-connections/:connection_id/login", beginBrokerConnectionLogin(deps.BrokerRuntime, deps.IBKRLoginProxy))
+		v1.DELETE("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), deleteBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
+		v1.POST("/broker-connections/:connection_id/login", requirePermission(traioauth.PermissionBrokerManage), beginBrokerConnectionLogin(deps.Brokers, deps.BrokerRuntime, deps.IBKRLoginProxy, deps.Auth))
 		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.BrokerRuntime, deps.IBKRLoginProxy))
-		v1.POST("/broker-connections/:connection_id/oauth/exchange", exchangeBrokerConnectionOAuthCode(deps.BrokerRuntime))
+		v1.POST("/broker-connections/:connection_id/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), exchangeBrokerConnectionOAuthCode(deps.BrokerRuntime))
 		v1.GET("/broker-connections/:connection_id/accounts", listBrokerConnectionAccounts(deps.Brokers))
-		v1.POST("/broker-connections/:connection_id/sync", syncBrokerConnection(deps.Brokers, deps.BrokerSync))
+		v1.POST("/broker-connections/:connection_id/sync", requirePermission(traioauth.PermissionBrokerSync), syncBrokerConnection(deps.Brokers, deps.BrokerSync))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
 		v1.GET("/ibkr/gateways", listIBKRGateways(deps.Brokers))
-		v1.POST("/ibkr/gateways", createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir, portAvailable))
+		v1.POST("/ibkr/gateways", requirePermission(traioauth.PermissionBrokerManage), createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir, portAvailable))
 		v1.GET("/ibkr/gateways/defaults", ibkrGatewayDefaults(deps.Brokers, deps.RuntimeDir, portAvailable))
 		v1.GET("/ibkr/gateways/:gateway_id", getIBKRGateway(deps.Brokers))
-		v1.PUT("/ibkr/gateways/:gateway_id", updateIBKRGateway(deps.Brokers, deps.OnBrokersChanged))
-		v1.DELETE("/ibkr/gateways/:gateway_id", deleteIBKRGateway(deps.Brokers, deps.IBKRGateways, deps.OnBrokersChanged, deps.RuntimeDir))
+		v1.PUT("/ibkr/gateways/:gateway_id", requirePermission(traioauth.PermissionBrokerManage), updateIBKRGateway(deps.Brokers, deps.OnBrokersChanged))
+		v1.DELETE("/ibkr/gateways/:gateway_id", requirePermission(traioauth.PermissionBrokerManage), deleteIBKRGateway(deps.Brokers, deps.IBKRGateways, deps.OnBrokersChanged, deps.RuntimeDir))
 		v1.GET("/ibkr/gateways/:gateway_id/status", ibkrManagedGatewayStatus(deps.IBKRGateways))
-		v1.GET("/ibkr/gateways/:gateway_id/login", ibkrManagedGatewayLogin(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/start", ibkrManagedGatewayStart(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/stop", ibkrManagedGatewayStop(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/reconnect", ibkrManagedGatewayReconnect(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/upgrade", ibkrManagedGatewayUpgrade(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/rollback", ibkrManagedGatewayRollback(deps.IBKRGateways))
+		v1.GET("/ibkr/gateways/:gateway_id/login", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayLogin(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/start", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayStart(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/stop", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayStop(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/reconnect", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayReconnect(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/upgrade", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayUpgrade(deps.IBKRGateways))
+		v1.POST("/ibkr/gateways/:gateway_id/rollback", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayRollback(deps.IBKRGateways))
 		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Watchlists))
 		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Watchlists))
-		v1.POST("/watchlist/groups/:group_id/items", upsertWatchlistItem(deps.Watchlists))
-		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", deleteWatchlistItem(deps.Watchlists))
+		v1.POST("/watchlist/groups/:group_id/items", requirePermission(traioauth.PermissionWatchlistWrite), upsertWatchlistItem(deps.Watchlists))
+		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", requirePermission(traioauth.PermissionWatchlistWrite), deleteWatchlistItem(deps.Watchlists))
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
 		v1.GET("/quotes/symbols", listQuotesBySymbol(deps.Schwab))
@@ -215,32 +240,39 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/portfolio/positions", portfolioPositions(deps.BrokerSync))
 		v1.GET("/portfolio/positions/:position_id", portfolioPosition(deps.BrokerSync))
 		v1.GET("/portfolio/cash", portfolioCash(deps.BrokerSync))
-		v1.POST("/portfolio/sync", syncBrokers(deps.BrokerSync))
+		v1.POST("/portfolio/sync", requirePermission(traioauth.PermissionBrokerSync), syncBrokers(deps.BrokerSync))
 		v1.GET("/portfolio/sync-status", brokerSyncStatus(deps.BrokerSync))
 		v1.GET("/account/equity", accountEquity(deps.Account))
 		v1.GET("/news/:symbol", getNews(deps.News))
-		v1.POST("/orders", placeOrder())
-		v1.GET("/ws", wsQuotes(deps.Schwab))
+		v1.POST("/orders", requirePermission(traioauth.PermissionTrade), placeOrder())
+		v1.GET("/ws", wsQuotes(deps.Schwab, deps.Auth))
 		v1.GET("/schwab/status", schwabStatus(deps.Schwab))
-		v1.GET("/schwab/oauth/url", schwabOAuthURL(deps.Schwab))
-		v1.POST("/schwab/oauth/exchange", schwabOAuthExchange(deps.Schwab))
+		v1.GET("/schwab/oauth/url", requirePermission(traioauth.PermissionBrokerManage), schwabOAuthURL(deps.Schwab))
+		v1.POST("/schwab/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), schwabOAuthExchange(deps.Schwab))
 		v1.GET("/alpaca/status", alpacaStatus(deps.Alpaca))
 
 		v1.GET("/ibkr/gateway/status", ibkrGatewayStatus(deps.IBKR))
-		v1.GET("/ibkr/gateway/login", ibkrGatewayLogin(deps.IBKR))
-		v1.POST("/ibkr/gateway/start", ibkrGatewayStart(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/stop", ibkrGatewayStop(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/reconnect", ibkrGatewayReconnect(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/upgrade", ibkrGatewayUpgrade(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/rollback", ibkrGatewayRollback(deps.IBKR, deps.BrokerSync))
+		v1.GET("/ibkr/gateway/login", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayLogin(deps.IBKR))
+		v1.POST("/ibkr/gateway/start", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayStart(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/stop", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayStop(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/reconnect", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayReconnect(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/upgrade", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayUpgrade(deps.IBKR, deps.BrokerSync))
+		v1.POST("/ibkr/gateway/rollback", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayRollback(deps.IBKR, deps.BrokerSync))
 
 		v1.GET("/server/status", serverStatus(serverCtrl))
-		v1.POST("/server/shutdown", serverShutdown(serverCtrl))
+		v1.POST("/server/shutdown", requirePermission(traioauth.PermissionSystem), serverShutdown(serverCtrl))
 
 		v1.GET("/settings", getSettings(deps.Settings))
-		v1.PUT("/settings", putSettings(deps.Settings))
+		v1.PUT("/settings", requirePermission(traioauth.PermissionSettings), putSettings(deps.Settings))
 		v1.GET("/settings/defaults", getSettingsDefaults(deps.Settings))
+		if deps.Auth != nil {
+			v1.GET("/workspace/members", requirePermission(traioauth.PermissionMembers), listWorkspaceMembers(deps.Auth))
+			v1.POST("/workspace/invites", requirePermission(traioauth.PermissionMembers), inviteWorkspaceMember(deps.Auth))
+			v1.PUT("/workspace/members/:user_id", requirePermission(traioauth.PermissionMembers), updateWorkspaceMemberRole(deps.Auth))
+			v1.DELETE("/workspace/members/:user_id", requirePermission(traioauth.PermissionMembers), deleteWorkspaceMemberHandler(deps.Auth))
+		}
 	}
+	registerWebAppRoutes(r, deps.WebDir)
 
 	return r
 }

@@ -128,7 +128,15 @@ func (s *Store) resolveInstrumentTx(ctx context.Context, tx *sql.Tx, identity In
 	}
 	if identity.ProviderCode != "" && identity.ExternalID != "" {
 		instrument, err := s.getInstrumentByBrokerIdentityTx(ctx, tx, identity.ProviderCode, identity.ExternalID)
-		if err == nil {
+		if err == nil && instrument.AssetType == identity.AssetType && instrument.Market == identity.Market {
+			if _, err := s.txExecContext(ctx, tx, `
+				UPDATE instruments SET
+					name = CASE WHEN name = '' THEN ? ELSE name END,
+					currency = CASE WHEN currency = '' THEN ? ELSE currency END,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE id = ?`, identity.Name, identity.Currency, instrument.ID); err != nil {
+				return Instrument{}, err
+			}
 			if _, err := s.txExecContext(ctx, tx, `
 				UPDATE broker_instruments SET broker_symbol = ?, broker_exchange = ?, last_seen_at = ?
 				WHERE provider_code = ? AND external_id = ?`,
@@ -137,7 +145,7 @@ func (s *Store) resolveInstrumentTx(ctx context.Context, tx *sql.Tx, identity In
 			}
 			return instrument, nil
 		}
-		if !errors.Is(err, ErrNotFound) {
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			return Instrument{}, err
 		}
 	}
@@ -164,6 +172,7 @@ func (s *Store) resolveInstrumentTx(ctx context.Context, tx *sql.Tx, identity In
 				provider_code, external_id, instrument_id, broker_symbol, broker_exchange, last_seen_at
 			) VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(provider_code, external_id) DO UPDATE SET
+				instrument_id = excluded.instrument_id,
 				broker_symbol = excluded.broker_symbol,
 				broker_exchange = excluded.broker_exchange,
 				last_seen_at = excluded.last_seen_at`,

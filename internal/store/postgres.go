@@ -87,6 +87,9 @@ INSERT INTO watchlist_groups (id, name, sort_order) VALUES (1, '默认', 0)
 			return err
 		}
 	}
+	if err := s.migrateAuth(); err != nil {
+		return err
+	}
 	if err := s.requireCurrentBrokerSchemaPostgres(); err != nil {
 		return err
 	}

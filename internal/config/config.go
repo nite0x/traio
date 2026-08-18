@@ -2,10 +2,14 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/nite/traio/internal/auth"
 )
 
 // Config holds all Traio runtime settings (persisted in SQLite, editable via UI).
@@ -23,8 +27,10 @@ type BrokerSyncConfig struct {
 }
 
 const (
-	// DefaultServerPort is used by the packaged desktop app and MCP clients.
-	DefaultServerPort = 38180
+	// PackagedServerPort asks the operating system to allocate an available
+	// loopback port for the packaged desktop sidecar. The desktop shell reads
+	// the resolved address from its runtime directory after startup.
+	PackagedServerPort = 0
 	// DevServerPort is used for local development (go run, make server, tauri dev).
 	DevServerPort = 38181
 	// DevIBKRGatewayPort keeps locally-run development Gateways on IBKR's
@@ -54,6 +60,85 @@ type DatabaseConfig struct {
 type BootstrapDatabaseConfig struct {
 	Driver     string
 	DataSource string
+}
+
+// ResolveAuthConfig selects local instance-token authentication for desktop
+// runtimes and a browser-session authentication mode for server deployments.
+func ResolveAuthConfig() (auth.Config, error) {
+	deploymentMode := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_DEPLOYMENT_MODE")))
+	mode := auth.Mode(strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_AUTH_MODE"))))
+	if mode == "" {
+		if deploymentMode == DeploymentModeServer {
+			mode = auth.ModeOIDC
+		} else {
+			mode = auth.ModeLocal
+		}
+	}
+	if mode != auth.ModeLocal && mode != auth.ModeOIDC && mode != auth.ModePassword && mode != auth.ModeDisabledDev {
+		return auth.Config{}, fmt.Errorf("unsupported TRAIO_AUTH_MODE %q", mode)
+	}
+	if mode == auth.ModeDisabledDev && deploymentMode == DeploymentModeServer {
+		return auth.Config{}, fmt.Errorf("disabled-dev authentication is not allowed in server deployment mode")
+	}
+	redirectURL := strings.TrimSpace(os.Getenv("TRAIO_OIDC_REDIRECT_URL"))
+	secureCookie := false
+	if parsed, err := url.Parse(redirectURL); err == nil {
+		secureCookie = strings.EqualFold(parsed.Scheme, "https")
+	}
+	if value := strings.TrimSpace(os.Getenv("TRAIO_COOKIE_SECURE")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return auth.Config{}, fmt.Errorf("invalid TRAIO_COOKIE_SECURE %q", value)
+		}
+		secureCookie = parsed
+	}
+	sessionTTL := 12 * time.Hour
+	if value := strings.TrimSpace(os.Getenv("TRAIO_SESSION_TTL")); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			return auth.Config{}, fmt.Errorf("invalid TRAIO_SESSION_TTL %q", value)
+		}
+		sessionTTL = parsed
+	}
+	bootstrapPassword, err := resolveSecret("TRAIO_BOOTSTRAP_ADMIN_PASSWORD", "TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE")
+	if err != nil {
+		return auth.Config{}, err
+	}
+	config := auth.Config{
+		Mode:              mode,
+		IssuerURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("TRAIO_OIDC_ISSUER_URL")), "/"),
+		ClientID:          strings.TrimSpace(os.Getenv("TRAIO_OIDC_CLIENT_ID")),
+		ClientSecret:      strings.TrimSpace(os.Getenv("TRAIO_OIDC_CLIENT_SECRET")),
+		RedirectURL:       redirectURL,
+		SessionTTL:        sessionTTL,
+		CookieSecure:      secureCookie,
+		BootstrapUsername: strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapPassword: bootstrapPassword,
+		BootstrapEmail:    strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_EMAIL")),
+		BootstrapName:     strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_NAME")),
+	}
+	if mode == auth.ModeOIDC && (config.IssuerURL == "" || config.ClientID == "" || config.RedirectURL == "") {
+		return auth.Config{}, fmt.Errorf("OIDC server mode requires TRAIO_OIDC_ISSUER_URL, TRAIO_OIDC_CLIENT_ID, and TRAIO_OIDC_REDIRECT_URL")
+	}
+	if mode == auth.ModePassword && (config.BootstrapUsername == "") != (config.BootstrapPassword == "") {
+		return auth.Config{}, fmt.Errorf("built-in login bootstrap requires both TRAIO_BOOTSTRAP_ADMIN_USERNAME and TRAIO_BOOTSTRAP_ADMIN_PASSWORD")
+	}
+	return config, nil
+}
+
+func resolveSecret(valueEnv, fileEnv string) (string, error) {
+	value, file := os.Getenv(valueEnv), strings.TrimSpace(os.Getenv(fileEnv))
+	if value != "" && file != "" {
+		return "", fmt.Errorf("set only one of %s or %s", valueEnv, fileEnv)
+	}
+	if file == "" {
+		return value, nil
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", fileEnv, err)
+	}
+	return strings.TrimRight(string(raw), "\r\n"), nil
 }
 
 type SnapTradeConfig struct {
@@ -182,16 +267,20 @@ func (c *IBKRConfig) resolvePath(p *string, baseDir string) {
 }
 
 // ResolveServerPort picks the HTTP listen port for traio-server.
-// TRAIO_SERVER_PORT overrides; embedded .app binaries use DefaultServerPort;
-// everything else (go run, dev sidecar) uses DevServerPort.
+// TRAIO_SERVER_PORT overrides; embedded .app binaries ask the OS for an
+// available port; everything else (go run, dev sidecar) uses DevServerPort.
 func ResolveServerPort() int {
+	return resolveServerPort(IsEmbedded())
+}
+
+func resolveServerPort(embedded bool) int {
 	if v := os.Getenv("TRAIO_SERVER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
 			return p
 		}
 	}
-	if IsEmbedded() {
-		return DefaultServerPort
+	if embedded {
+		return PackagedServerPort
 	}
 	return DevServerPort
 }
@@ -228,11 +317,6 @@ func resolveIBKRGatewayPort(embedded bool) int {
 // LocalAPIURL builds a loopback base URL for the given port.
 func LocalAPIURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
-}
-
-// ResolveServerAPIURL is the API base URL for the running traio-server instance.
-func ResolveServerAPIURL() string {
-	return LocalAPIURL(ResolveServerPort())
 }
 
 // ResolveServerListenAddr selects the socket address used by traio-server.
@@ -329,6 +413,13 @@ func ResolveRuntimeDir() string {
 		return DefaultServerRuntimeDir
 	}
 	return ResolveBaseDir()
+}
+
+// ResolveWebDir returns an optional Vite production build served by the Go
+// process. Container images set this to /opt/traio/web; desktop builds leave it
+// empty because Tauri owns the frontend lifecycle.
+func ResolveWebDir() string {
+	return strings.TrimSpace(os.Getenv("TRAIO_WEB_DIR"))
 }
 
 // DefaultDesktopRuntimeDir returns the writable root used by the packaged

@@ -31,11 +31,15 @@ type ibkrGatewayTargetResolver interface {
 
 type ibkrLoginTicket struct {
 	connectionID int64
+	workspaceID  int64
+	userID       int64
 	expiresAt    time.Time
 }
 
 type ibkrProxySession struct {
 	connectionID int64
+	workspaceID  int64
+	userID       int64
 	expiresAt    time.Time
 }
 
@@ -101,6 +105,13 @@ func (p *IBKRLoginProxy) ExternalURL() string {
 
 // IssueLoginURL creates a one-minute, single-use browser entry URL.
 func (p *IBKRLoginProxy) IssueLoginURL(connectionID int64) (string, error) {
+	return p.IssueLoginURLForPrincipal(connectionID, 0, 0)
+}
+
+// IssueLoginURLForPrincipal binds a one-time Gateway ticket to the user and
+// workspace that requested it. Zero identity values are reserved for local
+// desktop compatibility and tests.
+func (p *IBKRLoginProxy) IssueLoginURLForPrincipal(connectionID, workspaceID, userID int64) (string, error) {
 	if p == nil || connectionID <= 0 {
 		return "", fmt.Errorf("IBKR login proxy is not configured")
 	}
@@ -111,7 +122,7 @@ func (p *IBKRLoginProxy) IssueLoginURL(connectionID int64) (string, error) {
 	now := p.now()
 	p.mu.Lock()
 	p.cleanupLocked(now)
-	p.tickets[token] = ibkrLoginTicket{connectionID: connectionID, expiresAt: now.Add(ibkrLoginTicketTTL)}
+	p.tickets[token] = ibkrLoginTicket{connectionID: connectionID, workspaceID: workspaceID, userID: userID, expiresAt: now.Add(ibkrLoginTicketTTL)}
 	p.mu.Unlock()
 
 	entry := *p.externalURL
@@ -245,7 +256,7 @@ func (p *IBKRLoginProxy) consumeLoginTicket(w http.ResponseWriter, r *http.Reque
 	}
 	expiresAt := now.Add(ibkrProxySessionTTL)
 	p.mu.Lock()
-	p.sessions[sessionToken] = ibkrProxySession{connectionID: ticket.connectionID, expiresAt: expiresAt}
+	p.sessions[sessionToken] = ibkrProxySession{connectionID: ticket.connectionID, workspaceID: ticket.workspaceID, userID: ticket.userID, expiresAt: expiresAt}
 	p.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name:     ibkrProxyCookieName,

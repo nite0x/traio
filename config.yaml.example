@@ -3,7 +3,7 @@
 
 server:
   host: "127.0.0.1"
-  port: 38180  # 打包应用；本地开发默认 38181
+  port: 0      # 打包应用由系统分配空闲端口；本地开发默认 38181
 
 database:
   path: "./data/traio.db"

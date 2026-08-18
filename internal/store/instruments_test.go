@@ -54,3 +54,30 @@ func TestResolveInstrumentKeepsMarketsAndAssetTypesSeparate(t *testing.T) {
 		t.Fatalf("distinct instruments were merged: us=%d hk=%d option=%d", us.ID, hk.ID, option.ID)
 	}
 }
+
+func TestResolveInstrumentCorrectsBrokerAssetTypeAndName(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	incorrect, err := st.ResolveInstrument(ctx, InstrumentIdentity{
+		ProviderCode: "IBKR", ExternalID: "320227571", AssetType: "stock", Market: "US", Symbol: "QQQ", Currency: "USD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := st.ResolveInstrument(ctx, InstrumentIdentity{
+		ProviderCode: "IBKR", ExternalID: "320227571", AssetType: "etf", Market: "US", Symbol: "QQQ", Name: "INVESCO QQQ TRUST SERIES 1", Currency: "USD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if corrected.ID == incorrect.ID || corrected.AssetType != "etf" || corrected.Name != "INVESCO QQQ TRUST SERIES 1" {
+		t.Fatalf("broker instrument was not corrected: before=%#v after=%#v", incorrect, corrected)
+	}
+	var mappedID int64
+	if err := st.db.QueryRow(`SELECT instrument_id FROM broker_instruments WHERE provider_code = 'IBKR' AND external_id = '320227571'`).Scan(&mappedID); err != nil {
+		t.Fatal(err)
+	}
+	if mappedID != corrected.ID {
+		t.Fatalf("mapping points to %d, want %d", mappedID, corrected.ID)
+	}
+}

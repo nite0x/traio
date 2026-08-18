@@ -1,16 +1,15 @@
 package runtime
 
 import (
-	"fmt"
 	"os"
-
-	"github.com/nite/traio/internal/config"
+	"strings"
 )
 
-// ResolveAPIBase returns TRAIO_API or the fixed local backend address.
-func ResolveAPIBase(runtimeDir string) string {
-	if v := os.Getenv("TRAIO_API"); v != "" {
-		return v
+// ResolveAPIBase returns the explicitly configured deployment address or the
+// local server address published after the sidecar binds its dynamic port.
+func ResolveAPIBase(runtimeDir string) (string, error) {
+	if v := strings.TrimSpace(os.Getenv("TRAIO_API")); v != "" {
+		return strings.TrimRight(v, "/"), nil
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", config.DefaultServerPort)
+	return ReadAPIURL(runtimeDir)
 }

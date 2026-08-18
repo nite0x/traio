@@ -157,14 +157,20 @@ func (c *Client) GetDailyPerformance(ctx context.Context, accountID string) (bro
 	if !ok {
 		return broker.DailyPerformance{}, fmt.Errorf("ibkr: daily performance for account %s not returned", accountID)
 	}
+	// IBKR paper accounts can expose coarse or stale nl/mv values through the
+	// partitioned P&L endpoint. Use the portfolio summary for account totals.
+	summary, err := c.accountSummary(ctx, accountID)
+	if err != nil {
+		return broker.DailyPerformance{}, err
+	}
 
 	return broker.DailyPerformance{
 		AccountID:       accountID,
 		DailyPnL:        value.DailyPnL,
-		NetLiquidation:  value.NetLiquidation,
+		NetLiquidation:  summary.NetLiquidation,
 		UnrealizedPnL:   value.UnrealizedPnL,
 		ExcessLiquidity: value.ExcessLiquidity,
-		MarketValue:     value.MarketValue,
+		MarketValue:     summary.GrossPositionValue,
 		AsOf:            time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }

@@ -27,8 +27,10 @@ build-mcp:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -o $(BIN_DIR)/traio-mcp ./cmd/mcp
 
-build-binaries: build-server build-mcp
-	@echo "built $(BIN_DIR)/traio-server $(BIN_DIR)/traio-mcp"
+# Distribution builds intentionally contain only the core service. MCP is
+# deployed separately and is not part of local installations.
+build-binaries: build-server
+	@echo "built $(BIN_DIR)/traio-server"
 
 test:
 	go test ./...

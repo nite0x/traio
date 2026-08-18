@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
+	if err := s.migrateAuth(); err != nil {
+		return err
+	}
 	if err := s.requireCurrentBrokerSchemaSQLite(); err != nil {
 		return err
 	}

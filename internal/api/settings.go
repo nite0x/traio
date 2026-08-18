@@ -34,8 +34,8 @@ func putSettings(mgr *settings.Manager) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"status":  "saved",
-			"message": "部分项（如服务端口）需重启 Traio 后生效",
+			"status":   "saved",
+			"message":  "部分项（如服务端口）需重启 Traio 后生效",
 			"settings": mgr.Get(),
 		})
 	}

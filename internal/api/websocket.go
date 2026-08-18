@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/schwab"
 )
@@ -15,12 +16,12 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{"traio"},
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
-		return origin == "" || allowedOrigin(origin)
+		return origin == "" || allowedOrigin(origin) || sameOrigin(origin, r)
 	},
 }
 
 // wsQuotes upgrades to WebSocket and forwards normalized Schwab quote updates.
-func wsQuotes(client *schwab.Client) gin.HandlerFunc {
+func wsQuotes(client *schwab.Client, authService *traioauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -51,6 +52,15 @@ func wsQuotes(client *schwab.Client) gin.HandlerFunc {
 					return
 				}
 			case t := <-ticker.C:
+				if authService != nil && authService.UsesSessions() {
+					rawSession, err := c.Cookie(authService.CookieName())
+					if err != nil {
+						return
+					}
+					if _, _, err := authService.Authenticate(c.Request.Context(), rawSession); err != nil {
+						return
+					}
+				}
 				if err := conn.WriteJSON(gin.H{
 					"type":      "heartbeat",
 					"timestamp": t.UTC().Format(time.RFC3339),
