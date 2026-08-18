@@ -93,3 +93,45 @@ func TestConfiguredSkipsWhenEmpty(t *testing.T) {
 		t.Fatalf("expected empty positions, got %d", len(positions))
 	}
 }
+
+func TestLoginStatusVerifiesCredentials(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("APCA-API-KEY-ID"); got != "key" {
+			t.Errorf("API key header = %q", got)
+		}
+		if got := r.Header.Get("APCA-API-SECRET-KEY"); got != "secret" {
+			t.Errorf("API secret header = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"account_number": "PA123"})
+	}))
+	defer srv.Close()
+
+	client := alpaca.New(config.AlpacaConfig{APIKey: "key", APISecret: "secret", BaseURL: srv.URL})
+	status, err := client.LoginStatus(context.Background())
+	if err != nil {
+		t.Fatalf("LoginStatus: %v", err)
+	}
+	if !status.Authenticated || status.AccountID != "PA123" {
+		t.Fatalf("unexpected login status: %+v", status)
+	}
+}
+
+func TestLoginStatusRejectsInvalidCredentials(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := alpaca.New(config.AlpacaConfig{APIKey: "invalid", APISecret: "invalid", BaseURL: srv.URL})
+	status, err := client.LoginStatus(context.Background())
+	if err == nil {
+		t.Fatal("LoginStatus returned nil error for rejected credentials")
+	}
+	if status.Authenticated {
+		t.Fatalf("unexpected authenticated status: %+v", status)
+	}
+}
