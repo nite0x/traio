@@ -574,12 +574,6 @@ func (c *Client) listAccountIDs(ctx context.Context) ([]string, error) {
 	return accountIDs, nil
 }
 
-func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (string, error) {
-	_ = ctx
-	_ = req
-	return "", fmt.Errorf("ibkr: PlaceOrder not implemented")
-}
-
 func parseConID(value any) int64 {
 	switch v := value.(type) {
 	case float64:

@@ -77,13 +77,59 @@ type Instrument struct {
 
 // OrderRequest is a normalized order payload.
 type OrderRequest struct {
-	Symbol      string  `json:"symbol"`
-	Side        string  `json:"side"`       // buy | sell
-	OrderType   string  `json:"order_type"` // market | limit | stop
-	Quantity    float64 `json:"quantity"`
-	LimitPrice  float64 `json:"limit_price,omitempty"`
-	StopPrice   float64 `json:"stop_price,omitempty"`
-	TimeInForce string  `json:"time_in_force"` // day | gtc
+	AccountID      string  `json:"account_id"`
+	Symbol         string  `json:"symbol"`
+	InstrumentID   string  `json:"instrument_id,omitempty"`   // IBKR conid or broker asset id
+	AssetClass     string  `json:"asset_class,omitempty"`     // equity | option | future | forex | crypto | fund | bond
+	Side           string  `json:"side"`                      // buy | sell
+	PositionEffect string  `json:"position_effect,omitempty"` // open | close (primarily options)
+	OrderType      string  `json:"order_type"`                // market | limit | stop | stop_limit | trailing_stop
+	Quantity       float64 `json:"quantity,omitempty"`
+	Notional       float64 `json:"notional,omitempty"`
+	LimitPrice     float64 `json:"limit_price,omitempty"`
+	StopPrice      float64 `json:"stop_price,omitempty"`
+	TrailPrice     float64 `json:"trail_price,omitempty"`
+	TrailPercent   float64 `json:"trail_percent,omitempty"`
+	TimeInForce    string  `json:"time_in_force"` // day | gtc | ioc | fok | opg | cls
+	ExtendedHours  bool    `json:"extended_hours,omitempty"`
+	ClientOrderID  string  `json:"client_order_id,omitempty"`
+}
+
+// Order is the normalized lifecycle view returned by every trading adapter.
+type Order struct {
+	ID               string  `json:"id"`
+	ClientOrderID    string  `json:"client_order_id,omitempty"`
+	AccountID        string  `json:"account_id"`
+	Symbol           string  `json:"symbol,omitempty"`
+	InstrumentID     string  `json:"instrument_id,omitempty"`
+	AssetClass       string  `json:"asset_class,omitempty"`
+	Side             string  `json:"side,omitempty"`
+	OrderType        string  `json:"order_type,omitempty"`
+	Quantity         float64 `json:"quantity,omitempty"`
+	FilledQuantity   float64 `json:"filled_quantity,omitempty"`
+	LimitPrice       float64 `json:"limit_price,omitempty"`
+	StopPrice        float64 `json:"stop_price,omitempty"`
+	AverageFillPrice float64 `json:"average_fill_price,omitempty"`
+	TimeInForce      string  `json:"time_in_force,omitempty"`
+	Status           string  `json:"status"`
+	SubmittedAt      string  `json:"submitted_at,omitempty"`
+	UpdatedAt        string  `json:"updated_at,omitempty"`
+	RawStatus        string  `json:"raw_status,omitempty"`
+}
+
+// OrderQuery controls an order listing without leaking provider-specific query shapes.
+type OrderQuery struct {
+	AccountID string `json:"account_id"`
+	Status    string `json:"status,omitempty"` // open | closed | all
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// TradingProvider is the single server-side contract implemented by all brokers.
+type TradingProvider interface {
+	PlaceOrder(context.Context, OrderRequest) (Order, error)
+	GetOrder(context.Context, string, string) (Order, error)
+	ListOrders(context.Context, OrderQuery) ([]Order, error)
+	CancelOrder(context.Context, string, string) error
 }
 
 // MarketDataProvider streams quotes and historical bars.

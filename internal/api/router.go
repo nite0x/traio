@@ -50,6 +50,7 @@ type Deps struct {
 	RuntimeDir           string
 	WebDir               string
 	Auth                 *traioauth.Service
+	Trading              *broker.TradingService
 	gatewayPortAvailable gatewayPortAvailableFunc
 }
 
@@ -244,7 +245,10 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/portfolio/sync-status", brokerSyncStatus(deps.BrokerSync))
 		v1.GET("/account/equity", accountEquity(deps.Account))
 		v1.GET("/news/:symbol", getNews(deps.News))
-		v1.POST("/orders", requirePermission(traioauth.PermissionTrade), placeOrder())
+		v1.POST("/orders", requirePermission(traioauth.PermissionTrade), placeOrder(deps.Trading))
+		v1.GET("/orders", listOrders(deps.Trading))
+		v1.GET("/orders/:order_id", getOrder(deps.Trading))
+		v1.DELETE("/orders/:order_id", requirePermission(traioauth.PermissionTrade), cancelOrder(deps.Trading))
 		v1.GET("/ws", wsQuotes(deps.Schwab, deps.Auth))
 		v1.GET("/schwab/status", schwabStatus(deps.Schwab))
 		v1.GET("/schwab/oauth/url", requirePermission(traioauth.PermissionBrokerManage), schwabOAuthURL(deps.Schwab))
@@ -643,9 +647,99 @@ func getNews(svc *news.Service) gin.HandlerFunc {
 	}
 }
 
-func placeOrder() gin.HandlerFunc {
+type placeOrderRequest struct {
+	ConnectionID int64 `json:"connection_id" binding:"required"`
+	broker.OrderRequest
+}
+
+func placeOrder(trading *broker.TradingService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "place order not implemented"})
+		if trading == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "trading is not configured"})
+			return
+		}
+		var req placeOrderRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		order, err := trading.PlaceOrder(c.Request.Context(), req.ConnectionID, req.OrderRequest)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, order)
+	}
+}
+
+func orderQuery(c *gin.Context) (int64, broker.OrderQuery, bool) {
+	id, err := strconv.ParseInt(c.Query("connection_id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "connection_id must be a positive integer"})
+		return 0, broker.OrderQuery{}, false
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	return id, broker.OrderQuery{AccountID: c.Query("account_id"), Status: c.DefaultQuery("status", "all"), Limit: limit}, true
+}
+func listOrders(trading *broker.TradingService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if trading == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "trading is not configured"})
+			return
+		}
+		id, q, ok := orderQuery(c)
+		if !ok {
+			return
+		}
+		orders, err := trading.ListOrders(c.Request.Context(), id, q)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, orders)
+	}
+}
+func getOrder(trading *broker.TradingService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if trading == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "trading is not configured"})
+			return
+		}
+		id, q, ok := orderQuery(c)
+		if !ok {
+			return
+		}
+		if q.AccountID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "account_id is required"})
+			return
+		}
+		order, err := trading.GetOrder(c.Request.Context(), id, q.AccountID, c.Param("order_id"))
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, order)
+	}
+}
+func cancelOrder(trading *broker.TradingService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if trading == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "trading is not configured"})
+			return
+		}
+		id, q, ok := orderQuery(c)
+		if !ok {
+			return
+		}
+		if q.AccountID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "account_id is required"})
+			return
+		}
+		if err := trading.CancelOrder(c.Request.Context(), id, q.AccountID, c.Param("order_id")); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
 }
 

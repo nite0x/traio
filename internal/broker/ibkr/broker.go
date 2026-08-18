@@ -14,6 +14,7 @@ type Broker struct {
 }
 
 var _ brokerapi.Broker = (*Broker)(nil)
+var _ brokerapi.TradingProvider = (*Broker)(nil)
 
 func NewBroker(cfg config.IBKRConfig) *Broker {
 	return &Broker{
@@ -59,4 +60,17 @@ func (b *Broker) ListAccountPositions(ctx context.Context, accountID string) ([]
 
 func (b *Broker) GetDailyPerformance(ctx context.Context, accountID string) (brokerapi.DailyPerformance, error) {
 	return b.client.GetDailyPerformance(ctx, accountID)
+}
+
+func (b *Broker) PlaceOrder(ctx context.Context, req brokerapi.OrderRequest) (brokerapi.Order, error) {
+	return b.client.PlaceOrder(ctx, req)
+}
+func (b *Broker) GetOrder(ctx context.Context, accountID, orderID string) (brokerapi.Order, error) {
+	return b.client.GetOrder(ctx, accountID, orderID)
+}
+func (b *Broker) ListOrders(ctx context.Context, query brokerapi.OrderQuery) ([]brokerapi.Order, error) {
+	return b.client.ListOrders(ctx, query)
+}
+func (b *Broker) CancelOrder(ctx context.Context, accountID, orderID string) error {
+	return b.client.CancelOrder(ctx, accountID, orderID)
 }

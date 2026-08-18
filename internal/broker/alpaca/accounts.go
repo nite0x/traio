@@ -283,10 +283,6 @@ func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPo
 	return out, nil
 }
 
-func (c *Client) PlaceOrder(context.Context, broker.OrderRequest) (string, error) {
-	return "", fmt.Errorf("alpaca: order placement is not implemented")
-}
-
 func (c *Client) fetchAccount(ctx context.Context) (alpacaAccount, error) {
 	resp, err := c.Do(ctx, http.MethodGet, "account", nil)
 	if err != nil {

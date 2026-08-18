@@ -35,6 +35,7 @@ type Brokers struct {
 	Instruments broker.InstrumentProvider
 	Quotes      broker.BatchMarketDataProvider
 	Candles     broker.CandleProvider
+	Trading     *broker.TradingService
 
 	snap  *snaptrade.Client
 	store BrokerRuntimeStore
@@ -54,6 +55,7 @@ type BrokerRuntimeStore interface {
 
 func BuildBrokers(cfg config.Config, st BrokerRuntimeStore, runtimeDir string) (*Brokers, error) {
 	registry := &Brokers{
+		Trading:           broker.NewTradingService(),
 		snap:              snaptrade.New(cfg.SnapTrade),
 		store:             st,
 		ibkrConnections:   map[int64]*ibkr.Broker{},
@@ -170,6 +172,17 @@ func (b *Brokers) Reload(ctx context.Context) error {
 	b.alpacaConnections = alpacaConnections
 	b.selectLegacyDefaultsLocked()
 	b.mu.Unlock()
+	traders := make(map[int64]broker.TradingProvider, len(ibkrConnections)+len(schwabConnections)+len(alpacaConnections))
+	for id, client := range ibkrConnections {
+		traders[id] = client
+	}
+	for id, client := range schwabConnections {
+		traders[id] = client
+	}
+	for id, client := range alpacaConnections {
+		traders[id] = client
+	}
+	b.Trading.Replace(traders)
 	for id, manager := range previousGateways {
 		if manager != ibkrGateways[id] {
 			if err := manager.Shutdown(); err != nil {
