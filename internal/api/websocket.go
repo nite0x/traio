@@ -20,7 +20,7 @@ var upgrader = websocket.Upgrader{
 }
 
 // wsQuotes upgrades to WebSocket and forwards normalized Schwab quote updates.
-func wsQuotes(resolve schwabClientResolver, authService *traioauth.Service) gin.HandlerFunc {
+func wsQuotes(resolve brokerSessionResolver, authService *traioauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -30,10 +30,12 @@ func wsQuotes(resolve schwabClientResolver, authService *traioauth.Service) gin.
 
 		var quotes <-chan broker.Quote
 		cancel := func() {}
-		client := resolve()
-		if client != nil {
+		session, release := resolve()
+		client, ok := session.(schwabStreamingSession)
+		if ok {
 			quotes, cancel = client.SubscribeQuotes(strings.Split(c.Query("symbols"), ","))
 		}
+		release()
 		defer cancel()
 
 		ticker := time.NewTicker(5 * time.Second)

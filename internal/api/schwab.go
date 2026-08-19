@@ -8,21 +8,31 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/store"
 )
 
-type schwabClientResolver func() *schwab.Client
-
-type schwabClientRuntime interface {
-	SchwabClient() *schwab.Client
+type schwabStatusSession interface {
+	Token() (schwab.Token, bool)
+	StreamStatus() schwab.StreamStatus
 }
 
-func currentSchwabClient(runtime brokerConnectionRuntime, fallback *schwab.Client) schwabClientResolver {
-	if dynamic, ok := runtime.(schwabClientRuntime); ok {
-		return dynamic.SchwabClient
-	}
-	return func() *schwab.Client { return fallback }
+type schwabOAuthURLSession interface {
+	AuthURL(state string) string
+}
+
+type schwabOAuthExchangeSession interface {
+	ExchangeCodeForToken(context.Context, string) (schwab.Token, error)
+}
+
+type schwabQuoteSession interface {
+	GetQuote(context.Context, string) (*broker.Quote, error)
+	GetQuotes(context.Context, []string) ([]broker.Quote, error)
+}
+
+type schwabStreamingSession interface {
+	SubscribeQuotes([]string) (<-chan broker.Quote, func())
 }
 
 type schwabConfigResponse struct {
@@ -207,10 +217,12 @@ func validateSchwabRedirectURI(raw string) error {
 	return nil
 }
 
-func schwabStatus(resolve schwabClientResolver) gin.HandlerFunc {
+func schwabStatus(resolve brokerSessionResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client := resolve()
-		if client == nil {
+		session, release := resolve()
+		defer release()
+		client, ok := session.(schwabStatusSession)
+		if !ok {
 			c.JSON(http.StatusOK, gin.H{
 				"available":     false,
 				"authenticated": false,
@@ -227,10 +239,12 @@ func schwabStatus(resolve schwabClientResolver) gin.HandlerFunc {
 	}
 }
 
-func schwabOAuthURL(resolve schwabClientResolver) gin.HandlerFunc {
+func schwabOAuthURL(resolve brokerSessionResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client := resolve()
-		if client == nil {
+		session, release := resolve()
+		defer release()
+		client, ok := session.(schwabOAuthURLSession)
+		if !ok {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab is not available"})
 			return
 		}
@@ -243,10 +257,12 @@ type schwabExchangeRequest struct {
 	CallbackURL string `json:"callback_url"`
 }
 
-func schwabOAuthExchange(resolve schwabClientResolver) gin.HandlerFunc {
+func schwabOAuthExchange(resolve brokerSessionResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client := resolve()
-		if client == nil {
+		session, release := resolve()
+		defer release()
+		client, ok := session.(schwabOAuthExchangeSession)
+		if !ok {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab is not available"})
 			return
 		}

@@ -18,8 +18,6 @@ import (
 	"github.com/nite/traio/internal/ai"
 	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
-	"github.com/nite/traio/internal/broker/alpaca"
-	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/portfolio"
 	"github.com/nite/traio/internal/settings"
@@ -28,13 +26,11 @@ import (
 
 type Deps struct {
 	Brokers              brokerStore
-	BrokerRuntime        brokerConnectionRuntime
+	Connections          brokerConnectionRuntime
 	OnBrokersChanged     func(context.Context) error
 	Watchlists           store.WatchlistRepository
 	CandleCache          store.CandleCacheRepository
 	Settings             *settings.Manager
-	Schwab               *schwab.Client
-	Alpaca               *alpaca.Client
 	IBKR                 broker.GatewayController
 	IBKRGateways         ibkrGatewayRuntime
 	Instruments          broker.InstrumentProvider
@@ -200,8 +196,8 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	registerAdminRoutes(admin)
 
 	v1 := r.Group("/api/v1", authenticationMiddleware(deps), requirePermission(traioauth.PermissionView))
-	resolveSchwab := currentSchwabClient(deps.BrokerRuntime, deps.Schwab)
-	resolveAlpaca := currentAlpacaClient(deps.BrokerRuntime, deps.Alpaca)
+	resolveSchwab := currentBrokerSession(deps.Connections, "SCHWAB")
+	resolveAlpaca := currentBrokerSession(deps.Connections, "ALPACA")
 	{
 		v1.GET("/brokers", listBrokerProviders(deps.Brokers))
 		v1.PUT("/brokers/:code", requirePermission(traioauth.PermissionBrokerManage), updateBrokerProvider(deps.Brokers, deps.OnBrokersChanged))
@@ -211,9 +207,9 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.PUT("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), updateBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-connections/:connection_id/delete-impact", brokerConnectionDeleteImpact(deps.Brokers))
 		v1.DELETE("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), deleteBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
-		v1.POST("/broker-connections/:connection_id/login", requirePermission(traioauth.PermissionBrokerManage), beginBrokerConnectionLogin(deps.Brokers, deps.BrokerRuntime, deps.IBKRLoginProxy, deps.Auth))
-		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.BrokerRuntime, deps.IBKRLoginProxy))
-		v1.POST("/broker-connections/:connection_id/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), exchangeBrokerConnectionOAuthCode(deps.BrokerRuntime))
+		v1.POST("/broker-connections/:connection_id/login", requirePermission(traioauth.PermissionBrokerManage), beginBrokerConnectionLogin(deps.Brokers, deps.Connections, deps.IBKRLoginProxy, deps.Auth))
+		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.Connections, deps.IBKRLoginProxy))
+		v1.POST("/broker-connections/:connection_id/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), exchangeBrokerConnectionOAuthCode(deps.Connections))
 		v1.GET("/broker-connections/:connection_id/accounts", listBrokerConnectionAccounts(deps.Brokers))
 		v1.POST("/broker-connections/:connection_id/sync", requirePermission(traioauth.PermissionBrokerSync), syncBrokerConnection(deps.Brokers, deps.BrokerSync))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
@@ -399,7 +395,7 @@ func deleteWatchlistItem(st store.WatchlistRepository) gin.HandlerFunc {
 
 func searchInstruments(provider broker.InstrumentProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if provider == nil {
+		if provider == nil || marketDataCapabilityUnavailable(provider, broker.MarketDataCapabilityInstruments) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "instrument search is not available"})
 			return
 		}
@@ -410,6 +406,10 @@ func searchInstruments(provider broker.InstrumentProvider) gin.HandlerFunc {
 		}
 		results, err := provider.SearchInstruments(c.Request.Context(), query)
 		if err != nil {
+			if errors.Is(err, broker.ErrCapabilityUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "instrument search is not available"})
+				return
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -419,7 +419,7 @@ func searchInstruments(provider broker.InstrumentProvider) gin.HandlerFunc {
 
 func listQuotes(provider broker.BatchMarketDataProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if provider == nil {
+		if provider == nil || marketDataCapabilityUnavailable(provider, broker.MarketDataCapabilityBatchQuotes) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote snapshots are not available"})
 			return
 		}
@@ -434,6 +434,10 @@ func listQuotes(provider broker.BatchMarketDataProvider) gin.HandlerFunc {
 		}
 		quotes, err := provider.GetQuotesByConID(c.Request.Context(), conIDs)
 		if err != nil {
+			if errors.Is(err, broker.ErrCapabilityUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote snapshots are not available"})
+				return
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -441,10 +445,12 @@ func listQuotes(provider broker.BatchMarketDataProvider) gin.HandlerFunc {
 	}
 }
 
-func listQuotesBySymbol(resolve schwabClientResolver) gin.HandlerFunc {
+func listQuotesBySymbol(resolve brokerSessionResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client := resolve()
-		if client == nil {
+		session, release := resolve()
+		defer release()
+		client, ok := session.(schwabQuoteSession)
+		if !ok {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "schwab quotes are not available"})
 			return
 		}
@@ -459,7 +465,7 @@ func listQuotesBySymbol(resolve schwabClientResolver) gin.HandlerFunc {
 }
 
 func getQuote(
-	resolveSchwab schwabClientResolver,
+	resolveSchwab brokerSessionResolver,
 	instruments broker.InstrumentProvider,
 	quotes broker.BatchMarketDataProvider,
 ) gin.HandlerFunc {
@@ -469,35 +475,44 @@ func getQuote(
 			c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
 			return
 		}
-		if instruments != nil && quotes != nil {
+		if instruments != nil && quotes != nil &&
+			!marketDataCapabilityUnavailable(instruments, broker.MarketDataCapabilityInstruments) &&
+			!marketDataCapabilityUnavailable(quotes, broker.MarketDataCapabilityBatchQuotes) {
 			results, err := instruments.SearchInstruments(c.Request.Context(), symbol)
 			if err != nil {
-				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-				return
+				if !errors.Is(err, broker.ErrCapabilityUnavailable) {
+					c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+					return
+				}
+			} else {
+				instrument, ok := preferredInstrument(symbol, results)
+				if !ok {
+					c.JSON(http.StatusNotFound, gin.H{"error": "instrument not found"})
+					return
+				}
+				snapshots, quoteErr := quotes.GetQuotesByConID(c.Request.Context(), []int64{instrument.ConID})
+				if quoteErr == nil {
+					if len(snapshots) == 0 {
+						c.JSON(http.StatusNotFound, gin.H{"error": "quote not found"})
+						return
+					}
+					if snapshots[0].Symbol == "" {
+						snapshots[0].Symbol = instrument.Symbol
+					}
+					c.JSON(http.StatusOK, snapshots[0])
+					return
+				}
+				if !errors.Is(quoteErr, broker.ErrCapabilityUnavailable) {
+					c.JSON(http.StatusBadGateway, gin.H{"error": quoteErr.Error()})
+					return
+				}
 			}
-			instrument, ok := preferredInstrument(symbol, results)
-			if !ok {
-				c.JSON(http.StatusNotFound, gin.H{"error": "instrument not found"})
-				return
-			}
-			snapshots, err := quotes.GetQuotesByConID(c.Request.Context(), []int64{instrument.ConID})
-			if err != nil {
-				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-				return
-			}
-			if len(snapshots) == 0 {
-				c.JSON(http.StatusNotFound, gin.H{"error": "quote not found"})
-				return
-			}
-			if snapshots[0].Symbol == "" {
-				snapshots[0].Symbol = instrument.Symbol
-			}
-			c.JSON(http.StatusOK, snapshots[0])
-			return
 		}
 
-		schwabClient := resolveSchwab()
-		if schwabClient == nil {
+		session, release := resolveSchwab()
+		defer release()
+		schwabClient, ok := session.(schwabQuoteSession)
+		if !ok {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quote provider is not available"})
 			return
 		}
@@ -765,7 +780,7 @@ var periodToBar = map[string]string{
 
 func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentProvider, candles broker.CandleProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if candles == nil {
+		if candles == nil || marketDataCapabilityUnavailable(candles, broker.MarketDataCapabilityCandles) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "candle data not available"})
 			return
 		}
@@ -797,12 +812,16 @@ func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentPro
 		}
 
 		// Resolve symbol → conid
-		if instruments == nil {
+		if instruments == nil || marketDataCapabilityUnavailable(instruments, broker.MarketDataCapabilityInstruments) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "instrument search not available"})
 			return
 		}
 		results, err := instruments.SearchInstruments(c.Request.Context(), symbol)
 		if err != nil {
+			if errors.Is(err, broker.ErrCapabilityUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "instrument search not available"})
+				return
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -814,6 +833,10 @@ func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentPro
 
 		bars, err := candles.GetCandles(c.Request.Context(), instrument.ConID, period, bar)
 		if err != nil {
+			if errors.Is(err, broker.ErrCapabilityUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "candle data not available"})
+				return
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -832,6 +855,13 @@ func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentPro
 			"candles": bars,
 		})
 	}
+}
+
+func marketDataCapabilityUnavailable(provider any, capability broker.MarketDataCapability) bool {
+	availability, ok := provider.(interface {
+		Supports(broker.MarketDataCapability) bool
+	})
+	return ok && !availability.Supports(capability)
 }
 
 func ibkrGatewayStatus(gw broker.GatewayController) gin.HandlerFunc {

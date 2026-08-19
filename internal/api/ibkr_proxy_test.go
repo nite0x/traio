@@ -200,7 +200,7 @@ func TestConnectionLoginReturnsConfiguredIBKRProxyURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(Deps{BrokerRuntime: runtime, IBKRLoginProxy: proxy}, ServerControl{})
+	router := NewRouter(Deps{Connections: runtime, IBKRLoginProxy: proxy}, ServerControl{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/broker-connections/42/login", nil)
 	res := httptest.NewRecorder()
 	router.ServeHTTP(res, req)
@@ -221,7 +221,7 @@ func TestConnectionLoginKeepsRemoteGatewayURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(Deps{BrokerRuntime: runtime, IBKRLoginProxy: proxy}, ServerControl{})
+	router := NewRouter(Deps{Connections: runtime, IBKRLoginProxy: proxy}, ServerControl{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/broker-connections/42/login", nil)
 	res := httptest.NewRecorder()
 	router.ServeHTTP(res, req)
@@ -233,7 +233,7 @@ func TestConnectionLoginKeepsRemoteGatewayURL(t *testing.T) {
 func TestConnectionLoginStatusDoesNotReturnPrivateGatewayURL(t *testing.T) {
 	target, _ := url.Parse("https://127.0.0.1:5680")
 	runtime := &fakeIBKRProxyRuntime{target: target, ibkr: true}
-	router := NewRouter(Deps{BrokerRuntime: runtime}, ServerControl{})
+	router := NewRouter(Deps{Connections: runtime}, ServerControl{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/broker-connections/42/auth/status", nil)
 	res := httptest.NewRecorder()
 	router.ServeHTTP(res, req)

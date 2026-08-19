@@ -124,7 +124,7 @@ func registerAuthRoutes(r *gin.Engine, deps Deps) {
 	protected.GET("/me", authMe)
 	protected.POST("/logout", authLogout(deps.Auth))
 	if deps.Auth != nil {
-		protected.GET("/broker/callback", requirePermission(traioauth.PermissionBrokerManage), completeBrokerOAuth(deps.Auth, deps.BrokerRuntime))
+		protected.GET("/broker/callback", requirePermission(traioauth.PermissionBrokerManage), completeBrokerOAuth(deps.Auth, deps.Connections))
 	}
 }
 

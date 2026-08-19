@@ -13,7 +13,9 @@ type Broker struct {
 	client *Client
 }
 
-var _ brokerapi.Broker = (*Broker)(nil)
+var _ brokerapi.AccountProvider = (*Broker)(nil)
+var _ brokerapi.PositionProvider = (*Broker)(nil)
+var _ brokerapi.PerformanceProvider = (*Broker)(nil)
 var _ brokerapi.TradingProvider = (*Broker)(nil)
 
 func NewBroker(cfg config.IBKRConfig) *Broker {

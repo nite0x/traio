@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
-	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/store"
 )
 
@@ -29,6 +28,29 @@ type brokerConnectionRuntime interface {
 	ConnectionLoginStatus(context.Context, int64) (broker.LoginAction, error)
 	ExchangeConnectionOAuthCode(context.Context, int64, string) error
 	IBKRGatewayTarget(context.Context, int64) (*url.URL, bool, error)
+}
+
+// defaultBrokerSessionAcquirer is the provider-neutral bridge used by legacy
+// provider-specific endpoints. Each consumer asserts only the operations it
+// needs and releases the lease after finishing the operation.
+type defaultBrokerSessionAcquirer interface {
+	AcquireDefaultSession(providerCode string) (broker.BrokerSession, func())
+}
+
+type brokerSessionResolver func() (broker.BrokerSession, func())
+
+func currentBrokerSession(runtime any, providerCode string) brokerSessionResolver {
+	return func() (broker.BrokerSession, func()) {
+		resolver, ok := runtime.(defaultBrokerSessionAcquirer)
+		if !ok {
+			return nil, func() {}
+		}
+		session, release := resolver.AcquireDefaultSession(providerCode)
+		if release == nil {
+			release = func() {}
+		}
+		return session, release
+	}
 }
 
 type brokerConnectionSyncer interface {
@@ -430,17 +452,13 @@ func exchangeBrokerConnectionOAuthCode(runtime brokerConnectionRuntime) gin.Hand
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		code := strings.TrimSpace(req.Code)
-		if code == "" && strings.TrimSpace(req.CallbackURL) != "" {
-			callback, err := schwab.ParseCallbackURL(req.CallbackURL)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			code = callback.Code
-		}
-		if code == "" {
+		if strings.TrimSpace(req.Code) == "" && strings.TrimSpace(req.CallbackURL) == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "code or callback_url is required"})
+			return
+		}
+		code, err := (broker.AuthenticationCallback{Code: req.Code, CallbackURL: req.CallbackURL}).AuthorizationCode()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		if err := runtime.ExchangeConnectionOAuthCode(c.Request.Context(), connectionID, code); err != nil {

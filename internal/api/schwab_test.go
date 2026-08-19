@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/schwab"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
@@ -19,17 +20,29 @@ import (
 
 type mutableSchwabRuntime struct {
 	brokerConnectionRuntime
-	client *schwab.Client
+	session  broker.BrokerSession
+	acquired int
+	released int
 }
 
-func (r *mutableSchwabRuntime) SchwabClient() *schwab.Client {
-	return r.client
+func (r *mutableSchwabRuntime) AcquireDefaultSession(string) (broker.BrokerSession, func()) {
+	r.acquired++
+	return r.session, func() { r.released++ }
 }
+
+type testSchwabSession struct{ *schwab.Client }
+
+func (*testSchwabSession) ConnectionID() int64  { return 1 }
+func (*testSchwabSession) ProviderCode() string { return "SCHWAB" }
+func (*testSchwabSession) Health(context.Context) (broker.ConnectionHealth, error) {
+	return broker.ConnectionHealth{}, nil
+}
+func (*testSchwabSession) Close(context.Context) error { return nil }
 
 func TestSchwabStatusResolvesClientAfterRuntimeReload(t *testing.T) {
 	runtime := &mutableSchwabRuntime{}
 	router := gin.New()
-	router.GET("/schwab/status", schwabStatus(currentSchwabClient(runtime, nil)))
+	router.GET("/schwab/status", schwabStatus(currentBrokerSession(runtime, "SCHWAB")))
 
 	request := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -42,15 +55,19 @@ func TestSchwabStatusResolvesClientAfterRuntimeReload(t *testing.T) {
 		t.Fatalf("status before loading Schwab: %d %s", response.Code, response.Body.String())
 	}
 
-	runtime.client = schwab.New(config.SchwabConfig{})
-	runtime.client.SetToken(schwab.Token{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)})
+	client := schwab.New(config.SchwabConfig{})
+	client.SetToken(schwab.Token{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)})
+	runtime.session = &testSchwabSession{Client: client}
 	if response := request(); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"authenticated":true`) {
 		t.Fatalf("status after loading Schwab: %d %s", response.Code, response.Body.String())
 	}
 
-	runtime.client = nil
+	runtime.session = nil
 	if response := request(); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"available":false`) {
 		t.Fatalf("status after unloading Schwab: %d %s", response.Code, response.Body.String())
+	}
+	if runtime.acquired != runtime.released {
+		t.Fatalf("session leases: acquired=%d released=%d", runtime.acquired, runtime.released)
 	}
 }
 

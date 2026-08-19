@@ -70,8 +70,10 @@ type currentBalances struct {
 	UnrealizedProfitLoss    float64 `json:"unrealizedProfitLoss"`
 }
 
-var _ broker.Broker = (*Client)(nil)
-var _ broker.AccountSnapshotProvider = (*Client)(nil)
+var _ broker.AccountProvider = (*Client)(nil)
+var _ broker.PositionProvider = (*Client)(nil)
+var _ broker.PerformanceProvider = (*Client)(nil)
+var _ broker.PortfolioProvider = (*Client)(nil)
 
 func (c *Client) BeginLogin(context.Context) (broker.LoginAction, error) {
 	_, authenticated := c.Token()

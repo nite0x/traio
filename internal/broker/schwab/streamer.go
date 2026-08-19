@@ -39,7 +39,11 @@ type streamManager struct {
 	cache       map[string]broker.Quote
 	status      StreamStatus
 	wakeup      chan struct{}
+	done        chan struct{}
+	exited      chan struct{}
 	startOnce   sync.Once
+	closeOnce   sync.Once
+	closed      bool
 }
 
 func newStreamManager(client *Client) *streamManager {
@@ -48,6 +52,8 @@ func newStreamManager(client *Client) *streamManager {
 		subscribers: make(map[uint64]streamSubscriber),
 		cache:       make(map[string]broker.Quote),
 		wakeup:      make(chan struct{}, 1),
+		done:        make(chan struct{}),
+		exited:      make(chan struct{}),
 	}
 }
 
@@ -61,6 +67,12 @@ func (c *Client) StreamStatus() StreamStatus {
 	return c.stream.currentStatus()
 }
 
+// Close stops this client's quote stream and releases all subscribers.
+func (c *Client) Close() error {
+	c.stream.close()
+	return nil
+}
+
 func (m *streamManager) subscribe(symbols []string) (<-chan broker.Quote, func()) {
 	set := symbolSet(symbols)
 	out := make(chan broker.Quote, 256)
@@ -70,6 +82,11 @@ func (m *streamManager) subscribe(symbols []string) (<-chan broker.Quote, func()
 	}
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		close(out)
+		return out, func() {}
+	}
 	m.nextID++
 	id := m.nextID
 	m.subscribers[id] = streamSubscriber{symbols: set, quotes: out}
@@ -90,12 +107,28 @@ func (m *streamManager) subscribe(symbols []string) (<-chan broker.Quote, func()
 	return out, func() {
 		once.Do(func() {
 			m.mu.Lock()
-			delete(m.subscribers, id)
-			close(out)
+			if _, exists := m.subscribers[id]; exists {
+				delete(m.subscribers, id)
+				close(out)
+			}
 			m.mu.Unlock()
 			m.wake()
 		})
 	}
+}
+
+func (m *streamManager) close() {
+	m.closeOnce.Do(func() {
+		m.mu.Lock()
+		m.closed = true
+		for id, subscriber := range m.subscribers {
+			delete(m.subscribers, id)
+			close(subscriber.quotes)
+		}
+		m.mu.Unlock()
+		close(m.done)
+		m.wake()
+	})
 }
 
 func (m *streamManager) wake() {
@@ -141,12 +174,23 @@ func (m *streamManager) desiredSymbols() []string {
 }
 
 func (m *streamManager) run() {
+	defer close(m.exited)
 	backoff := time.Second
 	for {
+		select {
+		case <-m.done:
+			m.setStatus(false, 0, nil)
+			return
+		default:
+		}
 		symbols := m.desiredSymbols()
 		if len(symbols) == 0 {
 			m.setStatus(false, 0, nil)
-			<-m.wakeup
+			select {
+			case <-m.wakeup:
+			case <-m.done:
+				return
+			}
 			continue
 		}
 
@@ -164,6 +208,11 @@ func (m *streamManager) run() {
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
+		case <-m.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
 		}
 	}
 }

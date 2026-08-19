@@ -57,18 +57,18 @@ func main() {
 
 	cfg := settingsMgr.Get()
 
-	brokers, err := runtime.BuildBrokers(cfg, st, baseDir)
+	connections, err := runtime.BuildConnectionManager(cfg, st, baseDir)
 	if err != nil {
 		log.Fatalf("brokers: %v", err)
 	}
-	brokerSync := runtime.BuildBrokerSync(st, brokers)
+	brokerSync := runtime.BuildBrokerSync(st, connections)
 	brokerSync.SetSyncConfig(cfg.BrokerSync)
-	accountEquity := runtime.BuildAccountEquity(brokers)
+	accountEquity := runtime.BuildAccountEquity(connections)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
 
 	settingsMgr.OnApply(func(updated config.Config) {
-		if err := brokers.ApplyConfig(context.Background(), updated); err != nil {
+		if err := connections.ApplyConfig(context.Background(), updated); err != nil {
 			log.Printf("apply broker config: %v", err)
 			return
 		}
@@ -83,7 +83,7 @@ func main() {
 	brokerSync.StartBackground(ctx, 0)
 
 	go func() {
-		if err := brokers.StartGateway(ctx); err != nil {
+		if err := connections.StartGateway(ctx); err != nil {
 			log.Printf("ibkr gateway: %v", err)
 			return
 		}
@@ -94,32 +94,30 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	startedAt := time.Now()
-	ibkrLoginProxy, err := api.NewIBKRLoginProxy(config.ResolveIBKRProxyURL(), brokers)
+	ibkrLoginProxy, err := api.NewIBKRLoginProxy(config.ResolveIBKRProxyURL(), connections)
 	if err != nil {
 		log.Fatalf("IBKR login proxy: %v", err)
 	}
 	deps := api.Deps{
-		Brokers:       st,
-		BrokerRuntime: brokers,
+		Brokers:     st,
+		Connections: connections,
 		OnBrokersChanged: func(ctx context.Context) error {
-			if err := brokers.Reload(ctx); err != nil {
+			if err := connections.Reload(ctx); err != nil {
 				return err
 			}
-			brokerSync.SetSources(brokers.SyncSources()...)
-			accountEquity.SetSources(brokers.AccountSources()...)
+			brokerSync.SetSources(connections.SyncSources()...)
+			accountEquity.SetSources(connections.AccountSources()...)
 			brokerSync.Invalidate()
 			return nil
 		},
 		Watchlists:      st,
 		CandleCache:     st,
 		Settings:        settingsMgr,
-		Schwab:          brokers.Schwab,
-		Alpaca:          brokers.Alpaca,
-		IBKR:            brokers.Gateway,
-		IBKRGateways:    brokers,
-		Instruments:     brokers.Instruments,
-		Quotes:          brokers.Quotes,
-		Candles:         brokers.Candles,
+		IBKR:            connections.DefaultGateway(),
+		IBKRGateways:    connections,
+		Instruments:     connections.MarketData,
+		Quotes:          connections.MarketData,
+		Candles:         connections.MarketData,
 		BrokerSync:      brokerSync,
 		Account:         accountEquity,
 		News:            newsSvc,
@@ -130,7 +128,7 @@ func main() {
 		RuntimeDir:      baseDir,
 		WebDir:          config.ResolveWebDir(),
 		Auth:            authService,
-		Trading:         brokers.Trading,
+		Trading:         connections.Trading,
 	}
 
 	addr := config.ResolveServerListenAddr()
@@ -178,7 +176,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
-	if err := brokers.ShutdownGateways(); err != nil {
+	if err := connections.ShutdownGateways(); err != nil {
 		log.Printf("shutdown IBKR gateways: %v", err)
 	}
 

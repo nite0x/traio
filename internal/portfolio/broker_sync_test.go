@@ -17,6 +17,7 @@ type fakeBroker struct {
 	balanceCalls     int
 	positionCalls    int
 	performanceCalls int
+	failList         bool
 	failAccount      string
 	positionVersion  string
 }
@@ -24,6 +25,15 @@ type fakeBroker struct {
 type fakeSnapshotBroker struct {
 	fakeBroker
 	snapshotCalls int
+}
+
+func testPortfolioProvider(t *testing.T, provider any) broker.PortfolioProvider {
+	t.Helper()
+	portfolio, ok := broker.AsPortfolioProvider(provider)
+	if !ok {
+		t.Fatalf("%T does not provide a complete portfolio capability", provider)
+	}
+	return portfolio
 }
 
 func (f *fakeSnapshotBroker) ListAccountSnapshots(context.Context) ([]broker.AccountSnapshot, error) {
@@ -47,6 +57,9 @@ func (f *fakeBroker) BeginLogin(context.Context) (broker.LoginAction, error) {
 
 func (f *fakeBroker) ListAccounts(context.Context) ([]broker.Account, error) {
 	f.listAccountCalls++
+	if f.failList {
+		return nil, errors.New("account discovery unavailable")
+	}
 	return []broker.Account{{ID: "U1"}, {ID: "U2"}}, nil
 }
 
@@ -88,7 +101,7 @@ func (f *fakeBroker) GetDailyPerformance(_ context.Context, accountID string) (b
 
 func TestSyncBrokerRefreshesEveryAccountCapability(t *testing.T) {
 	provider := &fakeBroker{}
-	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
+	svc := newTestSyncService(t, StaticSource("IBKR", 0, testPortfolioProvider(t, provider)))
 
 	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("sync broker snapshot: %v", err)
@@ -144,7 +157,7 @@ func TestSyncBrokerRefreshesEveryAccountCapability(t *testing.T) {
 
 func TestSyncBrokerPrefersConsistentAccountSnapshots(t *testing.T) {
 	provider := &fakeSnapshotBroker{}
-	svc := newTestSyncService(t, Source{Name: "SCHWAB", Broker: provider})
+	svc := newTestSyncService(t, StaticSource("SCHWAB", 0, testPortfolioProvider(t, provider)))
 
 	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("sync broker snapshot: %v", err)
@@ -177,7 +190,7 @@ func TestSyncBrokerPrefersConsistentAccountSnapshots(t *testing.T) {
 
 func TestFailedBrokerCapabilityKeepsPreviousSnapshot(t *testing.T) {
 	provider := &fakeBroker{}
-	svc := newTestSyncService(t, Source{Name: "IBKR", Broker: provider})
+	svc := newTestSyncService(t, StaticSource("IBKR", 0, testPortfolioProvider(t, provider)))
 	if err := svc.Sync(context.Background()); err != nil {
 		t.Fatalf("prime broker snapshot: %v", err)
 	}
@@ -208,6 +221,35 @@ func TestFailedBrokerCapabilityKeepsPreviousSnapshot(t *testing.T) {
 	assertSyncStatus(t, statuses, "U2", store.SyncDataPositions, "positions unavailable", 1)
 	assertSyncStatus(t, statuses, "U2", store.SyncDataCashBalances, "", 2)
 	assertSyncStatus(t, statuses, "U2", store.SyncDataDailyPerformance, "", 1)
+}
+
+func TestFailedSourceDoesNotBlockFollowingSource(t *testing.T) {
+	failing := &fakeBroker{failList: true}
+	healthy := &fakeBroker{}
+	svc := newTestSyncService(t,
+		StaticSource("IBKR", 0, testPortfolioProvider(t, failing)),
+		StaticSource("IBKR", 0, testPortfolioProvider(t, healthy)),
+	)
+
+	err := svc.Sync(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "account discovery unavailable") {
+		t.Fatalf("sync error = %v, want failing source error", err)
+	}
+	if healthy.listAccountCalls != 1 || healthy.detailCalls != 2 || healthy.positionCalls != 2 {
+		t.Fatalf("healthy source was blocked by previous failure: %#v", healthy)
+	}
+	statuses, statusErr := svc.SyncStatus(context.Background())
+	if statusErr != nil {
+		t.Fatalf("list sync statuses: %v", statusErr)
+	}
+	failingConnectionID := svc.sources[0].ConnectionID
+	for _, status := range statuses {
+		if status.ConnectionID == failingConnectionID && status.DataType == store.SyncDataAccounts &&
+			strings.Contains(status.LastError, "account discovery unavailable") {
+			return
+		}
+	}
+	t.Fatalf("missing account discovery error for connection %d: %#v", failingConnectionID, statuses)
 }
 
 func assertSyncStatus(

@@ -8,21 +8,14 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nite/traio/internal/broker/alpaca"
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/store"
 )
 
-type alpacaClientResolver func() *alpaca.Client
-
-type alpacaClientRuntime interface {
-	AlpacaClient() *alpaca.Client
-}
-
-func currentAlpacaClient(runtime brokerConnectionRuntime, fallback *alpaca.Client) alpacaClientResolver {
-	if dynamic, ok := runtime.(alpacaClientRuntime); ok {
-		return dynamic.AlpacaClient
-	}
-	return func() *alpaca.Client { return fallback }
+type alpacaStatusSession interface {
+	Configured() bool
+	LoginStatus(context.Context) (broker.LoginAction, error)
+	AccountSummary(context.Context) (broker.AccountSummary, error)
 }
 
 type alpacaConfigResponse struct {
@@ -170,10 +163,12 @@ func validateBrokerAPIBaseURL(raw string) error {
 	return nil
 }
 
-func alpacaStatus(resolve alpacaClientResolver) gin.HandlerFunc {
+func alpacaStatus(resolve brokerSessionResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client := resolve()
-		if client == nil {
+		session, release := resolve()
+		defer release()
+		client, ok := session.(alpacaStatusSession)
+		if !ok {
 			c.JSON(http.StatusOK, gin.H{"available": false, "configured": false})
 			return
 		}

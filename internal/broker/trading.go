@@ -64,9 +64,10 @@ func (s *TradingService) Replace(providers map[int64]TradingProvider) {
 	defer s.mu.Unlock()
 	s.providers = providers
 }
-func (s *TradingService) provider(connectionID int64) (TradingProvider, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+
+// providerLocked requires s.mu to be held for reading. Callers retain the lock
+// through the provider operation so Replace cannot retire an in-use session.
+func (s *TradingService) providerLocked(connectionID int64) (TradingProvider, error) {
 	p := s.providers[connectionID]
 	if p == nil {
 		return nil, fmt.Errorf("trading connection %d is unavailable", connectionID)
@@ -74,28 +75,36 @@ func (s *TradingService) provider(connectionID int64) (TradingProvider, error) {
 	return p, nil
 }
 func (s *TradingService) PlaceOrder(ctx context.Context, id int64, r OrderRequest) (Order, error) {
-	p, e := s.provider(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, e := s.providerLocked(id)
 	if e != nil {
 		return Order{}, e
 	}
 	return p.PlaceOrder(ctx, r)
 }
 func (s *TradingService) GetOrder(ctx context.Context, id int64, account, order string) (Order, error) {
-	p, e := s.provider(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, e := s.providerLocked(id)
 	if e != nil {
 		return Order{}, e
 	}
 	return p.GetOrder(ctx, account, order)
 }
 func (s *TradingService) ListOrders(ctx context.Context, id int64, q OrderQuery) ([]Order, error) {
-	p, e := s.provider(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, e := s.providerLocked(id)
 	if e != nil {
 		return nil, e
 	}
 	return p.ListOrders(ctx, q)
 }
 func (s *TradingService) CancelOrder(ctx context.Context, id int64, account, order string) error {
-	p, e := s.provider(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, e := s.providerLocked(id)
 	if e != nil {
 		return e
 	}

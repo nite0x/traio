@@ -104,6 +104,7 @@ OAuth token 保存在本地 SQLite `oauth_tokens` 表中，并在过期前自动
 ## 架构文档
 
 - [券商账户同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/broker-sync.md)
+- [券商接入架构与开发指南](docs/broker-integrations.md)
 - [统一资产身份与 instrument_id](https://github.com/nite0x/traio-doc/blob/main/docs/traio/instrument-identity.md)
 - [IBKR Client Portal Gateway 管理手册](https://github.com/nite0x/traio-doc/blob/main/docs/traio/ibkr-gateway-management.md)
 - [端到端加密设备同步架构](https://github.com/nite0x/traio-doc/blob/main/docs/traio/e2ee-device-sync.md)

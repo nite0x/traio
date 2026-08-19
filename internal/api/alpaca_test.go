@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/alpaca"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
@@ -19,7 +20,9 @@ import (
 
 type mutableAlpacaRuntime struct {
 	brokerConnectionRuntime
-	client *alpaca.Client
+	session  broker.BrokerSession
+	acquired int
+	released int
 }
 
 type alpacaRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -28,14 +31,24 @@ func (fn alpacaRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, erro
 	return fn(req)
 }
 
-func (r *mutableAlpacaRuntime) AlpacaClient() *alpaca.Client {
-	return r.client
+func (r *mutableAlpacaRuntime) AcquireDefaultSession(string) (broker.BrokerSession, func()) {
+	r.acquired++
+	return r.session, func() { r.released++ }
 }
+
+type testAlpacaSession struct{ *alpaca.Client }
+
+func (*testAlpacaSession) ConnectionID() int64  { return 1 }
+func (*testAlpacaSession) ProviderCode() string { return "ALPACA" }
+func (*testAlpacaSession) Health(context.Context) (broker.ConnectionHealth, error) {
+	return broker.ConnectionHealth{}, nil
+}
+func (*testAlpacaSession) Close(context.Context) error { return nil }
 
 func TestAlpacaStatusResolvesClientAfterRuntimeReload(t *testing.T) {
 	runtime := &mutableAlpacaRuntime{}
 	router := gin.New()
-	router.GET("/alpaca/status", alpacaStatus(currentAlpacaClient(runtime, nil)))
+	router.GET("/alpaca/status", alpacaStatus(currentBrokerSession(runtime, "ALPACA")))
 
 	request := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
@@ -45,7 +58,7 @@ func TestAlpacaStatusResolvesClientAfterRuntimeReload(t *testing.T) {
 	if response := request(); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"available":false`) {
 		t.Fatalf("status before loading Alpaca: %d %s", response.Code, response.Body.String())
 	}
-	runtime.client = alpaca.New(
+	client := alpaca.New(
 		config.AlpacaConfig{APIKey: "key", APISecret: "secret", BaseURL: "https://api.test"},
 		alpaca.WithHTTPClient(&http.Client{Transport: alpacaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -56,8 +69,12 @@ func TestAlpacaStatusResolvesClientAfterRuntimeReload(t *testing.T) {
 			}, nil
 		})}),
 	)
+	runtime.session = &testAlpacaSession{Client: client}
 	if response := request(); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"configured":true`) {
 		t.Fatalf("status after loading Alpaca: %d %s", response.Code, response.Body.String())
+	}
+	if runtime.acquired != runtime.released {
+		t.Fatalf("session leases: acquired=%d released=%d", runtime.acquired, runtime.released)
 	}
 }
 

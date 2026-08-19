@@ -48,7 +48,9 @@ type portfolioHistory struct {
 	Equity    []float64 `json:"equity"`
 }
 
-var _ broker.Broker = (*Client)(nil)
+var _ broker.AccountProvider = (*Client)(nil)
+var _ broker.PositionProvider = (*Client)(nil)
+var _ broker.PerformanceProvider = (*Client)(nil)
 
 func (c *Client) BeginLogin(ctx context.Context) (broker.LoginAction, error) {
 	return c.LoginStatus(ctx)

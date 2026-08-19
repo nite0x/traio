@@ -2,21 +2,6 @@ package broker
 
 import "context"
 
-// Broker is the minimum capability set required from a first-class broker
-// integration. Optional trading and market-data capabilities remain separate.
-type Broker interface {
-	LoginProvider
-	AccountProvider
-	PositionProvider
-	PerformanceProvider
-}
-
-// LoginProvider starts or resumes interactive broker authentication.
-// The application layer is responsible for opening LoginAction.URL.
-type LoginProvider interface {
-	BeginLogin(ctx context.Context) (LoginAction, error)
-}
-
 // AccountProvider exposes account discovery, metadata, and currency balances.
 type AccountProvider interface {
 	ListAccounts(ctx context.Context) ([]Account, error)
@@ -34,21 +19,16 @@ type PerformanceProvider interface {
 	GetDailyPerformance(ctx context.Context, accountID string) (DailyPerformance, error)
 }
 
-// AccountSnapshotProvider is an optional bulk capability for brokers that can
-// return all projection data in one upstream request. SyncService prefers this
-// over issuing one request per capability and account, so every stored resource
-// in a synchronization cycle is derived from the same broker snapshot.
-type AccountSnapshotProvider interface {
-	ListAccountSnapshots(ctx context.Context) ([]AccountSnapshot, error)
-}
-
-// AccountSnapshot contains the complete set of resources persisted by the
-// periodic broker synchronization loop for one account.
+// AccountSnapshot models the complete set of resources persisted by portfolio
+// synchronization. Consumers should call Resolve before reading its resources;
+// native bulk snapshots resolve without additional work.
 type AccountSnapshot struct {
 	Account          Account          `json:"account"`
 	CashBalances     []CashBalance    `json:"cash_balances"`
 	Positions        []Position       `json:"positions"`
 	DailyPerformance DailyPerformance `json:"daily_performance"`
+
+	resolve accountSnapshotResolver
 }
 
 // LoginAction describes the UI action needed to finish broker authentication.
