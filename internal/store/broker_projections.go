@@ -436,6 +436,15 @@ func (s *Store) listBrokerAccounts(ctx context.Context, connectionID *int64) ([]
 	if s.dialect == dialectPostgres {
 		connectionIDsAggregate = "STRING_AGG(ac.connection_id::text, ',' ORDER BY ac.connection_id)"
 	}
+	whereClause := ""
+	args := []any{}
+	if connectionID != nil {
+		whereClause = `WHERE EXISTS (
+			SELECT 1 FROM broker_account_connections requested
+			WHERE requested.account_id = a.id AND requested.connection_id = ?
+		)`
+		args = append(args, *connectionID)
+	}
 	query := fmt.Sprintf(`
 		SELECT a.id, a.provider_code, a.provider_account_id,
 			a.first_discovered_connection_id,
@@ -445,20 +454,13 @@ func (s *Store) listBrokerAccounts(ctx context.Context, connectionID *int64) ([]
 			a.first_discovered_at, a.last_seen_at, a.synced_at
 		FROM broker_accounts a
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id
-		WHERE (? IS NULL OR EXISTS (
-			SELECT 1 FROM broker_account_connections requested
-			WHERE requested.account_id = a.id AND requested.connection_id = ?
-		))
+		%s
 		GROUP BY a.id, a.provider_code, a.provider_account_id,
 			a.first_discovered_connection_id, a.masked_account_number,
 			a.display_name, a.account_type, a.status, a.currency,
 			a.first_discovered_at, a.last_seen_at, a.synced_at
-		ORDER BY a.provider_code, a.provider_account_id`, connectionIDsAggregate)
-	var filter any
-	if connectionID != nil {
-		filter = *connectionID
-	}
-	rows, err := s.queryContext(ctx, query, filter, filter)
+		ORDER BY a.provider_code, a.provider_account_id`, connectionIDsAggregate, whereClause)
+	rows, err := s.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
