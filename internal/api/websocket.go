@@ -11,17 +11,16 @@ import (
 	"github.com/nite/traio/internal/broker"
 )
 
-var upgrader = websocket.Upgrader{
-	Subprotocols: []string{"traio"},
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		return origin == "" || allowedOrigin(origin) || sameOrigin(origin, r)
-	},
-}
-
 // wsQuotes upgrades to WebSocket and forwards normalized Schwab quote updates.
-func wsQuotes(resolve brokerSessionResolver, authService *traioauth.Service) gin.HandlerFunc {
+func wsQuotes(resolve brokerSessionResolver, authService *traioauth.Service, allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"traio"},
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				return origin == "" || allowedOrigin(origin, allowedOrigins) || sameOrigin(origin, r)
+			},
+		}
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			return

@@ -439,15 +439,23 @@ func workspaceMemberIsOwner(c *gin.Context, service *traioauth.Service, workspac
 
 func setAuthCookies(c *gin.Context, service *traioauth.Service, sessionToken, csrfToken string, expiresAt time.Time) {
 	maxAge := int(time.Until(expiresAt).Seconds())
-	c.SetSameSite(http.SameSiteLaxMode)
+	setAuthCookieSameSite(c, service)
 	c.SetCookie(service.CookieName(), sessionToken, maxAge, "/", "", service.CookieSecure(), true)
 	c.SetCookie(service.CSRFCookieName(), csrfToken, maxAge, "/", "", service.CookieSecure(), false)
 }
 
 func clearAuthCookies(c *gin.Context, service *traioauth.Service) {
-	c.SetSameSite(http.SameSiteLaxMode)
+	setAuthCookieSameSite(c, service)
 	c.SetCookie(service.CookieName(), "", -1, "/", "", service.CookieSecure(), true)
 	c.SetCookie(service.CSRFCookieName(), "", -1, "/", "", service.CookieSecure(), false)
+}
+
+func setAuthCookieSameSite(c *gin.Context, service *traioauth.Service) {
+	if service.CookieSecure() {
+		c.SetSameSite(http.SameSiteNoneMode)
+		return
+	}
+	c.SetSameSite(http.SameSiteLaxMode)
 }
 
 func unsafeMethod(method string) bool {

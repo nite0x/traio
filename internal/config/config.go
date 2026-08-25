@@ -342,6 +342,20 @@ func ResolveAllowedAPIHosts() []string {
 	return hosts
 }
 
+// ResolveAllowedOrigins returns exact browser origins that may call the API
+// from a separately hosted web frontend. Origins are comma-separated and must
+// include their scheme, for example https://traio-web.vercel.app.
+func ResolveAllowedOrigins() []string {
+	parts := strings.Split(os.Getenv("TRAIO_ALLOWED_ORIGINS"), ",")
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if origin := strings.TrimRight(strings.TrimSpace(part), "/"); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
+}
+
 // ResolveIBKRProxyURL is the public origin dedicated to the IBKR login proxy,
 // for example https://alice-ibkr.traio.example.com.
 func ResolveIBKRProxyURL() string {

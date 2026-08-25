@@ -42,6 +42,7 @@ type Deps struct {
 	AI                   *ai.Service
 	APIToken             string
 	AllowedAPIHosts      []string
+	AllowedOrigins       []string
 	IBKRLoginProxy       *IBKRLoginProxy
 	RuntimeDir           string
 	WebDir               string
@@ -50,10 +51,10 @@ type Deps struct {
 	gatewayPortAvailable gatewayPortAvailableFunc
 }
 
-func corsMiddleware() gin.HandlerFunc {
+func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if origin != "" && !allowedOrigin(origin) && !sameOrigin(origin, c.Request) {
+		if origin != "" && !allowedOrigin(origin, allowedOrigins) && !sameOrigin(origin, c.Request) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin is not allowed"})
 			return
 		}
@@ -94,7 +95,7 @@ func sameOrigin(origin string, request *http.Request) bool {
 	return parsed.Path == "" && strings.EqualFold(parsed.Host, request.Host)
 }
 
-func allowedOrigin(origin string) bool {
+func allowedOrigin(origin string, configured []string) bool {
 	switch origin {
 	case "http://localhost:1420",
 		"http://127.0.0.1:1420",
@@ -104,9 +105,13 @@ func allowedOrigin(origin string) bool {
 		"http://tauri.localhost",
 		"https://tauri.localhost":
 		return true
-	default:
-		return false
 	}
+	for _, allowed := range configured {
+		if origin == strings.TrimRight(strings.TrimSpace(allowed), "/") {
+			return true
+		}
+	}
+	return false
 }
 
 func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
@@ -186,7 +191,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	if deps.IBKRLoginProxy != nil {
 		r.Use(deps.IBKRLoginProxy.Middleware())
 	}
-	r.Use(corsMiddleware())
+	r.Use(corsMiddleware(deps.AllowedOrigins))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
@@ -247,7 +252,7 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/orders", listOrders(deps.Trading))
 		v1.GET("/orders/:order_id", getOrder(deps.Trading))
 		v1.DELETE("/orders/:order_id", requirePermission(traioauth.PermissionTrade), cancelOrder(deps.Trading))
-		v1.GET("/ws", wsQuotes(resolveSchwab, deps.Auth))
+		v1.GET("/ws", wsQuotes(resolveSchwab, deps.Auth, deps.AllowedOrigins))
 		v1.GET("/schwab/config", schwabConfig(deps.Brokers))
 		v1.PUT("/schwab/config", requirePermission(traioauth.PermissionBrokerManage), saveSchwabConfig(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/schwab/status", schwabStatus(resolveSchwab))

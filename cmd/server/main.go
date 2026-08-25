@@ -124,6 +124,7 @@ func main() {
 		AI:              aiSvc,
 		APIToken:        apiToken,
 		AllowedAPIHosts: config.ResolveAllowedAPIHosts(),
+		AllowedOrigins:  config.ResolveAllowedOrigins(),
 		IBKRLoginProxy:  ibkrLoginProxy,
 		RuntimeDir:      baseDir,
 		WebDir:          config.ResolveWebDir(),

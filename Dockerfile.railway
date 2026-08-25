@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GO_VERSION=1.26
+
+FROM golang:${GO_VERSION}-bookworm AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/traio-server ./cmd/server
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates curl default-jre-headless lsof procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 traio \
+    && useradd --uid 10001 --gid 10001 --home-dir /var/lib/traio \
+        --create-home --shell /usr/sbin/nologin traio
+
+COPY --from=build /out/traio-server /usr/local/bin/traio-server
+
+ENV GIN_MODE=release \
+    TRAIO_DEPLOYMENT_MODE=server \
+    TRAIO_RUNTIME_DIR=/var/lib/traio \
+    TRAIO_LISTEN_ADDR=0.0.0.0:8080 \
+    TRAIO_IBKR_GATEWAY_LIFECYCLE=managed
+
+USER 10001:10001
+WORKDIR /var/lib/traio
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl --fail --silent --show-error http://127.0.0.1:8080/health >/dev/null || exit 1
+
+ENTRYPOINT ["/usr/local/bin/traio-server"]
