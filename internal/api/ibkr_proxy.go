@@ -44,7 +44,8 @@ type ibkrProxySession struct {
 }
 
 // IBKRLoginProxy exposes a Client Portal Gateway through a configured public
-// origin. A single-use ticket establishes a short-lived, HttpOnly proxy session.
+// URL. A single-use ticket establishes a short-lived, HttpOnly proxy session.
+// The URL may include a path prefix so the proxy can share the API origin.
 type IBKRLoginProxy struct {
 	externalURL *url.URL
 	resolver    ibkrGatewayTargetResolver
@@ -74,13 +75,15 @@ func NewIBKRLoginProxy(externalURL string, resolver ibkrGatewayTargetResolver) (
 		return nil, fmt.Errorf("IBKR proxy URL must use http or https")
 	}
 	if parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fmt.Errorf("IBKR proxy URL must be an origin without credentials, query, or fragment")
+		return nil, fmt.Errorf("IBKR proxy URL must not contain credentials, query, or fragment")
 	}
-	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
-		return nil, fmt.Errorf("IBKR proxy URL must not contain a path")
+	if parsed.RawPath != "" {
+		return nil, fmt.Errorf("IBKR proxy URL path must not contain escapes")
 	}
-	parsed.Path = ""
-	parsed.RawPath = ""
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if parsed.Path == "/" {
+		parsed.Path = ""
+	}
 	return &IBKRLoginProxy{
 		externalURL: parsed,
 		resolver:    resolver,
@@ -126,16 +129,16 @@ func (p *IBKRLoginProxy) IssueLoginURLForPrincipal(connectionID, workspaceID, us
 	p.mu.Unlock()
 
 	entry := *p.externalURL
-	entry.Path = "/login"
+	entry.Path = joinIBKRProxyPath(p.externalURL.Path, "/login")
 	entry.RawQuery = url.Values{"ticket": {token}}.Encode()
 	return entry.String(), nil
 }
 
-// Middleware dispatches the configured proxy host before the JSON API's CORS
-// and loopback Host checks. Other hosts continue through the normal router.
+// Middleware dispatches the configured proxy URL before the JSON API's CORS
+// and loopback Host checks. Other hosts and paths continue through the router.
 func (p *IBKRLoginProxy) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if p == nil || !sameHost(c.Request.Host, p.externalURL.Host) {
+		if p == nil || !p.shouldHandle(c.Request) {
 			c.Next()
 			return
 		}
@@ -149,11 +152,16 @@ func (p *IBKRLoginProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "IBKR proxy host is not allowed", http.StatusMisdirectedRequest)
 		return
 	}
-	if r.URL.Path == "/login" {
+	gatewayPath, ok := p.gatewayPath(r)
+	if !ok {
+		http.Error(w, "IBKR Gateway path is not available through the login proxy", http.StatusForbidden)
+		return
+	}
+	if gatewayPath == "/login" {
 		p.consumeLoginTicket(w, r)
 		return
 	}
-	if !allowedIBKRLoginPath(r.URL.Path) {
+	if !allowedIBKRLoginPath(gatewayPath) {
 		http.Error(w, "IBKR Gateway path is not available through the login proxy", http.StatusForbidden)
 		return
 	}
@@ -177,7 +185,42 @@ func (p *IBKRLoginProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "IBKR Gateway target is not allowed", http.StatusBadGateway)
 		return
 	}
-	p.reverseProxy(target).ServeHTTP(w, r)
+	proxyRequest := r.Clone(r.Context())
+	proxyURL := *r.URL
+	proxyURL.Path = gatewayPath
+	proxyURL.RawPath = ""
+	proxyRequest.URL = &proxyURL
+	p.reverseProxy(target).ServeHTTP(w, proxyRequest)
+}
+
+func (p *IBKRLoginProxy) shouldHandle(r *http.Request) bool {
+	if !sameHost(r.Host, p.externalURL.Host) {
+		return false
+	}
+	if _, ok := p.gatewayPath(r); !ok {
+		return false
+	}
+	return true
+}
+
+func (p *IBKRLoginProxy) gatewayPath(r *http.Request) (string, bool) {
+	prefix := p.externalURL.Path
+	requestPath := r.URL.Path
+	if prefix == "" {
+		return requestPath, true
+	}
+	if requestPath == prefix {
+		return "/", true
+	}
+	if strings.HasPrefix(requestPath, prefix+"/") {
+		return strings.TrimPrefix(requestPath, prefix), true
+	}
+	// Gateway pages use some absolute asset and form-action paths. Once a
+	// proxy session exists, dispatch only the narrow login allowlist for them.
+	if _, err := r.Cookie(ibkrProxyCookieName); err == nil && allowedIBKRLoginPath(requestPath) {
+		return requestPath, true
+	}
+	return "", false
 }
 
 // RevokeConnection removes browser entry points once status polling confirms
@@ -270,7 +313,7 @@ func (p *IBKRLoginProxy) consumeLoginTicket(w http.ResponseWriter, r *http.Reque
 	})
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	http.Redirect(w, r, "/sso/Login", http.StatusFound)
+	http.Redirect(w, r, joinIBKRProxyPath(p.externalURL.Path, "/sso/Login"), http.StatusFound)
 }
 
 func (p *IBKRLoginProxy) authorizeSession(r *http.Request) (int64, bool) {
@@ -309,7 +352,7 @@ func (p *IBKRLoginProxy) reverseProxy(target *url.URL) *httputil.ReverseProxy {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		req.Host = target.Host
-		stripProxySessionCookie(req)
+		stripTraioCookies(req)
 		// The Gateway is private. Do not forward client-controlled proxy headers.
 		req.Header.Del("Forwarded")
 		req.Header.Del("X-Forwarded-For")
@@ -350,13 +393,14 @@ func rewriteGatewayCookies(resp *http.Response, secureOrigin bool) {
 	}
 }
 
-func stripProxySessionCookie(req *http.Request) {
+func stripTraioCookies(req *http.Request) {
 	cookies := req.Cookies()
 	req.Header.Del("Cookie")
 	for _, cookie := range cookies {
-		if cookie.Name != ibkrProxyCookieName {
-			req.AddCookie(cookie)
+		if strings.HasPrefix(strings.ToLower(cookie.Name), "traio_") {
+			continue
 		}
+		req.AddCookie(cookie)
 	}
 }
 
@@ -366,12 +410,31 @@ func rewriteGatewayLocation(resp *http.Response, target, external *url.URL) {
 		return
 	}
 	parsed, err := url.Parse(location)
-	if err != nil || !parsed.IsAbs() || !sameHost(parsed.Host, target.Host) {
+	if err != nil {
 		return
 	}
-	parsed.Scheme = external.Scheme
-	parsed.Host = external.Host
+	if parsed.IsAbs() {
+		if !sameHost(parsed.Host, target.Host) {
+			return
+		}
+		parsed.Scheme = external.Scheme
+		parsed.Host = external.Host
+	} else if parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") {
+		return
+	}
+	parsed.Path = joinIBKRProxyPath(external.Path, parsed.Path)
 	resp.Header.Set("Location", parsed.String())
+}
+
+func joinIBKRProxyPath(prefix, suffix string) string {
+	prefix = strings.TrimRight(prefix, "/")
+	if suffix == "" || suffix == "/" {
+		if prefix == "" {
+			return "/"
+		}
+		return prefix + "/"
+	}
+	return prefix + "/" + strings.TrimLeft(suffix, "/")
 }
 
 func validateIBKRGatewayTarget(target *url.URL) error {

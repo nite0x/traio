@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/nite/traio/internal/broker"
 )
 
@@ -104,6 +105,82 @@ func TestIBKRLoginProxyUsesSingleUseTicketAndProxiesGateway(t *testing.T) {
 	setCookie := gatewayRes.Header().Get("Set-Cookie")
 	if strings.Contains(strings.ToLower(setCookie), "domain=") {
 		t.Fatalf("upstream cookie domain was not removed: %s", setCookie)
+	}
+}
+
+func TestIBKRLoginProxySupportsSharedAPIOriginPath(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sso/Login" {
+			t.Fatalf("upstream path: got %q", r.URL.Path)
+		}
+		for _, name := range []string{ibkrProxyCookieName, "traio_session", "traio_csrf"} {
+			if _, err := r.Cookie(name); err == nil {
+				t.Fatalf("Traio cookie %q leaked to Gateway", name)
+			}
+		}
+		if cookie, err := r.Cookie("JSESSIONID"); err != nil || cookie.Value != "gateway-session" {
+			t.Fatalf("Gateway cookie missing: %#v %v", cookie, err)
+		}
+		w.Header().Set("Location", upstream.URL+"/sso/Complete")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	proxy, err := NewIBKRLoginProxy("https://api.example.test/ibkr-login/", &fakeIBKRProxyRuntime{target: target, ibkr: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loginURL, err := proxy.IssueLoginURL(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(loginURL, "https://api.example.test/ibkr-login/login?ticket=") {
+		t.Fatalf("login URL: got %q", loginURL)
+	}
+	parsedLoginURL, _ := url.Parse(loginURL)
+	entryReq := httptest.NewRequest(http.MethodGet, parsedLoginURL.RequestURI(), nil)
+	entryReq.Host = "api.example.test"
+	entryRes := httptest.NewRecorder()
+	proxy.ServeHTTP(entryRes, entryReq)
+	if entryRes.Code != http.StatusFound || entryRes.Header().Get("Location") != "/ibkr-login/sso/Login" {
+		t.Fatalf("ticket exchange: got %d location=%q", entryRes.Code, entryRes.Header().Get("Location"))
+	}
+	proxySession := entryRes.Result().Cookies()[0]
+
+	gatewayReq := httptest.NewRequest(http.MethodGet, "/ibkr-login/sso/Login", nil)
+	gatewayReq.Host = "api.example.test"
+	gatewayReq.AddCookie(proxySession)
+	gatewayReq.AddCookie(&http.Cookie{Name: "traio_session", Value: "secret-session"})
+	gatewayReq.AddCookie(&http.Cookie{Name: "traio_csrf", Value: "secret-csrf"})
+	gatewayReq.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: "gateway-session"})
+	gatewayRes := httptest.NewRecorder()
+	proxy.ServeHTTP(gatewayRes, gatewayReq)
+	if gatewayRes.Code != http.StatusFound {
+		t.Fatalf("Gateway proxy: got %d %s", gatewayRes.Code, gatewayRes.Body.String())
+	}
+	if got := gatewayRes.Header().Get("Location"); got != "https://api.example.test/ibkr-login/sso/Complete" {
+		t.Fatalf("rewritten Location: got %q", got)
+	}
+}
+
+func TestIBKRLoginProxyPathMiddlewareDoesNotCaptureAPI(t *testing.T) {
+	target, _ := url.Parse("https://127.0.0.1:5680")
+	proxy, err := NewIBKRLoginProxy("https://api.example.test/ibkr-login", &fakeIBKRProxyRuntime{target: target, ibkr: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.Use(proxy.Middleware())
+	router.GET("/health", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Host = "api.example.test"
+	res := httptest.NewRecorder()
+	router.ServeHTTP(res, req)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("API request was captured by proxy: got %d %s", res.Code, res.Body.String())
 	}
 }
 
