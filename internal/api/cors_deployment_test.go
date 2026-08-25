@@ -20,6 +20,9 @@ func TestCORSMiddlewareAllowsConfiguredDeploymentOrigin(t *testing.T) {
 	if got := res.Header().Get("Access-Control-Allow-Origin"); got != "https://traio-web.vercel.app" {
 		t.Fatalf("Access-Control-Allow-Origin = %q", got)
 	}
+	if got := res.Header().Get("Access-Control-Expose-Headers"); got != "X-CSRF-Token" {
+		t.Fatalf("Access-Control-Expose-Headers = %q", got)
+	}
 }
 
 func TestCORSMiddlewareRejectsUnconfiguredDeploymentOrigin(t *testing.T) {

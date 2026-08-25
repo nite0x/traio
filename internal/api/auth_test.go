@@ -58,6 +58,15 @@ func TestSessionMiddlewareAuthenticatesAndRequiresCSRF(t *testing.T) {
 	if got := request(http.MethodGet, "/read", false); got != http.StatusNoContent {
 		t.Fatalf("authenticated read: got %d", got)
 	}
+	readWithCSRF := httptest.NewRequest(http.MethodGet, "/read", nil)
+	readWithCSRF.Host = "127.0.0.1:8080"
+	readWithCSRF.AddCookie(&http.Cookie{Name: service.CookieName(), Value: rawSession})
+	readWithCSRF.AddCookie(&http.Cookie{Name: service.CSRFCookieName(), Value: rawCSRF})
+	readResponse := httptest.NewRecorder()
+	router.ServeHTTP(readResponse, readWithCSRF)
+	if got := readResponse.Header().Get("X-CSRF-Token"); got != rawCSRF {
+		t.Fatalf("authenticated read CSRF header: got %q", got)
+	}
 	if got := request(http.MethodPost, "/write", false); got != http.StatusForbidden {
 		t.Fatalf("write without CSRF: got %d", got)
 	}
@@ -110,6 +119,9 @@ func TestPasswordLoginRouteSetsSessionCookies(t *testing.T) {
 				t.Fatal("CSRF cookie must be readable by the frontend")
 			}
 		}
+	}
+	if got := loginResponse.Header().Get("X-CSRF-Token"); got == "" || got != csrfToken {
+		t.Fatalf("login CSRF header=%q cookie=%q", got, csrfToken)
 	}
 
 	me := httptest.NewRequest(http.MethodGet, "/auth/me", nil)

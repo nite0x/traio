@@ -52,8 +52,11 @@ func sessionMiddleware(service *traioauth.Service, allowedHosts []string) gin.Ha
 			return
 		}
 		c.Set(authServiceKey, service)
+		csrfCookie, _ := c.Cookie(service.CSRFCookieName())
+		if csrfCookie != "" && service.ValidateCSRF(session, csrfCookie) {
+			c.Header("X-CSRF-Token", csrfCookie)
+		}
 		if unsafeMethod(c.Request.Method) {
-			csrfCookie, _ := c.Cookie(service.CSRFCookieName())
 			csrfHeader := c.GetHeader("X-CSRF-Token")
 			if csrfCookie == "" || csrfHeader == "" || csrfCookie != csrfHeader || !service.ValidateCSRF(session, csrfHeader) {
 				service.Audit(c.Request.Context(), store.AuditEvent{WorkspaceID: principal.WorkspaceID, UserID: principal.UserID, Action: "auth.csrf_rejected", RemoteAddr: c.ClientIP()})
@@ -222,6 +225,7 @@ func passwordLogin(service *traioauth.Service, allowedHosts []string, limiter *p
 		}
 		limiter.succeeded(remoteKey)
 		setAuthCookies(c, service, result.SessionToken, result.CSRFToken, result.ExpiresAt)
+		c.Header("X-CSRF-Token", result.CSRFToken)
 		service.Audit(c.Request.Context(), store.AuditEvent{WorkspaceID: result.Identity.Workspace.ID, UserID: result.Identity.User.ID, Action: "auth.login_succeeded", RemoteAddr: remoteKey})
 		c.Header("Cache-Control", "no-store")
 		c.Status(http.StatusNoContent)
