@@ -244,7 +244,8 @@ func (p *IBKRLoginProxy) RevokeConnection(connectionID int64) {
 }
 
 func allowedIBKRLoginPath(path string) bool {
-	if path == "/" {
+	switch path {
+	case "/", "/Authenticator", "/report":
 		return true
 	}
 	for _, prefix := range []string{

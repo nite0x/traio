@@ -184,6 +184,19 @@ func TestIBKRLoginProxyPathMiddlewareDoesNotCaptureAPI(t *testing.T) {
 	}
 }
 
+func TestAllowedIBKRLoginPathIncludesFormEndpoints(t *testing.T) {
+	for _, path := range []string{"/Authenticator", "/report"} {
+		if !allowedIBKRLoginPath(path) {
+			t.Fatalf("login form path %q must be allowed", path)
+		}
+	}
+	for _, path := range []string{"/v1/api/portfolio/accounts", "/api/v1/settings", "/Authenticator/extra", "/report/extra"} {
+		if allowedIBKRLoginPath(path) {
+			t.Fatalf("non-login path %q must remain blocked", path)
+		}
+	}
+}
+
 func TestIBKRLoginProxyRejectsNonLoopbackGateway(t *testing.T) {
 	target, _ := url.Parse("https://gateway.internal.example:5680")
 	proxy, err := NewIBKRLoginProxy("https://ibkr.example.test", &fakeIBKRProxyRuntime{target: target, ibkr: true})
