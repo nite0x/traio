@@ -30,7 +30,8 @@ api-url
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
 *.iml
 *.swp
 *.swo
@@ -40,10 +41,6 @@ api-url
 .env
 
 # IBKR Gateway bundle (ship locally, do not commit binaries)
-ibkr-gateway/
-ibkr-gateways/
-third_party/clientportal.gw/*
-!third_party/clientportal.gw/README.md
 
 # Runtime state
 *.audit.jsonl
@@ -52,3 +49,8 @@ third_party/clientportal.gw/*
 # Logs
 *.log
 *.pid
+# Legacy local Gateway data may still exist after migration. Never commit it.
+ibkr-gateway/
+ibkr-gateways/
+third_party/clientportal.gw/*
+!third_party/clientportal.gw/README.md

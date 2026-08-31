@@ -152,13 +152,6 @@ func TestIBKRPositionAssetType(t *testing.T) {
 	}
 }
 
-func TestGatewayLoginURL(t *testing.T) {
-	gateway := NewGatewayManager(config.IBKRConfig{GatewayURL: "https://localhost:5000/"})
-	if got := gateway.LoginURL(); got != "https://localhost:5000/sso/Login" {
-		t.Fatalf("unexpected login URL: %s", got)
-	}
-}
-
 func TestDailyPerformanceReusesOneIBKRSnapshotAcrossAccounts(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

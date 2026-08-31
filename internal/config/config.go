@@ -33,18 +33,6 @@ const (
 	PackagedServerPort = 0
 	// DevServerPort is used for local development (go run, make server, tauri dev).
 	DevServerPort = 38181
-	// DevIBKRGatewayPort keeps locally-run development Gateways on IBKR's
-	// conventional port.
-	DevIBKRGatewayPort = 5680
-	// DesktopIBKRGatewayPort starts the packaged desktop allocation range far
-	// enough from development to keep multiple Gateways isolated.
-	DesktopIBKRGatewayPort = 5780
-	// IBKRGatewayPortRangeSize is the number of automatically allocated ports
-	// reserved for one Traio runtime class.
-	IBKRGatewayPortRangeSize = 20
-
-	IBKRGatewayLifecycleManaged    = "managed"
-	IBKRGatewayLifecyclePersistent = "persistent"
 
 	DeploymentModeServer    = "server"
 	DefaultServerRuntimeDir = "/var/lib/traio"
@@ -160,23 +148,12 @@ type AlpacaConfig struct {
 }
 
 type IBKRConfig struct {
-	SubAccount        string `json:"sub_account" yaml:"sub_account"`
-	FlexToken         string `json:"flex_token" yaml:"flex_token"`
-	FlexQueryID       string `json:"flex_query_id" yaml:"flex_query_id"`
-	FlexBaseURL       string `json:"flex_base_url" yaml:"flex_base_url"`
-	GatewayDir        string `json:"gateway_dir" yaml:"gateway_dir"`
-	BundledGatewayDir string `json:"bundled_gateway_dir" yaml:"bundled_gateway_dir"`
-	GatewayPort       int    `json:"gateway_port" yaml:"gateway_port"`
-	GatewayURL        string `json:"gateway_url" yaml:"gateway_url"`
-	GatewayLifecycle  string `json:"gateway_lifecycle" yaml:"gateway_lifecycle"`
-	DownloadProxy     string `json:"download_proxy" yaml:"download_proxy"`
-	// GatewayProxyHost overrides the IBKR API endpoint in conf.yaml.
-	// Keep the official https://api.ibkr.com default unless IBKR documents
-	// another endpoint for the account type in use.
-	GatewayProxyHost string `json:"gateway_proxy_host" yaml:"gateway_proxy_host"`
-	// GatewayAllowIPs is the IP whitelist written into conf.yaml ips.allow.
-	// Defaults to ["127.0.0.1"] when empty.
-	GatewayAllowIPs []string `json:"gateway_allow_ips" yaml:"gateway_allow_ips"`
+	SubAccount   string `json:"sub_account" yaml:"sub_account"`
+	FlexToken    string `json:"flex_token" yaml:"flex_token"`
+	FlexQueryID  string `json:"flex_query_id" yaml:"flex_query_id"`
+	FlexBaseURL  string `json:"flex_base_url" yaml:"flex_base_url"`
+	GatewayURL   string `json:"gateway_url" yaml:"gateway_url"`
+	GatewayToken string `json:"gateway_token" yaml:"gateway_token"`
 }
 
 type FinnhubConfig struct {
@@ -227,45 +204,6 @@ func (c *AlpacaConfig) Normalize() {
 	c.BaseURL = base
 }
 
-func (c *IBKRConfig) normalize(baseDir string) {
-	c.resolvePath(&c.GatewayDir, baseDir)
-	c.resolvePath(&c.BundledGatewayDir, baseDir)
-	if c.GatewayDir == "" {
-		c.GatewayDir = DefaultIBKRGatewayDir(baseDir, "local")
-	}
-	if c.BundledGatewayDir == "" {
-		c.BundledGatewayDir = ResolveBundledGatewayDir()
-		if c.BundledGatewayDir == "" {
-			c.BundledGatewayDir = filepath.Join(baseDir, "third_party", "clientportal.gw")
-		}
-	}
-	if c.GatewayPort == 0 {
-		c.GatewayPort = ResolveIBKRGatewayPort()
-	}
-	if c.GatewayURL == "" {
-		c.GatewayURL = fmt.Sprintf("https://localhost:%d", c.GatewayPort)
-	}
-	c.GatewayURL = strings.TrimSuffix(strings.TrimRight(c.GatewayURL, "/"), "/v1/api")
-	c.GatewayLifecycle = NormalizeIBKRGatewayLifecycle(c.GatewayLifecycle)
-	if c.FlexBaseURL == "" {
-		c.FlexBaseURL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
-	}
-	c.FlexBaseURL = strings.TrimRight(c.FlexBaseURL, "/")
-	if c.GatewayProxyHost == "" {
-		c.GatewayProxyHost = "https://api.ibkr.com"
-	}
-	if len(c.GatewayAllowIPs) == 0 {
-		c.GatewayAllowIPs = []string{"127.0.0.1"}
-	}
-}
-
-func (c *IBKRConfig) resolvePath(p *string, baseDir string) {
-	if *p == "" || filepath.IsAbs(*p) {
-		return
-	}
-	*p = filepath.Join(baseDir, *p)
-}
-
 // ResolveServerPort picks the HTTP listen port for traio-server.
 // TRAIO_SERVER_PORT overrides; embedded .app binaries ask the OS for an
 // available port; everything else (go run, dev sidecar) uses DevServerPort.
@@ -283,35 +221,6 @@ func resolveServerPort(embedded bool) int {
 		return PackagedServerPort
 	}
 	return DevServerPort
-}
-
-// ResolveIBKRGatewayPort selects the default port for a newly managed local
-// Gateway. Persisted Gateway records remain authoritative once created.
-func ResolveIBKRGatewayPort() int {
-	return resolveIBKRGatewayPort(IsEmbedded())
-}
-
-// ResolveIBKRGatewayPortRange returns the inclusive automatic allocation range.
-// TRAIO_IBKR_GATEWAY_PORT overrides the first port in the range.
-func ResolveIBKRGatewayPortRange() (int, int) {
-	start := ResolveIBKRGatewayPort()
-	end := start + IBKRGatewayPortRangeSize - 1
-	if end > 65535 {
-		end = 65535
-	}
-	return start, end
-}
-
-func resolveIBKRGatewayPort(embedded bool) int {
-	if v := os.Getenv("TRAIO_IBKR_GATEWAY_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
-			return p
-		}
-	}
-	if embedded {
-		return DesktopIBKRGatewayPort
-	}
-	return DevIBKRGatewayPort
 }
 
 // LocalAPIURL builds a loopback base URL for the given port.
@@ -354,41 +263,6 @@ func ResolveAllowedOrigins() []string {
 		}
 	}
 	return origins
-}
-
-// ResolveIBKRProxyURL is the public origin dedicated to the IBKR login proxy,
-// for example https://alice-ibkr.traio.example.com.
-func ResolveIBKRProxyURL() string {
-	return strings.TrimRight(strings.TrimSpace(os.Getenv("TRAIO_IBKR_PROXY_URL")), "/")
-}
-
-// ResolveIBKRGatewayLifecycle selects how the Gateway behaves when Traio
-// exits. Packaged desktop builds preserve the local session; server and Docker
-// deployments own the Gateway for the lifetime of the Traio process.
-func ResolveIBKRGatewayLifecycle() string {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_IBKR_GATEWAY_LIFECYCLE")))
-	switch value {
-	case IBKRGatewayLifecycleManaged, IBKRGatewayLifecyclePersistent:
-		return value
-	case "":
-		if IsEmbedded() {
-			return IBKRGatewayLifecyclePersistent
-		}
-	}
-	return IBKRGatewayLifecycleManaged
-}
-
-// NormalizeIBKRGatewayLifecycle validates a connection override and otherwise
-// applies the process-level desktop/server default.
-func NormalizeIBKRGatewayLifecycle(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case IBKRGatewayLifecycleManaged:
-		return IBKRGatewayLifecycleManaged
-	case IBKRGatewayLifecyclePersistent:
-		return IBKRGatewayLifecyclePersistent
-	default:
-		return ResolveIBKRGatewayLifecycle()
-	}
 }
 
 // ResolveBootstrapDatabase selects the process database from the environment.
@@ -442,22 +316,6 @@ func DefaultDesktopRuntimeDir(home string) string {
 	return filepath.Join(home, "Library", "Application Support", "Traio")
 }
 
-// DefaultIBKRGatewayRoot contains all managed Gateway instances for one Traio
-// runtime. Each instance gets a stable directory derived from gateway_key.
-func DefaultIBKRGatewayRoot(runtimeDir string) string {
-	return filepath.Join(runtimeDir, "ibkr-gateways")
-}
-
-// DefaultIBKRGatewayDir returns an empty string when gatewayKey is unsafe to
-// use as a path component. Callers may still supply a validated absolute path.
-func DefaultIBKRGatewayDir(runtimeDir, gatewayKey string) string {
-	key := strings.TrimSpace(gatewayKey)
-	if key == "" || key == "." || key == ".." || filepath.IsAbs(key) || strings.ContainsAny(key, `/\`) {
-		return ""
-	}
-	return filepath.Join(DefaultIBKRGatewayRoot(runtimeDir), key)
-}
-
 // IsEmbedded reports whether this binary runs from a macOS .app bundle.
 func IsEmbedded() bool {
 	exe, err := os.Executable()
@@ -467,24 +325,6 @@ func IsEmbedded() bool {
 func isEmbeddedExecutable(exe string) bool {
 	return strings.Contains(exe, ".app/Contents/MacOS/") ||
 		strings.Contains(exe, ".app/Contents/Resources/")
-}
-
-// ResolveBundledGatewayDir locates the packaged IBKR gateway next to the executable.
-func ResolveBundledGatewayDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	candidates := []string{
-		filepath.Join(filepath.Dir(exe), "third_party", "clientportal.gw"),
-		filepath.Join(ResolveBaseDir(), "third_party", "clientportal.gw"),
-	}
-	for _, dir := range candidates {
-		if _, err := os.Stat(filepath.Join(dir, "bin", "run.sh")); err == nil {
-			return dir
-		}
-	}
-	return filepath.Join(ResolveRuntimeDir(), "third_party", "clientportal.gw")
 }
 
 // ResolveBaseDir picks project dir (dev) or binary dir (release).

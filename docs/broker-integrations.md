@@ -26,7 +26,10 @@ ConnectionManager → Portfolio / MarketData / Trading / Account services
 - `BrokerSession` 只强制提供连接 ID、provider code、健康状态和关闭操作。认证、持仓、行情与交易均为可选能力，不能通过一个大而全的 Broker 接口强制组合。
 - `ConnectionManager` 负责加载配置、复用或替换 Session、关闭旧 Session，并把能力注册到服务。这里不维护 IBKR、Schwab、Alpaca 等具体客户端 map，也不通过 provider `switch` 选择实现。
 - `MarketDataService` 支持按 `connection_id` 路由；未显式指定时，使用对应行情能力的默认连接并按确定性顺序回退。`TradingService` 始终要求明确的 `connection_id`。
-- IBKR Gateway 是独立的进程资源，由专用 Gateway registry 管理；它不等同于 IBKR broker connection。connection 只保存它要访问的 `gateway_url`。
+- IBKR Client Portal Gateway 的安装与生命周期完全在 Traio 之外管理。Traio 不接触
+  安装目录或 Java 进程；IBKR provider 保存 Gateway Manager origin 与管理 Token，
+  connection 必须选择 Manager 返回的实例，并保存该实例的 `gateway_id`、代理
+  `gateway_url` 与只写的 `gateway_token`。
 
 Session 可以嵌入或共享同一个底层 HTTP client、OAuth token、限流器和 WebSocket 管理器。拆分能力接口并不要求创建多套网络客户端。
 

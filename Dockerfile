@@ -41,12 +41,8 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
-        bash \
         ca-certificates \
         curl \
-        default-jre-headless \
-        lsof \
-        procps \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 traio \
     && useradd --uid 10001 --gid 10001 --home-dir /var/lib/traio \
@@ -61,8 +57,7 @@ ENV GIN_MODE=release \
     TRAIO_DEPLOYMENT_MODE=server \
     TRAIO_RUNTIME_DIR=/var/lib/traio \
     TRAIO_LISTEN_ADDR=0.0.0.0:8080 \
-    TRAIO_WEB_DIR=/opt/traio/web \
-    TRAIO_IBKR_GATEWAY_LIFECYCLE=managed
+    TRAIO_WEB_DIR=/opt/traio/web
 
 USER 10001:10001
 WORKDIR /var/lib/traio

@@ -20,7 +20,7 @@ import (
 	"github.com/nite/traio/internal/config"
 )
 
-// Client wraps IBKR Client Portal API (local Gateway).
+// Client wraps the IBKR Client Portal API at a configured external Gateway.
 type Client struct {
 	cfg        config.IBKRConfig
 	httpClient *http.Client
@@ -197,13 +197,13 @@ func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string
 func New(cfg config.IBKRConfig) *Client {
 	return &Client{
 		cfg:        cfg,
-		httpClient: newGatewayHTTPClient(cfg.GatewayURL, 15*time.Second),
+		httpClient: newGatewayHTTPClient(cfg.GatewayURL, cfg.GatewayToken, 15*time.Second),
 	}
 }
 
 func (c *Client) SetConfig(cfg config.IBKRConfig) {
 	c.cfg = cfg
-	c.httpClient = newGatewayHTTPClient(cfg.GatewayURL, 15*time.Second)
+	c.httpClient = newGatewayHTTPClient(cfg.GatewayURL, cfg.GatewayToken, 15*time.Second)
 	c.pnlMu.Lock()
 	c.pnlFetchedAt = time.Time{}
 	c.pnlSnapshot = nil

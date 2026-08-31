@@ -38,13 +38,6 @@ func main() {
 		return textResult(body, err)
 	})
 
-	s.AddTool(mcp.NewTool("traio_ibkr_gateway_status",
-		mcp.WithDescription("Get IBKR Client Portal Gateway status"),
-	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		body, err := getJSON(client, apiBase+"/api/v1/ibkr/gateway/status", apiToken)
-		return textResult(body, err)
-	})
-
 	s.AddTool(mcp.NewTool("traio_settings_get",
 		mcp.WithDescription("Get all Traio settings (API keys included)"),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

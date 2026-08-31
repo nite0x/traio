@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated and local-only paths"
+paths = [
+  '''(^|/)(\.claude|\.codegraph|\.cursor|\.idea|\.vscode|bin|data|dist|ibkr-gateway|ibkr-gateways|node_modules|website)(/|$)''',
+  '''(^|/)third_party/clientportal\.gw(/|$)''',
+]

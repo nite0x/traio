@@ -12,7 +12,7 @@ import (
 func TestFactoryOpensNormalizedGatewaySession(t *testing.T) {
 	session, err := NewFactory().Open(t.Context(), brokerapi.ConnectionConfig{
 		ID: 42, ProviderCode: "IBKR",
-		Config:  map[string]any{"gateway_url": "https://gateway.example.test/v1/api/"},
+		Config:  map[string]any{"gateway_id": "primary", "gateway_url": "https://gateway.example.test/v1/api/"},
 		Secrets: map[string]string{"flex_token": "secret"},
 	})
 	if err != nil {
@@ -29,7 +29,13 @@ func TestFactoryOpensNormalizedGatewaySession(t *testing.T) {
 
 func TestGatewaySessionExposesProviderNeutralAuthentication(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/api/tickle" {
+		if r.Header.Get("Authorization") != "Bearer proxy-secret" {
+			http.Error(w, "missing proxy authorization", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/api/tickle":
+		default:
 			http.NotFound(w, r)
 			return
 		}
@@ -38,7 +44,7 @@ func TestGatewaySessionExposesProviderNeutralAuthentication(t *testing.T) {
 	}))
 	defer server.Close()
 	sessionValue, err := NewFactory().Open(t.Context(), brokerapi.ConnectionConfig{
-		ID: 42, ProviderCode: "IBKR", Config: map[string]any{"gateway_url": server.URL},
+		ID: 42, ProviderCode: "IBKR", Config: map[string]any{"gateway_id": "primary", "gateway_url": server.URL}, Secrets: map[string]string{"gateway_token": "proxy-secret"},
 	})
 	if err != nil {
 		t.Fatalf("open session: %v", err)
@@ -59,7 +65,7 @@ func TestGatewaySessionExposesProviderNeutralAuthentication(t *testing.T) {
 
 func TestFactoryRejectsInvalidGatewayOrigin(t *testing.T) {
 	_, err := NewFactory().Open(t.Context(), brokerapi.ConnectionConfig{
-		ID: 1, Config: map[string]any{"gateway_url": "https://user@example.test/path?token=secret"},
+		ID: 1, Config: map[string]any{"gateway_id": "primary", "gateway_url": "https://user@example.test/path?token=secret"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "origin") {
 		t.Fatalf("Open error = %v", err)

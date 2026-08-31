@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -18,7 +17,7 @@ import (
 // context.Context in its public contract.
 type brokerStore interface {
 	store.BrokerCatalogRepository
-	store.IBKRGatewayRepository
+	store.BrokerRuntimeConfigRepository
 	ListBrokerAccounts(ctx context.Context) ([]store.BrokerAccount, error)
 	ListBrokerAccountsByConnection(ctx context.Context, connectionID int64) ([]store.BrokerAccount, error)
 }
@@ -27,7 +26,6 @@ type brokerConnectionRuntime interface {
 	BeginConnectionLogin(context.Context, int64, string) (broker.LoginAction, error)
 	ConnectionLoginStatus(context.Context, int64) (broker.LoginAction, error)
 	ExchangeConnectionOAuthCode(context.Context, int64, string) error
-	IBKRGatewayTarget(context.Context, int64) (*url.URL, bool, error)
 }
 
 // defaultBrokerSessionAcquirer is the provider-neutral bridge used by legacy
@@ -86,6 +84,10 @@ func updateBrokerProvider(st brokerStore, onChanged func(context.Context) error)
 		var req providerConfigRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if status, err := validateIBKRProviderUpdate(c.Request.Context(), st, c.Param("code"), req); err != nil {
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
 		provider, err := st.UpdateBrokerProviderConfig(c.Request.Context(), c.Param("code"), req.Config, req.Secrets)
@@ -155,6 +157,7 @@ type brokerConnectionRequest struct {
 	Config         map[string]any    `json:"config"`
 	Secrets        map[string]string `json:"secrets"`
 	Enabled        *bool             `json:"enabled"`
+	Status         string            `json:"-"`
 }
 
 func createBrokerConnection(st brokerStore, onChanged func(context.Context) error) gin.HandlerFunc {
@@ -172,11 +175,15 @@ func createBrokerConnection(st brokerStore, onChanged func(context.Context) erro
 		if req.Enabled != nil {
 			enabled = *req.Enabled
 		}
+		if status, err := prepareIBKRConnection(c.Request.Context(), st, c.Param("code"), 0, &req); err != nil {
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
 		connection, err := st.UpsertBrokerConnection(c.Request.Context(), store.BrokerConnection{
 			ProviderCode: c.Param("code"), ConnectionKey: req.ConnectionKey,
 			Name: req.Name, ProviderUserID: req.ProviderUserID, Username: req.Username,
 			Environment: req.Environment, AuthType: req.AuthType, Config: req.Config,
-			Secrets: req.Secrets, Enabled: enabled,
+			Secrets: req.Secrets, Enabled: enabled, Status: req.Status,
 		})
 		if err != nil {
 			writeBrokerStoreError(c, err)
@@ -216,11 +223,15 @@ func updateBrokerConnection(st brokerStore, onChanged func(context.Context) erro
 		if req.Enabled != nil {
 			enabled = *req.Enabled
 		}
+		if status, err := prepareIBKRConnection(c.Request.Context(), st, existing.ProviderCode, connectionID, &req); err != nil {
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
 		connection, err := st.UpsertBrokerConnection(c.Request.Context(), store.BrokerConnection{
 			ProviderCode: existing.ProviderCode, ConnectionKey: req.ConnectionKey,
 			Name: req.Name, ProviderUserID: req.ProviderUserID, Username: req.Username,
 			Environment: req.Environment, AuthType: req.AuthType, Config: req.Config,
-			Secrets: req.Secrets, Enabled: enabled,
+			Secrets: req.Secrets, Enabled: enabled, Status: req.Status,
 		})
 		if err != nil {
 			writeBrokerStoreError(c, err)
@@ -350,7 +361,7 @@ type connectionLoginRequest struct {
 	State string `json:"state"`
 }
 
-func beginBrokerConnectionLogin(catalog brokerStore, runtime brokerConnectionRuntime, proxy *IBKRLoginProxy, authService *traioauth.Service) gin.HandlerFunc {
+func beginBrokerConnectionLogin(catalog brokerStore, runtime brokerConnectionRuntime, authService *traioauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if runtime == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker runtime unavailable"})
@@ -387,28 +398,11 @@ func beginBrokerConnectionLogin(catalog brokerStore, runtime brokerConnectionRun
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		if proxy != nil && action.URL != "" {
-			target, isIBKR, targetErr := runtime.IBKRGatewayTarget(c.Request.Context(), connectionID)
-			if targetErr != nil {
-				c.JSON(http.StatusBadGateway, gin.H{"error": targetErr.Error()})
-				return
-			}
-			// The local login proxy is intentionally restricted to loopback
-			// Gateways. Remote endpoints keep their own login URL.
-			if isIBKR && validateIBKRGatewayTarget(target) == nil {
-				principal, _ := currentPrincipal(c)
-				action.URL, err = proxy.IssueLoginURLForPrincipal(connectionID, principal.WorkspaceID, principal.UserID)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-			}
-		}
 		c.JSON(http.StatusOK, action)
 	}
 }
 
-func brokerConnectionLoginStatus(runtime brokerConnectionRuntime, proxy *IBKRLoginProxy) gin.HandlerFunc {
+func brokerConnectionLoginStatus(runtime brokerConnectionRuntime) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if runtime == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker runtime unavailable"})
@@ -425,9 +419,6 @@ func brokerConnectionLoginStatus(runtime brokerConnectionRuntime, proxy *IBKRLog
 		}
 		// Polling status must never disclose the private Gateway URL.
 		action.URL = ""
-		if action.Authenticated && proxy != nil {
-			proxy.RevokeConnection(connectionID)
-		}
 		c.JSON(http.StatusOK, action)
 	}
 }

@@ -123,7 +123,7 @@ func TestRuntimeKeepsSchwabSingleQuotesSeparateFromIBKRContractData(t *testing.T
 	t.Cleanup(func() { _ = st.Close() })
 	ibkrConnection, err := st.UpsertBrokerConnection(t.Context(), store.BrokerConnection{
 		ProviderCode: "IBKR", ConnectionKey: "ibkr-market", Name: "IBKR market", Enabled: true,
-		Config: map[string]any{"gateway_url": "https://ibkr.example.test"},
+		Config: map[string]any{"gateway_id": "primary", "gateway_url": "https://ibkr.example.test"},
 	})
 	if err != nil {
 		t.Fatalf("create IBKR connection: %v", err)

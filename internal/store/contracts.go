@@ -68,16 +68,6 @@ type BrokerCatalogRepository interface {
 	DeleteBrokerConnection(context.Context, int64) error
 }
 
-// IBKRGatewayRepository manages locally-owned Client Portal Gateway instances.
-// Broker connections intentionally do not reference these records: they only
-// store the network address of whichever Gateway they use, local or remote.
-type IBKRGatewayRepository interface {
-	ListIBKRGateways(context.Context) ([]IBKRGateway, error)
-	GetIBKRGateway(context.Context, int64) (IBKRGateway, error)
-	UpsertIBKRGateway(context.Context, IBKRGateway) (IBKRGateway, error)
-	DeleteIBKRGateway(context.Context, int64) error
-}
-
 // BrokerRuntimeConfigRepository exposes write-only broker secrets only to the
 // in-process adapter registry. It must never be used by HTTP response DTOs.
 type BrokerRuntimeConfigRepository interface {
@@ -119,7 +109,6 @@ type Repository interface {
 	CandleCacheRepository
 	BrokerCatalogRepository
 	BrokerRuntimeConfigRepository
-	IBKRGatewayRepository
 	InstrumentRepository
 	PortfolioRepository
 	Close() error

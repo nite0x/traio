@@ -1,7 +1,4 @@
-.PHONY: server server-dev deps tidy build-server build-mcp build-binaries \
-        bundle-ibkr-gateway test
-
-IBKR_SRC ?= $(HOME)/Downloads/clientportal.gw
+.PHONY: server server-dev deps tidy build-server build-mcp build-binaries test
 
 BIN_DIR ?= bin
 
@@ -34,16 +31,6 @@ build-binaries: build-server
 
 test:
 	go test ./...
-
-# ── 工具 ────────────────────────────────────────────────────────────────────
-
-bundle-ibkr-gateway:
-	@test -d "$(IBKR_SRC)" || (echo "IBKR_SRC not found: $(IBKR_SRC)"; exit 1)
-	@test -f "$(IBKR_SRC)/bin/run.sh" || (echo "invalid gateway dir (missing bin/run.sh): $(IBKR_SRC)"; exit 1)
-	rm -rf third_party/clientportal.gw/*
-	mkdir -p third_party/clientportal.gw
-	cp -R "$(IBKR_SRC)/." third_party/clientportal.gw/
-	@echo "bundled IBKR gateway -> third_party/clientportal.gw"
 
 server-dev: build-server
 	TRAIO_RUNTIME_DIR="$(HOME)/Library/Application Support/Traio" bin/traio-server

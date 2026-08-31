@@ -70,14 +70,13 @@ var defaultBrokerProviders = []providerSeed{
 		displayInfo:  `{"short_name":"IBKR"}`,
 		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance"},
 		providerFields: []BrokerFieldDefinition{
-			{Key: "bundled_gateway_dir", Label: "内置 Gateway 目录", Type: "path"},
-			{Key: "download_proxy", Label: "下载代理", Type: "url"},
-			{Key: "gateway_proxy_host", Label: "Gateway 上游地址", Type: "url"},
-			{Key: "gateway_allow_ips", Label: "允许访问的 IP", Type: "string_list"},
+			{Key: "manager_url", Label: "Gateway Manager 地址", Type: "url", Required: true, Description: "IBKR Gateway Manager 的 HTTP(S) origin"},
+			{Key: "manager_api_token", Label: "Manager API Token", Type: "string", Secret: true, Description: "Gateway Manager 的 api_token"},
 		},
 		connectionFields: []BrokerFieldDefinition{
 			{Key: "username", Label: "登录用户名", Type: "string"},
-			{Key: "gateway_url", Label: "Gateway 地址", Type: "url", Required: true},
+			{Key: "gateway_id", Label: "Gateway 实例", Type: "string", Required: true, Description: "从 Gateway Manager 返回的实例中选择"},
+			{Key: "gateway_token", Label: "Gateway Proxy Token", Type: "string", Secret: true},
 			{Key: "flex_token", Label: "Flex Token", Type: "string", Secret: true},
 			{Key: "flex_query_id", Label: "Flex Query ID", Type: "string"},
 			{Key: "flex_base_url", Label: "Flex API 地址", Type: "url"},
@@ -719,18 +718,6 @@ CREATE TABLE IF NOT EXISTS broker_connections (
 	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	UNIQUE(provider_code, connection_key)
 );
-CREATE TABLE IF NOT EXISTS ibkr_gateways (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	gateway_key TEXT NOT NULL UNIQUE,
-	name TEXT NOT NULL DEFAULT '',
-	gateway_url TEXT NOT NULL UNIQUE,
-	gateway_dir TEXT NOT NULL UNIQUE,
-	gateway_port INTEGER NOT NULL UNIQUE,
-	lifecycle TEXT NOT NULL DEFAULT 'managed',
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 CREATE TABLE IF NOT EXISTS broker_accounts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	provider_code TEXT NOT NULL REFERENCES broker_providers(code) ON DELETE RESTRICT,
@@ -875,18 +862,6 @@ CREATE TABLE IF NOT EXISTS broker_connections (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	UNIQUE(provider_code, connection_key)
-);
-CREATE TABLE IF NOT EXISTS ibkr_gateways (
-	id BIGSERIAL PRIMARY KEY,
-	gateway_key TEXT NOT NULL UNIQUE,
-	name TEXT NOT NULL DEFAULT '',
-	gateway_url TEXT NOT NULL UNIQUE,
-	gateway_dir TEXT NOT NULL UNIQUE,
-	gateway_port INTEGER NOT NULL UNIQUE,
-	lifecycle TEXT NOT NULL DEFAULT 'managed',
-	enabled BOOLEAN NOT NULL DEFAULT TRUE,
-	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS broker_accounts (
 	id BIGSERIAL PRIMARY KEY,

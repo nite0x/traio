@@ -24,11 +24,7 @@ alpaca:
 
 ibkr:
   sub_account: ""
-  gateway_dir: ""
-  bundled_gateway_dir: "./third_party/clientportal.gw"
-  gateway_port: 5680
-  gateway_url: "https://localhost:5680"
-  download_proxy: ""
+  gateway_url: "https://127.0.0.1:5000"
 
 finnhub:
   api_key: ""

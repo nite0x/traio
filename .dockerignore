@@ -17,12 +17,12 @@ vendor
 *.pid
 *.lock
 
-ibkr-gateway
-ibkr-gateways
-third_party/clientportal.gw
 
 .DS_Store
 .idea
 .vscode
 artifacts
 design
+ibkr-gateway
+ibkr-gateways
+third_party/clientportal.gw

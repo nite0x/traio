@@ -25,30 +25,25 @@ import (
 )
 
 type Deps struct {
-	Brokers              brokerStore
-	Connections          brokerConnectionRuntime
-	OnBrokersChanged     func(context.Context) error
-	Watchlists           store.WatchlistRepository
-	CandleCache          store.CandleCacheRepository
-	Settings             *settings.Manager
-	IBKR                 broker.GatewayController
-	IBKRGateways         ibkrGatewayRuntime
-	Instruments          broker.InstrumentProvider
-	Quotes               broker.BatchMarketDataProvider
-	Candles              broker.CandleProvider
-	BrokerSync           *portfolio.SyncService
-	Account              *account.Service
-	News                 *news.Service
-	AI                   *ai.Service
-	APIToken             string
-	AllowedAPIHosts      []string
-	AllowedOrigins       []string
-	IBKRLoginProxy       *IBKRLoginProxy
-	RuntimeDir           string
-	WebDir               string
-	Auth                 *traioauth.Service
-	Trading              *broker.TradingService
-	gatewayPortAvailable gatewayPortAvailableFunc
+	Brokers          brokerStore
+	Connections      brokerConnectionRuntime
+	OnBrokersChanged func(context.Context) error
+	Watchlists       store.WatchlistRepository
+	CandleCache      store.CandleCacheRepository
+	Settings         *settings.Manager
+	Instruments      broker.InstrumentProvider
+	Quotes           broker.BatchMarketDataProvider
+	Candles          broker.CandleProvider
+	BrokerSync       *portfolio.SyncService
+	Account          *account.Service
+	News             *news.Service
+	AI               *ai.Service
+	APIToken         string
+	AllowedAPIHosts  []string
+	AllowedOrigins   []string
+	WebDir           string
+	Auth             *traioauth.Service
+	Trading          *broker.TradingService
 }
 
 func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
@@ -96,6 +91,16 @@ func sameOrigin(origin string, request *http.Request) bool {
 	return parsed.Path == "" && strings.EqualFold(parsed.Host, request.Host)
 }
 
+func normalizeRequestHost(value string) string {
+	value = strings.TrimSpace(value)
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		if (port == "80" || port == "443") && host != "" {
+			return strings.Trim(strings.ToLower(host), "[]")
+		}
+	}
+	return strings.Trim(strings.ToLower(value), "[]")
+}
+
 func allowedOrigin(origin string, configured []string) bool {
 	switch origin {
 	case "http://localhost:1420",
@@ -131,14 +136,8 @@ func localAPIMiddleware(token string, allowedHosts ...string) gin.HandlerFunc {
 			return
 		}
 
-		// The browser login entry is a side-effect-free redirect. All data and
-		// control endpoints require the runtime token. WebSockets cannot attach
-		// an Authorization header, so only that route accepts it as a subprotocol.
-		if c.Request.Method == http.MethodGet && c.FullPath() == "/api/v1/ibkr/gateway/login" {
-			setPrincipal(c, traioauth.LocalPrincipal())
-			c.Next()
-			return
-		}
+		// WebSockets cannot attach an Authorization header, so that route accepts
+		// the runtime token as a subprotocol.
 		candidate := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		if c.FullPath() == "/api/v1/ws" && candidate == "" {
 			candidate = websocketToken(c.GetHeader("Sec-WebSocket-Protocol"))
@@ -183,23 +182,14 @@ func isLoopbackAPIHost(host string) bool {
 }
 
 func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
-	portAvailable := deps.gatewayPortAvailable
-	if portAvailable == nil {
-		portAvailable = loopbackGatewayPortAvailable
-	}
 	r := gin.New()
 	r.Use(gin.Recovery(), secureLogger())
-	if deps.IBKRLoginProxy != nil {
-		r.Use(deps.IBKRLoginProxy.Middleware())
-	}
 	r.Use(corsMiddleware(deps.AllowedOrigins))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "traio"})
 	})
 	registerAuthRoutes(r, deps)
-	admin := r.Group("", authenticationMiddleware(deps), requirePermission(traioauth.PermissionSystem))
-	registerAdminRoutes(admin)
 
 	v1 := r.Group("/api/v1", authenticationMiddleware(deps), requirePermission(traioauth.PermissionView))
 	resolveSchwab := currentBrokerSession(deps.Connections, "SCHWAB")
@@ -207,31 +197,21 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 	{
 		v1.GET("/brokers", listBrokerProviders(deps.Brokers))
 		v1.PUT("/brokers/:code", requirePermission(traioauth.PermissionBrokerManage), updateBrokerProvider(deps.Brokers, deps.OnBrokersChanged))
+		v1.GET("/brokers/IBKR/manager/health", requirePermission(traioauth.PermissionBrokerManage), ibkrManagerHealth(deps.Brokers))
+		v1.GET("/brokers/IBKR/manager/gateways", requirePermission(traioauth.PermissionBrokerManage), listIBKRManagerGateways(deps.Brokers))
+		v1.GET("/brokers/IBKR/manager/gateways/:gateway_id/status", requirePermission(traioauth.PermissionBrokerManage), getIBKRManagerGatewayStatus(deps.Brokers))
 		v1.GET("/broker-connections", listBrokerConnections(deps.Brokers))
 		v1.GET("/broker-connections/:connection_id", getBrokerConnection(deps.Brokers))
 		v1.POST("/brokers/:code/connections", requirePermission(traioauth.PermissionBrokerManage), createBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
 		v1.PUT("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), updateBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-connections/:connection_id/delete-impact", brokerConnectionDeleteImpact(deps.Brokers))
 		v1.DELETE("/broker-connections/:connection_id", requirePermission(traioauth.PermissionBrokerManage), deleteBrokerConnection(deps.Brokers, deps.OnBrokersChanged))
-		v1.POST("/broker-connections/:connection_id/login", requirePermission(traioauth.PermissionBrokerManage), beginBrokerConnectionLogin(deps.Brokers, deps.Connections, deps.IBKRLoginProxy, deps.Auth))
-		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.Connections, deps.IBKRLoginProxy))
+		v1.POST("/broker-connections/:connection_id/login", requirePermission(traioauth.PermissionBrokerManage), beginBrokerConnectionLogin(deps.Brokers, deps.Connections, deps.Auth))
+		v1.GET("/broker-connections/:connection_id/auth/status", brokerConnectionLoginStatus(deps.Connections))
 		v1.POST("/broker-connections/:connection_id/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), exchangeBrokerConnectionOAuthCode(deps.Connections))
 		v1.GET("/broker-connections/:connection_id/accounts", listBrokerConnectionAccounts(deps.Brokers))
 		v1.POST("/broker-connections/:connection_id/sync", requirePermission(traioauth.PermissionBrokerSync), syncBrokerConnection(deps.Brokers, deps.BrokerSync))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
-		v1.GET("/ibkr/gateways", listIBKRGateways(deps.Brokers))
-		v1.POST("/ibkr/gateways", requirePermission(traioauth.PermissionBrokerManage), createIBKRGateway(deps.Brokers, deps.OnBrokersChanged, deps.RuntimeDir, portAvailable))
-		v1.GET("/ibkr/gateways/defaults", ibkrGatewayDefaults(deps.Brokers, deps.RuntimeDir, portAvailable))
-		v1.GET("/ibkr/gateways/:gateway_id", getIBKRGateway(deps.Brokers))
-		v1.PUT("/ibkr/gateways/:gateway_id", requirePermission(traioauth.PermissionBrokerManage), updateIBKRGateway(deps.Brokers, deps.OnBrokersChanged))
-		v1.DELETE("/ibkr/gateways/:gateway_id", requirePermission(traioauth.PermissionBrokerManage), deleteIBKRGateway(deps.Brokers, deps.IBKRGateways, deps.OnBrokersChanged, deps.RuntimeDir))
-		v1.GET("/ibkr/gateways/:gateway_id/status", ibkrManagedGatewayStatus(deps.IBKRGateways))
-		v1.GET("/ibkr/gateways/:gateway_id/login", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayLogin(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/start", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayStart(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/stop", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayStop(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/reconnect", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayReconnect(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/upgrade", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayUpgrade(deps.IBKRGateways))
-		v1.POST("/ibkr/gateways/:gateway_id/rollback", requirePermission(traioauth.PermissionBrokerManage), ibkrManagedGatewayRollback(deps.IBKRGateways))
 		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Watchlists))
 		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Watchlists))
 		v1.POST("/watchlist/groups/:group_id/items", requirePermission(traioauth.PermissionWatchlistWrite), upsertWatchlistItem(deps.Watchlists))
@@ -262,14 +242,6 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/alpaca/config", alpacaConfiguration(deps.Brokers))
 		v1.PUT("/alpaca/config", requirePermission(traioauth.PermissionBrokerManage), saveAlpacaConfiguration(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/alpaca/status", alpacaStatus(resolveAlpaca))
-
-		v1.GET("/ibkr/gateway/status", ibkrGatewayStatus(deps.IBKR))
-		v1.GET("/ibkr/gateway/login", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayLogin(deps.IBKR))
-		v1.POST("/ibkr/gateway/start", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayStart(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/stop", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayStop(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/reconnect", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayReconnect(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/upgrade", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayUpgrade(deps.IBKR, deps.BrokerSync))
-		v1.POST("/ibkr/gateway/rollback", requirePermission(traioauth.PermissionBrokerManage), ibkrGatewayRollback(deps.IBKR, deps.BrokerSync))
 
 		v1.GET("/server/status", serverStatus(serverCtrl))
 		v1.POST("/server/shutdown", requirePermission(traioauth.PermissionSystem), serverShutdown(serverCtrl))
@@ -868,127 +840,4 @@ func marketDataCapabilityUnavailable(provider any, capability broker.MarketDataC
 		Supports(broker.MarketDataCapability) bool
 	})
 	return ok && !availability.Supports(capability)
-}
-
-func ibkrGatewayStatus(gw broker.GatewayController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusOK, gin.H{
-				"running":             false,
-				"authenticated":       false,
-				"account":             "",
-				"session_age_seconds": 0,
-			})
-			return
-		}
-		c.JSON(http.StatusOK, gw.Status())
-	}
-}
-
-// ibkrGatewayLogin is a browser entry point for manual IBKR authentication.
-// Credentials and 2FA stay on the Gateway-hosted IBKR page; Traio only makes
-// sure the local Gateway is available before redirecting the browser to it.
-func ibkrGatewayLogin(gw broker.GatewayController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		loginURL := strings.TrimSpace(gw.LoginURL())
-		if loginURL == "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway login URL is not available"})
-			return
-		}
-		c.Redirect(http.StatusFound, loginURL)
-	}
-}
-
-func ibkrGatewayReconnect(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		if brokerSync != nil {
-			brokerSync.Invalidate()
-		}
-		if err := gw.Reconnect(); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "reconnected"})
-	}
-}
-
-func ibkrGatewayStart(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		if brokerSync != nil {
-			brokerSync.Invalidate()
-		}
-		if err := gw.StartGateway(context.Background()); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "started"})
-	}
-}
-
-func ibkrGatewayStop(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		if brokerSync != nil {
-			brokerSync.Invalidate()
-		}
-		keepSession := c.Query("keep_session") == "true"
-		if err := gw.StopGateway(keepSession); err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
-		status := "stopped"
-		if keepSession {
-			status = "detached"
-		}
-		c.JSON(http.StatusOK, gin.H{"status": status})
-	}
-}
-
-func ibkrGatewayUpgrade(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		if brokerSync != nil {
-			brokerSync.Invalidate()
-		}
-		if err := gw.Upgrade(c.Request.Context()); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "upgraded"})
-	}
-}
-
-func ibkrGatewayRollback(gw broker.GatewayController, brokerSync *portfolio.SyncService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if gw == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ibkr gateway not configured"})
-			return
-		}
-		if brokerSync != nil {
-			brokerSync.Invalidate()
-		}
-		if err := gw.Rollback(c.Request.Context()); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "rolled_back"})
-	}
 }

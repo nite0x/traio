@@ -82,22 +82,10 @@ func main() {
 	defer cancel()
 	brokerSync.StartBackground(ctx, 0)
 
-	go func() {
-		if err := connections.StartGateway(ctx); err != nil {
-			log.Printf("ibkr gateway: %v", err)
-			return
-		}
-		brokerSync.Invalidate()
-	}()
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	startedAt := time.Now()
-	ibkrLoginProxy, err := api.NewIBKRLoginProxy(config.ResolveIBKRProxyURL(), connections)
-	if err != nil {
-		log.Fatalf("IBKR login proxy: %v", err)
-	}
 	deps := api.Deps{
 		Brokers:     st,
 		Connections: connections,
@@ -113,8 +101,6 @@ func main() {
 		Watchlists:      st,
 		CandleCache:     st,
 		Settings:        settingsMgr,
-		IBKR:            connections.DefaultGateway(),
-		IBKRGateways:    connections,
 		Instruments:     connections.MarketData,
 		Quotes:          connections.MarketData,
 		Candles:         connections.MarketData,
@@ -125,8 +111,6 @@ func main() {
 		APIToken:        apiToken,
 		AllowedAPIHosts: config.ResolveAllowedAPIHosts(),
 		AllowedOrigins:  config.ResolveAllowedOrigins(),
-		IBKRLoginProxy:  ibkrLoginProxy,
-		RuntimeDir:      baseDir,
 		WebDir:          config.ResolveWebDir(),
 		Auth:            authService,
 		Trading:         connections.Trading,
@@ -163,9 +147,6 @@ func main() {
 	srv := &http.Server{Handler: router}
 	go func() {
 		log.Printf("traio server listening on %s (%s)", addr, apiURL)
-		if ibkrLoginProxy != nil {
-			log.Printf("IBKR login proxy enabled at %s", ibkrLoginProxy.ExternalURL())
-		}
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
@@ -177,9 +158,5 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
-	if err := connections.ShutdownGateways(); err != nil {
-		log.Printf("shutdown IBKR gateways: %v", err)
-	}
-
 	runtime.RemovePID(baseDir)
 }

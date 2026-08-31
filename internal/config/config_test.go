@@ -27,39 +27,6 @@ func TestPackagedServerPortUsesSystemAssignment(t *testing.T) {
 	}
 }
 
-func TestResolveIBKRGatewayPortDefaultsByRuntime(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "")
-	if got := resolveIBKRGatewayPort(false); got != DevIBKRGatewayPort {
-		t.Fatalf("got %d, want %d", got, DevIBKRGatewayPort)
-	}
-	if got := resolveIBKRGatewayPort(true); got != DesktopIBKRGatewayPort {
-		t.Fatalf("got %d, want %d", got, DesktopIBKRGatewayPort)
-	}
-}
-
-func TestResolveIBKRGatewayPortRange(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "6200")
-	start, end := ResolveIBKRGatewayPortRange()
-	if start != 6200 || end != 6219 {
-		t.Fatalf("got %d-%d, want 6200-6219", start, end)
-	}
-}
-
-func TestResolveIBKRGatewayPortRangeCapsAtMaximumPort(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "65530")
-	start, end := ResolveIBKRGatewayPortRange()
-	if start != 65530 || end != 65535 {
-		t.Fatalf("got %d-%d, want 65530-65535", start, end)
-	}
-}
-
-func TestResolveIBKRGatewayPortEnvOverride(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_PORT", "5688")
-	if got := ResolveIBKRGatewayPort(); got != 5688 {
-		t.Fatalf("got %d, want %d", got, 5688)
-	}
-}
-
 func TestEmbeddedExecutableLocations(t *testing.T) {
 	for _, path := range []string{
 		"/Applications/Traio.app/Contents/MacOS/traio-server",
@@ -95,60 +62,11 @@ func TestResolveAllowedAPIHosts(t *testing.T) {
 	}
 }
 
-func TestResolveIBKRProxyURL(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_PROXY_URL", " https://ibkr.example.com/ ")
-	if got := ResolveIBKRProxyURL(); got != "https://ibkr.example.com" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestResolveIBKRGatewayLifecycle(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "persistent")
-	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecyclePersistent {
-		t.Fatalf("got %q", got)
-	}
-
-	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "managed")
-	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecycleManaged {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestResolveIBKRGatewayLifecycleInvalidDefaultsToManaged(t *testing.T) {
-	t.Setenv("TRAIO_IBKR_GATEWAY_LIFECYCLE", "invalid")
-	if got := ResolveIBKRGatewayLifecycle(); got != IBKRGatewayLifecycleManaged {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestDefaultGatewayDirectories(t *testing.T) {
+func TestDefaultDesktopRuntimeDir(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "alice")
-	desktopRuntime := DefaultDesktopRuntimeDir(home)
-	if want := filepath.Join(home, "Library", "Application Support", "Traio"); desktopRuntime != want {
-		t.Fatalf("desktop runtime: got %q, want %q", desktopRuntime, want)
-	}
-	if got, want := DefaultIBKRGatewayDir(desktopRuntime, "paper-local"), filepath.Join(desktopRuntime, "ibkr-gateways", "paper-local"); got != want {
-		t.Fatalf("desktop Gateway: got %q, want %q", got, want)
-	}
-	if got, want := DefaultIBKRGatewayDir(DefaultServerRuntimeDir, "live"), filepath.Join(DefaultServerRuntimeDir, "ibkr-gateways", "live"); got != want {
-		t.Fatalf("server Gateway: got %q, want %q", got, want)
-	}
-}
-
-func TestDefaultConfigUsesManagedGatewayRoot(t *testing.T) {
-	runtimeDir := t.TempDir()
-	cfg := IBKRConfig{}
-	cfg.normalize(runtimeDir)
-	if got, want := cfg.GatewayDir, DefaultIBKRGatewayDir(runtimeDir, "local"); got != want {
-		t.Fatalf("default Gateway directory: got %q, want %q", got, want)
-	}
-}
-
-func TestDefaultIBKRGatewayDirRejectsUnsafeKey(t *testing.T) {
-	for _, key := range []string{"", ".", "..", "../outside", "nested/gateway", `nested\gateway`, "/absolute"} {
-		if got := DefaultIBKRGatewayDir(t.TempDir(), key); got != "" {
-			t.Fatalf("key %q produced unsafe default %q", key, got)
-		}
+	want := filepath.Join(home, "Library", "Application Support", "Traio")
+	if got := DefaultDesktopRuntimeDir(home); got != want {
+		t.Fatalf("desktop runtime: got %q, want %q", got, want)
 	}
 }
 

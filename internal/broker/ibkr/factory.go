@@ -28,14 +28,13 @@ func (*Factory) Definition() brokerapi.ProviderDefinition {
 		),
 		ConfigSchema: brokerapi.ConfigSchema{
 			ProviderFields: []brokerapi.ConfigField{
-				{Key: "bundled_gateway_dir", Label: "内置 Gateway 目录", Type: "path"},
-				{Key: "download_proxy", Label: "下载代理", Type: "url"},
-				{Key: "gateway_proxy_host", Label: "Gateway 上游地址", Type: "url"},
-				{Key: "gateway_allow_ips", Label: "允许访问的 IP", Type: "string_list"},
+				{Key: "manager_url", Label: "Gateway Manager 地址", Type: "url", Required: true},
+				{Key: "manager_api_token", Label: "Manager API Token", Type: "string", Secret: true},
 			},
 			ConnectionFields: []brokerapi.ConfigField{
 				{Key: "username", Label: "登录用户名", Type: "string"},
-				{Key: "gateway_url", Label: "Gateway 地址", Type: "url", Required: true},
+				{Key: "gateway_id", Label: "Gateway 实例", Type: "string", Required: true},
+				{Key: "gateway_token", Label: "Gateway Proxy Token", Type: "string", Secret: true},
 				{Key: "flex_token", Label: "Flex Token", Type: "string", Secret: true},
 				{Key: "flex_query_id", Label: "Flex Query ID", Type: "string"},
 				{Key: "flex_base_url", Label: "Flex API 地址", Type: "url"},
@@ -53,6 +52,9 @@ func (*Factory) Open(_ context.Context, connection brokerapi.ConnectionConfig) (
 }
 
 func connectionConfig(connection brokerapi.ConnectionConfig) (config.IBKRConfig, error) {
+	if configString(connection.Config, "gateway_id") == "" {
+		return config.IBKRConfig{}, errors.New("gateway_id is required")
+	}
 	gatewayURL := strings.TrimSuffix(strings.TrimRight(configString(connection.Config, "gateway_url"), "/"), "/v1/api")
 	if gatewayURL == "" {
 		return config.IBKRConfig{}, errors.New("gateway_url is required")
@@ -70,7 +72,7 @@ func connectionConfig(connection brokerapi.ConnectionConfig) (config.IBKRConfig,
 	}
 	return config.IBKRConfig{
 		FlexToken: connection.Secrets["flex_token"], FlexQueryID: configString(connection.Config, "flex_query_id"),
-		FlexBaseURL: flexBaseURL, GatewayURL: gatewayURL,
+		FlexBaseURL: flexBaseURL, GatewayURL: gatewayURL, GatewayToken: connection.Secrets["gateway_token"],
 	}, nil
 }
 
@@ -92,12 +94,6 @@ var _ brokerapi.AccountEquityProvider = (*Session)(nil)
 func (s *Session) ConnectionID() int64       { return s.id }
 func (*Session) ProviderCode() string        { return "IBKR" }
 func (*Session) Close(context.Context) error { return nil }
-
-// GatewayTarget exposes the private Client Portal origin to the runtime's
-// IBKR login proxy without leaking the concrete client type.
-func (s *Session) GatewayTarget() (*url.URL, error) {
-	return url.Parse(s.BaseURL())
-}
 
 func (s *Session) BeginAuthentication(ctx context.Context, _ brokerapi.AuthenticationRequest) (brokerapi.LoginAction, error) {
 	action, err := s.BeginLogin(ctx)

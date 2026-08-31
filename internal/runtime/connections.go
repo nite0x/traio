@@ -2,12 +2,8 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,15 +33,11 @@ type ConnectionManager struct {
 	providers      *broker.ProviderRegistry
 	sessions       map[int64]broker.BrokerSession
 	sessionConfigs map[int64]broker.ConnectionConfig
-
-	ibkrGateways      map[int64]*ibkr.GatewayManager
-	ibkrGatewayConfig map[int64]config.IBKRConfig
 }
 
 type ConnectionRuntimeStore interface {
 	store.BrokerCatalogRepository
 	store.BrokerRuntimeConfigRepository
-	store.IBKRGatewayRepository
 }
 
 func BuildConnectionManager(cfg config.Config, st ConnectionRuntimeStore, runtimeDir string) (*ConnectionManager, error) {
@@ -56,30 +48,19 @@ func BuildConnectionManager(cfg config.Config, st ConnectionRuntimeStore, runtim
 	return buildConnectionManagerWithProviderRegistry(cfg, st, runtimeDir, providers)
 }
 
-func buildConnectionManagerWithProviderRegistry(cfg config.Config, st ConnectionRuntimeStore, runtimeDir string, providers *broker.ProviderRegistry) (*ConnectionManager, error) {
+func buildConnectionManagerWithProviderRegistry(cfg config.Config, st ConnectionRuntimeStore, _ string, providers *broker.ProviderRegistry) (*ConnectionManager, error) {
 	marketData := broker.NewMarketDataService()
 	manager := &ConnectionManager{
-		Trading:           broker.NewTradingService(),
-		MarketData:        marketData,
-		snap:              snaptrade.New(cfg.SnapTrade),
-		store:             st,
-		providers:         providers,
-		sessions:          map[int64]broker.BrokerSession{},
-		sessionConfigs:    map[int64]broker.ConnectionConfig{},
-		ibkrGateways:      map[int64]*ibkr.GatewayManager{},
-		ibkrGatewayConfig: map[int64]config.IBKRConfig{},
+		Trading:        broker.NewTradingService(),
+		MarketData:     marketData,
+		snap:           snaptrade.New(cfg.SnapTrade),
+		store:          st,
+		providers:      providers,
+		sessions:       map[int64]broker.BrokerSession{},
+		sessionConfigs: map[int64]broker.ConnectionConfig{},
 	}
 	if err := manager.Reload(context.Background()); err != nil {
 		return nil, err
-	}
-	migrated, err := migrateLegacyIBKRGatewayDirectories(context.Background(), runtimeDir, st)
-	if err != nil {
-		return nil, err
-	}
-	if migrated {
-		if err := manager.Reload(context.Background()); err != nil {
-			return nil, err
-		}
 	}
 	return manager, nil
 }
@@ -182,44 +163,10 @@ func (b *ConnectionManager) Reload(ctx context.Context) error {
 		sessionConfigs[connection.ID] = runtimeConfig
 	}
 
-	gatewayRecords, err := b.store.ListIBKRGateways(ctx)
-	if err != nil {
-		return fmt.Errorf("list IBKR gateways: %w", err)
-	}
-	gatewayRecords, err = b.importLegacyIBKRGateways(ctx, connections, gatewayRecords)
-	if err != nil {
-		return err
-	}
-	ibkrProvider, err := loadProvider("IBKR")
-	if err != nil {
-		return fmt.Errorf("load IBKR provider: %w", err)
-	}
-	b.mu.RLock()
-	oldGateways := b.ibkrGateways
-	oldConfigs := b.ibkrGatewayConfig
-	b.mu.RUnlock()
-	ibkrGateways := map[int64]*ibkr.GatewayManager{}
-	ibkrGatewayConfig := map[int64]config.IBKRConfig{}
-	for _, record := range gatewayRecords {
-		if !record.Enabled {
-			continue
-		}
-		cfg := ibkrGatewayConfigFor(ibkrProvider, record)
-		ibkrGatewayConfig[record.ID] = cfg
-		if current := oldGateways[record.ID]; current != nil && reflect.DeepEqual(oldConfigs[record.ID], cfg) {
-			ibkrGateways[record.ID] = current
-			continue
-		}
-		ibkrGateways[record.ID] = ibkr.NewGatewayManager(cfg)
-	}
-
 	b.mu.Lock()
-	previousGateways := b.ibkrGateways
 	previousSessions := b.sessions
 	b.sessions = sessions
 	b.sessionConfigs = sessionConfigs
-	b.ibkrGateways = ibkrGateways
-	b.ibkrGatewayConfig = ibkrGatewayConfig
 	b.MarketData.Replace(sessions)
 	b.mu.Unlock()
 	committed = true
@@ -238,119 +185,7 @@ func (b *ConnectionManager) Reload(ctx context.Context) error {
 			return fmt.Errorf("close replaced broker session %d: %w", id, err)
 		}
 	}
-	for id, manager := range previousGateways {
-		if manager != ibkrGateways[id] {
-			if err := manager.Shutdown(); err != nil {
-				return fmt.Errorf("shutdown replaced IBKR gateway %d: %w", id, err)
-			}
-		}
-	}
 	return nil
-}
-
-// importLegacyIBKRGateways moves complete, local Gateway process settings out
-// of old IBKR connection config into the dedicated ibkr_gateways registry.
-// Connections with only gateway_url remain ordinary local or remote clients.
-func (b *ConnectionManager) importLegacyIBKRGateways(ctx context.Context, connections []store.BrokerConnection, existing []store.IBKRGateway) ([]store.IBKRGateway, error) {
-	knownKeys := map[string]bool{}
-	knownURLs := map[string]bool{}
-	knownDirs := map[string]bool{}
-	knownPorts := map[int]bool{}
-	for _, gateway := range existing {
-		knownKeys[gateway.GatewayKey] = true
-		knownURLs[gateway.GatewayURL] = true
-		knownDirs[gateway.GatewayDir] = true
-		knownPorts[gateway.GatewayPort] = true
-	}
-
-	imported := false
-	for _, connection := range connections {
-		gateway, ok := legacyIBKRGateway(connection)
-		if !ok {
-			continue
-		}
-		managed := knownURLs[gateway.GatewayURL]
-		if !managed && (knownDirs[gateway.GatewayDir] || knownPorts[gateway.GatewayPort]) {
-			continue
-		}
-		if !managed {
-			if knownKeys[gateway.GatewayKey] {
-				gateway.GatewayKey = fmt.Sprintf("%s-%d", gateway.GatewayKey, connection.ID)
-			}
-			created, err := b.store.UpsertIBKRGateway(ctx, gateway)
-			if err != nil {
-				return nil, fmt.Errorf("import legacy IBKR gateway from connection %d: %w", connection.ID, err)
-			}
-			knownKeys[created.GatewayKey] = true
-			knownURLs[created.GatewayURL] = true
-			knownDirs[created.GatewayDir] = true
-			knownPorts[created.GatewayPort] = true
-			imported = true
-		}
-		if err := b.clearLegacyIBKRGatewayFields(ctx, connection.ID); err != nil {
-			return nil, err
-		}
-	}
-	if !imported {
-		return existing, nil
-	}
-	gateways, err := b.store.ListIBKRGateways(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reload imported IBKR gateways: %w", err)
-	}
-	return gateways, nil
-}
-
-func (b *ConnectionManager) clearLegacyIBKRGatewayFields(ctx context.Context, connectionID int64) error {
-	connection, err := b.store.GetBrokerConnectionRuntimeConfig(ctx, connectionID)
-	if err != nil {
-		return fmt.Errorf("load imported IBKR connection %d: %w", connectionID, err)
-	}
-	delete(connection.Config, "gateway_dir")
-	delete(connection.Config, "gateway_port")
-	delete(connection.Config, "gateway_lifecycle")
-	if _, err := b.store.UpsertBrokerConnection(ctx, connection); err != nil {
-		return fmt.Errorf("clear legacy IBKR gateway fields from connection %d: %w", connectionID, err)
-	}
-	return nil
-}
-
-func legacyIBKRGateway(connection store.BrokerConnection) (store.IBKRGateway, bool) {
-	if connection.ProviderCode != "IBKR" {
-		return store.IBKRGateway{}, false
-	}
-	gatewayURL := strings.TrimRight(stringValue(connection.Config, "gateway_url"), "/")
-	gatewayDir := strings.TrimSpace(stringValue(connection.Config, "gateway_dir"))
-	gatewayPort, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(connection.Config["gateway_port"])))
-	if gatewayURL == "" || gatewayDir == "" || err != nil || gatewayPort <= 0 || gatewayPort > 65535 {
-		return store.IBKRGateway{}, false
-	}
-	parsed, err := url.Parse(gatewayURL)
-	if err != nil || parsed.Port() != strconv.Itoa(gatewayPort) {
-		return store.IBKRGateway{}, false
-	}
-	host := strings.Trim(strings.ToLower(parsed.Hostname()), "[]")
-	ip := net.ParseIP(host)
-	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return store.IBKRGateway{}, false
-	}
-	key := strings.TrimSpace(connection.ConnectionKey)
-	if config.DefaultIBKRGatewayDir(".", key) == "" {
-		key = fmt.Sprintf("legacy-%d", connection.ID)
-	}
-	name := strings.TrimSpace(connection.Name)
-	if name == "" {
-		name = key
-	}
-	return store.IBKRGateway{
-		GatewayKey:  key,
-		Name:        name + " Gateway",
-		GatewayURL:  gatewayURL,
-		GatewayDir:  gatewayDir,
-		GatewayPort: gatewayPort,
-		Lifecycle:   config.ResolveIBKRGatewayLifecycle(),
-		Enabled:     connection.Enabled,
-	}, true
 }
 
 // AcquireDefaultSession leases the first enabled session for a provider. The
@@ -504,33 +339,6 @@ func (b *ConnectionManager) connectionAuthenticationProviderLocked(connectionID 
 	return provider, nil
 }
 
-// IBKRGatewayTarget resolves a connection to its private Gateway origin. The
-// API proxy performs the final loopback validation before forwarding traffic.
-func (b *ConnectionManager) IBKRGatewayTarget(ctx context.Context, connectionID int64) (*url.URL, bool, error) {
-	connection, err := b.store.GetBrokerConnection(ctx, connectionID)
-	if err != nil {
-		return nil, false, err
-	}
-	if connection.ProviderCode != "IBKR" {
-		return nil, false, nil
-	}
-	if !connection.Enabled {
-		return nil, true, fmt.Errorf("broker connection %d is disabled", connectionID)
-	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	session := b.sessions[connectionID]
-	targetProvider, ok := session.(interface{ GatewayTarget() (*url.URL, error) })
-	if !ok {
-		return nil, false, nil
-	}
-	target, err := targetProvider.GatewayTarget()
-	if err != nil {
-		return nil, true, fmt.Errorf("parse IBKR connection %d Gateway URL: %w", connectionID, err)
-	}
-	return target, true, nil
-}
-
 func (b *ConnectionManager) ExchangeConnectionOAuthCode(ctx context.Context, connectionID int64, code string) error {
 	if _, err := b.store.GetBrokerConnection(ctx, connectionID); err != nil {
 		return err
@@ -585,127 +393,6 @@ func (b *ConnectionManager) ApplyConfig(_ context.Context, updated config.Config
 	return nil
 }
 
-func (b *ConnectionManager) StartGateway(ctx context.Context) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	gateways := make([]*ibkr.GatewayManager, 0, len(b.ibkrGateways))
-	for _, id := range sortedMapKeys(b.ibkrGateways) {
-		gateways = append(gateways, b.ibkrGateways[id])
-	}
-	var failures []string
-	for _, gateway := range gateways {
-		if err := gateway.Start(ctx); err != nil {
-			failures = append(failures, err.Error())
-		}
-	}
-	if len(failures) > 0 {
-		return errors.New(strings.Join(failures, "; "))
-	}
-	return nil
-}
-
-// ShutdownGateways applies each independently managed Gateway's configured lifecycle.
-// Managed gateways are stopped; persistent desktop gateways are detached and
-// left available for the next Traio process to validate and reattach.
-func (b *ConnectionManager) ShutdownGateways() error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	gateways := make([]*ibkr.GatewayManager, 0, len(b.ibkrGateways))
-	for _, id := range sortedMapKeys(b.ibkrGateways) {
-		gateways = append(gateways, b.ibkrGateways[id])
-	}
-	var failures []string
-	for _, gateway := range gateways {
-		if err := gateway.Shutdown(); err != nil {
-			failures = append(failures, err.Error())
-		}
-	}
-	if len(failures) > 0 {
-		return errors.New(strings.Join(failures, "; "))
-	}
-	return nil
-}
-
-func (b *ConnectionManager) IBKRGatewayStatus(gatewayID int64) (any, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return nil, err
-	}
-	return manager.Status(), nil
-}
-
-func (b *ConnectionManager) IBKRGatewayLoginURL(gatewayID int64) (string, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return "", err
-	}
-	return manager.LoginURL(), nil
-}
-
-func (b *ConnectionManager) StartIBKRGateway(ctx context.Context, gatewayID int64) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return err
-	}
-	return manager.StartGateway(ctx)
-}
-
-func (b *ConnectionManager) StopIBKRGateway(gatewayID int64, keepSession bool) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return err
-	}
-	return manager.StopGateway(keepSession)
-}
-
-func (b *ConnectionManager) ReconnectIBKRGateway(gatewayID int64) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return err
-	}
-	return manager.Reconnect()
-}
-
-func (b *ConnectionManager) UpgradeIBKRGateway(ctx context.Context, gatewayID int64) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return err
-	}
-	return manager.Upgrade(ctx)
-}
-
-func (b *ConnectionManager) RollbackIBKRGateway(ctx context.Context, gatewayID int64) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	manager, err := b.ibkrGatewayManagerLocked(gatewayID)
-	if err != nil {
-		return err
-	}
-	return manager.Rollback(ctx)
-}
-
-// ibkrGatewayManagerLocked requires b.mu to be held for reading. Callers keep
-// the lock through their operation so Reload cannot shut down the manager.
-func (b *ConnectionManager) ibkrGatewayManagerLocked(gatewayID int64) (*ibkr.GatewayManager, error) {
-	manager := b.ibkrGateways[gatewayID]
-	if manager == nil {
-		return nil, fmt.Errorf("IBKR gateway %d is not loaded", gatewayID)
-	}
-	return manager, nil
-}
-
 func brokerConnectionConfig(provider store.BrokerProviderRuntimeConfig, connection store.BrokerConnection) broker.ConnectionConfig {
 	return broker.ConnectionConfig{
 		ID: connection.ID, ProviderCode: connection.ProviderCode,
@@ -735,49 +422,6 @@ func persistSchwabToken(st ConnectionRuntimeStore, connectionID int64, token sch
 	_, _ = st.UpsertBrokerConnection(context.Background(), current)
 }
 
-func ibkrGatewayConfigFor(provider store.BrokerProviderRuntimeConfig, gateway store.IBKRGateway) config.IBKRConfig {
-	proxyHost := stringValue(provider.Config, "gateway_proxy_host")
-	if proxyHost == "" {
-		proxyHost = "https://api.ibkr.com"
-	}
-	allowIPs := stringSliceValue(provider.Config, "gateway_allow_ips")
-	if len(allowIPs) == 0 {
-		allowIPs = []string{"127.0.0.1"}
-	}
-	return config.IBKRConfig{
-		GatewayDir:        gateway.GatewayDir,
-		BundledGatewayDir: stringValue(provider.Config, "bundled_gateway_dir"),
-		GatewayPort:       gateway.GatewayPort,
-		GatewayURL:        strings.TrimRight(gateway.GatewayURL, "/"),
-		GatewayLifecycle:  config.NormalizeIBKRGatewayLifecycle(gateway.Lifecycle),
-		DownloadProxy:     stringValue(provider.Config, "download_proxy"),
-		GatewayProxyHost:  proxyHost,
-		GatewayAllowIPs:   allowIPs,
-	}
-}
-
-func stringValue(values map[string]any, key string) string {
-	value, _ := values[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func stringSliceValue(values map[string]any, key string) []string {
-	switch value := values[key].(type) {
-	case []string:
-		return value
-	case []any:
-		out := make([]string, 0, len(value))
-		for _, item := range value {
-			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-				out = append(out, strings.TrimSpace(text))
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
 func sortedMapKeys[T any](values map[int64]T) []int64 {
 	keys := make([]int64, 0, len(values))
 	for key := range values {
@@ -789,92 +433,4 @@ func sortedMapKeys[T any](values map[int64]T) []int64 {
 		}
 	}
 	return keys
-}
-
-// DefaultGateway returns a stable controller for the legacy single-Gateway
-// HTTP endpoints. The dedicated gateway registry remains authoritative.
-func (b *ConnectionManager) DefaultGateway() broker.GatewayController {
-	return defaultGatewayAdapter{manager: b}
-}
-
-type defaultGatewayAdapter struct{ manager *ConnectionManager }
-
-// resolveLocked requires manager.mu to be held for reading. Callers retain the
-// lock through the Gateway operation so Reload cannot concurrently replace and
-// shut down the manager.
-func (g defaultGatewayAdapter) resolveLocked() (*ibkr.GatewayManager, error) {
-	for _, id := range sortedMapKeys(g.manager.ibkrGateways) {
-		return g.manager.ibkrGateways[id], nil
-	}
-	return nil, errors.New("IBKR gateway is not configured")
-}
-
-func (g defaultGatewayAdapter) Status() any {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return map[string]any{"error": err.Error(), "running": false}
-	}
-	return manager.Status()
-}
-
-func (g defaultGatewayAdapter) LoginURL() string {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return ""
-	}
-	return manager.LoginURL()
-}
-
-func (g defaultGatewayAdapter) StartGateway(ctx context.Context) error {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return err
-	}
-	return manager.StartGateway(ctx)
-}
-
-func (g defaultGatewayAdapter) StopGateway(keepSession bool) error {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return err
-	}
-	return manager.StopGateway(keepSession)
-}
-
-func (g defaultGatewayAdapter) Reconnect() error {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return err
-	}
-	return manager.Reconnect()
-}
-
-func (g defaultGatewayAdapter) Upgrade(ctx context.Context) error {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return err
-	}
-	return manager.Upgrade(ctx)
-}
-
-func (g defaultGatewayAdapter) Rollback(ctx context.Context) error {
-	g.manager.mu.RLock()
-	defer g.manager.mu.RUnlock()
-	manager, err := g.resolveLocked()
-	if err != nil {
-		return err
-	}
-	return manager.Rollback(ctx)
 }
