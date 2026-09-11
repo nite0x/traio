@@ -14,7 +14,9 @@ import (
 	"github.com/nite/traio/internal/ai"
 	"github.com/nite/traio/internal/api"
 	traioauth "github.com/nite/traio/internal/auth"
+	"github.com/nite/traio/internal/bootstrap"
 	"github.com/nite/traio/internal/config"
+	"github.com/nite/traio/internal/market/yahoo"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/runtime"
 	"github.com/nite/traio/internal/settings"
@@ -25,6 +27,13 @@ func main() {
 	flag.Parse()
 
 	baseDir := config.ResolveRuntimeDir()
+	startup, err := bootstrap.Load(context.Background(), baseDir)
+	if err != nil {
+		log.Fatalf("startup configuration: %v", err)
+	}
+	for _, warning := range startup.Warnings {
+		log.Printf("startup configuration: %s", warning)
+	}
 	instanceLock, err := runtime.AcquireInstanceLock(baseDir)
 	if err != nil {
 		log.Fatalf("instance lock: %v", err)
@@ -35,19 +44,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("API token: %v", err)
 	}
-	database := config.ResolveBootstrapDatabase(baseDir)
+	database := startup.Database
 	st, err := store.OpenRepository(database.Driver, database.DataSource)
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		log.Fatal("store: unable to initialize configured database; check connection, permissions and schema")
 	}
 	defer st.Close()
-	authConfig, err := config.ResolveAuthConfig()
-	if err != nil {
-		log.Fatalf("authentication config: %v", err)
-	}
+	authConfig := startup.Auth
 	authService, err := traioauth.NewService(context.Background(), st, authConfig)
 	if err != nil {
-		log.Fatalf("authentication: %v", err)
+		log.Fatalf("authentication: %s", traioauth.InitializationErrorMessage(err))
 	}
 
 	settingsMgr := settings.NewManager(st, baseDir)
@@ -98,22 +104,23 @@ func main() {
 			brokerSync.Invalidate()
 			return nil
 		},
-		Watchlists:      st,
-		CandleCache:     st,
-		Settings:        settingsMgr,
-		Instruments:     connections.MarketData,
-		Quotes:          connections.MarketData,
-		Candles:         connections.MarketData,
-		BrokerSync:      brokerSync,
-		Account:         accountEquity,
-		News:            newsSvc,
-		AI:              aiSvc,
-		APIToken:        apiToken,
-		AllowedAPIHosts: config.ResolveAllowedAPIHosts(),
-		AllowedOrigins:  config.ResolveAllowedOrigins(),
-		WebDir:          config.ResolveWebDir(),
-		Auth:            authService,
-		Trading:         connections.Trading,
+		Watchlists:       st,
+		CandleCache:      st,
+		Settings:         settingsMgr,
+		Instruments:      connections.MarketData,
+		Quotes:           connections.MarketData,
+		Candles:          connections.MarketData,
+		PublicMarketData: yahoo.New(),
+		BrokerSync:       brokerSync,
+		Account:          accountEquity,
+		News:             newsSvc,
+		AI:               aiSvc,
+		APIToken:         apiToken,
+		AllowedAPIHosts:  config.ResolveAllowedAPIHosts(),
+		AllowedOrigins:   config.ResolveAllowedOrigins(),
+		WebDir:           config.ResolveWebDir(),
+		Auth:             authService,
+		Trading:          connections.Trading,
 	}
 
 	addr := config.ResolveServerListenAddr()

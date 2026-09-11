@@ -53,8 +53,13 @@ type BootstrapDatabaseConfig struct {
 // ResolveAuthConfig selects local instance-token authentication for desktop
 // runtimes and a browser-session authentication mode for server deployments.
 func ResolveAuthConfig() (auth.Config, error) {
-	deploymentMode := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_DEPLOYMENT_MODE")))
-	mode := auth.Mode(strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_AUTH_MODE"))))
+	return ResolveAuthConfigFrom(os.Getenv)
+}
+
+// ResolveAuthConfigFrom parses process-only configuration without modifying the environment.
+func ResolveAuthConfigFrom(get func(string) string) (auth.Config, error) {
+	deploymentMode := strings.ToLower(strings.TrimSpace(get("TRAIO_DEPLOYMENT_MODE")))
+	mode := auth.Mode(strings.ToLower(strings.TrimSpace(get("TRAIO_AUTH_MODE"))))
 	if mode == "" {
 		if deploymentMode == DeploymentModeServer {
 			mode = auth.ModeOIDC
@@ -68,12 +73,12 @@ func ResolveAuthConfig() (auth.Config, error) {
 	if mode == auth.ModeDisabledDev && deploymentMode == DeploymentModeServer {
 		return auth.Config{}, fmt.Errorf("disabled-dev authentication is not allowed in server deployment mode")
 	}
-	redirectURL := strings.TrimSpace(os.Getenv("TRAIO_OIDC_REDIRECT_URL"))
+	redirectURL := strings.TrimSpace(get("TRAIO_OIDC_REDIRECT_URL"))
 	secureCookie := false
 	if parsed, err := url.Parse(redirectURL); err == nil {
 		secureCookie = strings.EqualFold(parsed.Scheme, "https")
 	}
-	if value := strings.TrimSpace(os.Getenv("TRAIO_COOKIE_SECURE")); value != "" {
+	if value := strings.TrimSpace(get("TRAIO_COOKIE_SECURE")); value != "" {
 		parsed, err := strconv.ParseBool(value)
 		if err != nil {
 			return auth.Config{}, fmt.Errorf("invalid TRAIO_COOKIE_SECURE %q", value)
@@ -81,29 +86,29 @@ func ResolveAuthConfig() (auth.Config, error) {
 		secureCookie = parsed
 	}
 	sessionTTL := 12 * time.Hour
-	if value := strings.TrimSpace(os.Getenv("TRAIO_SESSION_TTL")); value != "" {
+	if value := strings.TrimSpace(get("TRAIO_SESSION_TTL")); value != "" {
 		parsed, err := time.ParseDuration(value)
 		if err != nil || parsed <= 0 {
 			return auth.Config{}, fmt.Errorf("invalid TRAIO_SESSION_TTL %q", value)
 		}
 		sessionTTL = parsed
 	}
-	bootstrapPassword, err := resolveSecret("TRAIO_BOOTSTRAP_ADMIN_PASSWORD", "TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE")
+	bootstrapPassword, err := ResolveSecretFrom(get, "TRAIO_BOOTSTRAP_ADMIN_PASSWORD", "TRAIO_BOOTSTRAP_ADMIN_PASSWORD_FILE")
 	if err != nil {
 		return auth.Config{}, err
 	}
 	config := auth.Config{
 		Mode:              mode,
-		IssuerURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("TRAIO_OIDC_ISSUER_URL")), "/"),
-		ClientID:          strings.TrimSpace(os.Getenv("TRAIO_OIDC_CLIENT_ID")),
-		ClientSecret:      strings.TrimSpace(os.Getenv("TRAIO_OIDC_CLIENT_SECRET")),
+		IssuerURL:         strings.TrimRight(strings.TrimSpace(get("TRAIO_OIDC_ISSUER_URL")), "/"),
+		ClientID:          strings.TrimSpace(get("TRAIO_OIDC_CLIENT_ID")),
+		ClientSecret:      get("TRAIO_OIDC_CLIENT_SECRET"),
 		RedirectURL:       redirectURL,
 		SessionTTL:        sessionTTL,
 		CookieSecure:      secureCookie,
-		BootstrapUsername: strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapUsername: strings.TrimSpace(get("TRAIO_BOOTSTRAP_ADMIN_USERNAME")),
 		BootstrapPassword: bootstrapPassword,
-		BootstrapEmail:    strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_EMAIL")),
-		BootstrapName:     strings.TrimSpace(os.Getenv("TRAIO_BOOTSTRAP_ADMIN_NAME")),
+		BootstrapEmail:    strings.TrimSpace(get("TRAIO_BOOTSTRAP_ADMIN_EMAIL")),
+		BootstrapName:     strings.TrimSpace(get("TRAIO_BOOTSTRAP_ADMIN_NAME")),
 	}
 	if mode == auth.ModeOIDC && (config.IssuerURL == "" || config.ClientID == "" || config.RedirectURL == "") {
 		return auth.Config{}, fmt.Errorf("OIDC server mode requires TRAIO_OIDC_ISSUER_URL, TRAIO_OIDC_CLIENT_ID, and TRAIO_OIDC_REDIRECT_URL")
@@ -115,7 +120,12 @@ func ResolveAuthConfig() (auth.Config, error) {
 }
 
 func resolveSecret(valueEnv, fileEnv string) (string, error) {
-	value, file := os.Getenv(valueEnv), strings.TrimSpace(os.Getenv(fileEnv))
+	return ResolveSecretFrom(os.Getenv, valueEnv, fileEnv)
+}
+
+// ResolveSecretFrom accepts either a value or a local secret file, never both.
+func ResolveSecretFrom(get func(string) string, valueEnv, fileEnv string) (string, error) {
+	value, file := get(valueEnv), strings.TrimSpace(get(fileEnv))
 	if value != "" && file != "" {
 		return "", fmt.Errorf("set only one of %s or %s", valueEnv, fileEnv)
 	}
@@ -124,7 +134,7 @@ func resolveSecret(valueEnv, fileEnv string) (string, error) {
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", fileEnv, err)
+		return "", fmt.Errorf("cannot read %s", fileEnv)
 	}
 	return strings.TrimRight(string(raw), "\r\n"), nil
 }
@@ -268,11 +278,16 @@ func ResolveAllowedOrigins() []string {
 // ResolveBootstrapDatabase selects the process database from the environment.
 // Desktop and development runs default to the embedded SQLite database.
 func ResolveBootstrapDatabase(baseDir string) BootstrapDatabaseConfig {
-	driver := strings.ToLower(strings.TrimSpace(os.Getenv("TRAIO_DATABASE_DRIVER")))
+	return ResolveBootstrapDatabaseFrom(baseDir, os.Getenv)
+}
+
+// ResolveBootstrapDatabaseFrom applies defaults only after sources have been merged.
+func ResolveBootstrapDatabaseFrom(baseDir string, get func(string) string) BootstrapDatabaseConfig {
+	driver := strings.ToLower(strings.TrimSpace(get("TRAIO_DATABASE_DRIVER")))
 	if driver == "" {
 		driver = "sqlite"
 	}
-	dataSource := strings.TrimSpace(os.Getenv("TRAIO_DATABASE_DSN"))
+	dataSource := strings.TrimSpace(get("TRAIO_DATABASE_DSN"))
 	if dataSource == "" && driver == "sqlite" {
 		dataSource = filepath.Join(baseDir, "data", "traio.db")
 	}

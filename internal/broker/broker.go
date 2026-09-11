@@ -4,17 +4,23 @@ import "context"
 
 // Quote is a normalized real-time quote across brokers.
 type Quote struct {
-	ConID     int64   `json:"conid,omitempty"`
-	Symbol    string  `json:"symbol"`
-	Last      float64 `json:"last"`
-	Bid       float64 `json:"bid"`
-	Ask       float64 `json:"ask"`
-	Change    float64 `json:"change"`
-	ChangePct float64 `json:"change_pct"`
-	Volume    int64   `json:"volume"`
-	High      float64 `json:"high"`
-	Low       float64 `json:"low"`
-	Delayed   bool    `json:"delayed,omitempty"`
+	ConID       int64   `json:"conid,omitempty"`
+	Symbol      string  `json:"symbol"`
+	Last        float64 `json:"last"`
+	Bid         float64 `json:"bid"`
+	Ask         float64 `json:"ask"`
+	Change      float64 `json:"change"`
+	ChangePct   float64 `json:"change_pct"`
+	Volume      int64   `json:"volume"`
+	High        float64 `json:"high"`
+	Low         float64 `json:"low"`
+	Delayed     bool    `json:"delayed,omitempty"`
+	Source      string  `json:"source,omitempty"`
+	Currency    string  `json:"currency,omitempty"`
+	AsOf        int64   `json:"as_of,omitempty"` // Provider quote time, Unix seconds.
+	MarketState string  `json:"market_state,omitempty"`
+	Week52High  float64 `json:"week_52_high,omitempty"`
+	Week52Low   float64 `json:"week_52_low,omitempty"`
 }
 
 // Position is a normalized holding.

@@ -6,8 +6,8 @@ ARG GO_VERSION=1.26
 FROM node:${NODE_VERSION}-bookworm-slim AS web-build
 WORKDIR /src
 
-# "frontend" is the traio-desktop repository supplied as a BuildKit named
-# context: --build-context frontend=../traio-desktop
+# "frontend" is the traio-web repository supplied as a BuildKit named
+# context: --build-context frontend=../traio-web
 COPY --from=frontend package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm_config_fetch_retries=5 \

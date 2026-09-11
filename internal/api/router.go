@@ -18,6 +18,7 @@ import (
 	"github.com/nite/traio/internal/ai"
 	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/market"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/portfolio"
 	"github.com/nite/traio/internal/settings"
@@ -34,6 +35,7 @@ type Deps struct {
 	Instruments      broker.InstrumentProvider
 	Quotes           broker.BatchMarketDataProvider
 	Candles          broker.CandleProvider
+	PublicMarketData market.SymbolProvider
 	BrokerSync       *portfolio.SyncService
 	Account          *account.Service
 	News             *news.Service
@@ -218,9 +220,9 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.DELETE("/watchlist/groups/:group_id/items/:symbol", requirePermission(traioauth.PermissionWatchlistWrite), deleteWatchlistItem(deps.Watchlists))
 		v1.GET("/instruments/search", searchInstruments(deps.Instruments))
 		v1.GET("/quotes", listQuotes(deps.Quotes))
-		v1.GET("/quotes/symbols", listQuotesBySymbol(resolveSchwab))
-		v1.GET("/quotes/:symbol", getQuote(resolveSchwab, deps.Instruments, deps.Quotes))
-		v1.GET("/quotes/:symbol/history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles))
+		v1.GET("/quotes/symbols", publicMarketRoute(deps.PublicMarketData, "quotes", listQuotesBySymbol(resolveSchwab)))
+		v1.GET("/quotes/:symbol", publicMarketRoute(deps.PublicMarketData, "quote", getQuote(resolveSchwab, deps.Instruments, deps.Quotes)))
+		v1.GET("/quotes/:symbol/history", publicMarketRoute(deps.PublicMarketData, "history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles)))
 		v1.GET("/portfolio/overview", portfolioOverview(deps.BrokerSync))
 		v1.GET("/portfolio/positions", portfolioPositions(deps.BrokerSync))
 		v1.GET("/portfolio/positions/:position_id", portfolioPosition(deps.BrokerSync))

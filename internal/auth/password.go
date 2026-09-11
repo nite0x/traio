@@ -30,13 +30,13 @@ func normalizeUsername(username string) string {
 
 func validateBootstrapCredential(username, password string) error {
 	if len(username) < 3 || len(username) > 64 || !usernamePattern.MatchString(username) {
-		return fmt.Errorf("bootstrap username must be 3-64 lowercase letters, digits, or . _ @ -")
+		return &initializationError{message: "TRAIO_BOOTSTRAP_ADMIN_USERNAME must be 3-64 lowercase letters, digits, or . _ @ - and start with a letter or digit"}
 	}
 	if len(password) < 12 {
-		return fmt.Errorf("bootstrap password must contain at least 12 characters")
+		return &initializationError{message: "TRAIO_BOOTSTRAP_ADMIN_PASSWORD must contain at least 12 bytes"}
 	}
 	if len(password) > 1024 {
-		return fmt.Errorf("bootstrap password is too long")
+		return &initializationError{message: "TRAIO_BOOTSTRAP_ADMIN_PASSWORD must not exceed 1024 bytes"}
 	}
 	return nil
 }

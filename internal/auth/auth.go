@@ -118,7 +118,7 @@ type LoginResult struct {
 
 func NewService(ctx context.Context, repository store.AuthRepository, config Config) (*Service, error) {
 	if repository == nil {
-		return nil, fmt.Errorf("auth repository is required")
+		return nil, &initializationError{message: "auth repository is required"}
 	}
 	if config.Mode == "" {
 		config.Mode = ModeLocal
@@ -139,13 +139,13 @@ func NewService(ctx context.Context, repository store.AuthRepository, config Con
 	if config.Mode == ModePassword {
 		hasIdentity, err := repository.HasPasswordIdentity(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("check built-in account: %w", err)
+			return nil, &initializationError{message: "cannot check built-in account; check database permissions and schema", cause: err}
 		}
 		username := normalizeUsername(config.BootstrapUsername)
 		password := config.BootstrapPassword
 		if username == "" && password == "" {
 			if !hasIdentity {
-				return nil, fmt.Errorf("built-in login is not initialized; set TRAIO_BOOTSTRAP_ADMIN_USERNAME and TRAIO_BOOTSTRAP_ADMIN_PASSWORD")
+				return nil, &initializationError{message: "built-in login is not initialized; set TRAIO_BOOTSTRAP_ADMIN_USERNAME and TRAIO_BOOTSTRAP_ADMIN_PASSWORD"}
 			}
 			return service, nil
 		}
@@ -154,7 +154,7 @@ func NewService(ctx context.Context, repository store.AuthRepository, config Con
 		}
 		passwordHash, err := hashPassword(password)
 		if err != nil {
-			return nil, fmt.Errorf("hash bootstrap password: %w", err)
+			return nil, &initializationError{message: "cannot hash bootstrap password", cause: err}
 		}
 		email := strings.ToLower(strings.TrimSpace(config.BootstrapEmail))
 		if email == "" && strings.Contains(username, "@") {
@@ -167,7 +167,7 @@ func NewService(ctx context.Context, repository store.AuthRepository, config Con
 		if _, _, err := repository.BootstrapPasswordIdentity(ctx, store.PasswordCredential{
 			Username: username, PasswordHash: passwordHash, Email: email, Name: name,
 		}); err != nil {
-			return nil, fmt.Errorf("bootstrap built-in account: %w", err)
+			return nil, &initializationError{message: "cannot bootstrap built-in account; check database permissions, schema and account conflicts", cause: err}
 		}
 		return service, nil
 	}
@@ -175,11 +175,11 @@ func NewService(ctx context.Context, repository store.AuthRepository, config Con
 		return service, nil
 	}
 	if strings.TrimSpace(config.IssuerURL) == "" || strings.TrimSpace(config.ClientID) == "" || strings.TrimSpace(config.RedirectURL) == "" {
-		return nil, fmt.Errorf("OIDC issuer URL, client ID, and redirect URL are required")
+		return nil, &initializationError{message: "OIDC issuer URL, client ID, and redirect URL are required"}
 	}
 	provider, err := oidc.NewProvider(ctx, config.IssuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("discover OIDC provider: %w", err)
+		return nil, &initializationError{message: "cannot discover OIDC provider; check TRAIO_OIDC_ISSUER_URL, network and TLS certificate", cause: err}
 	}
 	scopes := append([]string{oidc.ScopeOpenID, "profile", "email"}, config.Scopes...)
 	service.provider = provider

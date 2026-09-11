@@ -7,7 +7,7 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 - `cmd/server` 和 `internal/` 是服务核心。
 - `cmd/mcp` 是开发期的 stdio MCP 适配器，不被服务核心反向依赖；本地安装包与标准服务构建都不会携带或启动它。
 - 服务架构、API 规格和接入文档统一保存在 [`traio-doc`](https://github.com/nite0x/traio-doc/tree/main/docs/traio)。
-- Tauri 桌面客户端位于独立的 `traio-desktop` 仓库；移动客户端位于独立的 `traio-app` 仓库。
+- Tauri 桌面客户端位于独立的 `traio-web` 仓库；移动客户端位于独立的 `traio-app` 仓库。
 - 本地数据库、配置和编译产物均已忽略，不属于 Git 仓库内容。
 - IBKR Client Portal Gateway 的安装与生命周期由独立的
   [`ibkr-gateway-manager`](../ibkr-gateway-manager) 仓库负责。
@@ -19,7 +19,7 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 | **Go 后端** | Gin + SQLite + gorilla/websocket | REST API / WebSocket / 券商集成 / 数据存储 |
 | **MCP（独立部署）** | — | 通过稳定服务域名接入外部工具（Claude 等） |
 
-`traio-desktop` 会将这里的 `cmd/server` 编译为 Tauri sidecar。
+`traio-web` 会将这里的 `cmd/server` 编译为 Tauri sidecar。
 
 ## 快速开始
 
@@ -118,7 +118,7 @@ Traio 不安装、启动、停止或升级 Client Portal Gateway。IBKR provider
 
 ## Docker 部署（包含 Web 前端）
 
-Docker 镜像使用 `traio-desktop` 作为额外构建上下文：Node 阶段执行
+Docker 镜像使用 `traio-web` 作为额外构建上下文：Node 阶段执行
 `npm run build:web`，Go 阶段构建 `traio-server`，最终镜像只保留 Go
 二进制、健康检查工具和编译后的前端文件。前端位于 `/opt/traio/web`，由 Go
 服务提供静态资源和 React Router fallback；浏览器通过同源 `/api/v1` 访问 API。
@@ -128,7 +128,7 @@ Docker 镜像使用 `traio-desktop` 作为额外构建上下文：Node 阶段执
 ```text
 open/
 ├── traio/
-└── traio-desktop/
+└── traio-web/
 ```
 
 在 `traio` 目录构建 EC2 使用的 amd64 镜像：
@@ -136,7 +136,7 @@ open/
 ```bash
 docker buildx build \
   --platform linux/amd64 \
-  --build-context frontend=../traio-desktop \
+  --build-context frontend=../traio-web \
   --tag traio-server:local \
   --load \
   .
@@ -215,3 +215,5 @@ Member、Viewer。桌面 `.app` 不走浏览器登录，继续使用运行时生
 - **服务核心**：Go、Gin、SQLite（modernc）、gorilla/websocket
 - **辅助服务**：独立部署的 MCP server
 - **数据源**：Schwab、SnapTrade、IBKR CPAPI、Finnhub、EDGAR、Claude
+
+敏感启动配置支持通过 Infisical Go SDK 获取，显式环境变量和 Secret 文件优先。配置范围、部署示例及失败处理见 [启动配置与 Infisical](docs/startup-configuration.md)。
