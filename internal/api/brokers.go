@@ -86,11 +86,18 @@ func updateBrokerProvider(st brokerStore, onChanged func(context.Context) error)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if status, err := validateIBKRProviderUpdate(c.Request.Context(), st, c.Param("code"), req); err != nil {
-			c.JSON(status, gin.H{"error": err.Error()})
-			return
+		var provider store.BrokerProvider
+		var err error
+		if strings.EqualFold(strings.TrimSpace(c.Param("code")), ibkrProviderCode) {
+			connections, status, discoveryErr := discoverIBKRConnections(c.Request.Context(), st, &req)
+			if discoveryErr != nil {
+				c.JSON(status, gin.H{"error": discoveryErr.Error()})
+				return
+			}
+			provider, err = st.SaveIBKRManagerConfig(c.Request.Context(), req.Config, req.Secrets, connections)
+		} else {
+			provider, err = st.UpdateBrokerProviderConfig(c.Request.Context(), c.Param("code"), req.Config, req.Secrets)
 		}
-		provider, err := st.UpdateBrokerProviderConfig(c.Request.Context(), c.Param("code"), req.Config, req.Secrets)
 		if err != nil {
 			writeBrokerStoreError(c, err)
 			return

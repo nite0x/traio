@@ -205,7 +205,7 @@ func (c *Client) getGatewayJSON(ctx context.Context, path, label string, dst any
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("ibkr: gateway not authenticated")
+		return gatewayUnauthorizedError(resp, path)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ibkr: %s status %d", label, resp.StatusCode)

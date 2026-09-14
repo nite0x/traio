@@ -23,32 +23,63 @@ const (
 	ibkrGatewayTokenKey = "gateway_token"
 )
 
-func validateIBKRProviderUpdate(ctx context.Context, st brokerStore, providerCode string, req providerConfigRequest) (int, error) {
-	if !strings.EqualFold(strings.TrimSpace(providerCode), ibkrProviderCode) {
-		return 0, nil
-	}
+func discoverIBKRConnections(ctx context.Context, st brokerStore, req *providerConfigRequest) ([]store.BrokerConnection, int, error) {
 	managerURL := mapString(req.Config, ibkrManagerURLKey)
-	token := ""
-	if req.Secrets == nil {
-		current, err := st.GetBrokerProviderRuntimeConfig(ctx, ibkrProviderCode)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return http.StatusInternalServerError, err
-		}
-		token = current.Secrets[ibkrManagerTokenKey]
-	} else {
+	current, err := st.GetBrokerProviderRuntimeConfig(ctx, ibkrProviderCode)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, http.StatusInternalServerError, err
+	}
+	token := current.Secrets[ibkrManagerTokenKey]
+	if req.Secrets != nil {
 		token = req.Secrets[ibkrManagerTokenKey]
 	}
 	client, err := ibkr.NewManagerClient(managerURL, token)
 	if err != nil {
-		return http.StatusBadRequest, err
+		return nil, http.StatusBadRequest, err
+	}
+	oldOrigin := strings.TrimRight(mapString(current.Config, ibkrManagerURLKey), "/")
+	if req.Secrets == nil && oldOrigin != "" && oldOrigin != client.Origin() {
+		return nil, http.StatusBadRequest, fmt.Errorf("更换 Gateway Manager 地址时请重新填写 Manager API Token")
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, http.StatusBadRequest, fmt.Errorf("Manager API Token is required to import instance credentials")
 	}
 	if _, err := client.Health(ctx); err != nil {
-		return http.StatusBadGateway, err
+		return nil, http.StatusBadGateway, err
 	}
-	if _, err := client.Gateways(ctx); err != nil {
-		return http.StatusBadGateway, err
+	gateways, err := client.Connections(ctx)
+	if err != nil {
+		return nil, http.StatusBadGateway, err
 	}
-	return 0, nil
+	connections := make([]store.BrokerConnection, 0, len(gateways))
+	seen := map[string]bool{}
+	for _, gateway := range gateways {
+		id := strings.TrimSpace(gateway.ID)
+		if id == "" || seen[id] {
+			return nil, http.StatusBadGateway, fmt.Errorf("Manager returned an empty or duplicate instance ID")
+		}
+		seen[id] = true
+		gatewayURL, err := normalizeGatewayOrigin(gateway.ProxyURL)
+		if err != nil {
+			return nil, http.StatusBadGateway, fmt.Errorf("IBKR Gateway %q proxy URL: %w", id, err)
+		}
+		if strings.TrimSpace(gateway.ProxyToken) == "" {
+			return nil, http.StatusBadGateway, fmt.Errorf("IBKR Gateway %q has no proxy token", id)
+		}
+		connections = append(connections, store.BrokerConnection{
+			ProviderCode: ibkrProviderCode, Name: "IBKR · " + id,
+			Environment: "default", AuthType: "interactive", Enabled: true,
+			Status: store.BrokerConnectionStatusDisconnected,
+			Config: map[string]any{ibkrGatewayIDKey: id, ibkrGatewayURLKey: gatewayURL,
+				ibkrManagerURLKey: client.Origin(), "gateway_auto_start": gateway.AutoStart},
+			Secrets: map[string]string{ibkrGatewayTokenKey: strings.TrimSpace(gateway.ProxyToken)},
+		})
+	}
+	if req.Config == nil {
+		req.Config = map[string]any{}
+	}
+	req.Config[ibkrManagerURLKey] = client.Origin()
+	return connections, 0, nil
 }
 
 func prepareIBKRConnection(ctx context.Context, st brokerStore, providerCode string, connectionID int64, req *brokerConnectionRequest) (int, error) {

@@ -39,8 +39,17 @@ func TestBrokerLoginUsesConfiguredGatewayWithoutManagingProcess(t *testing.T) {
 }
 
 func TestLoginStatusReportsGatewayProxyAuthenticationFailure(t *testing.T) {
+	for _, challenge := range []string{`Basic realm="IBKR Gateway"`, "Bearer", `Bearer realm="gateway"`} {
+		t.Run(challenge, func(t *testing.T) {
+			testLoginStatusProxyRejection(t, challenge)
+		})
+	}
+}
+
+func testLoginStatusProxyRejection(t *testing.T, challenge string) {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="IBKR Gateway"`)
+		w.Header().Set("WWW-Authenticate", challenge)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 	}))
 	defer server.Close()
@@ -49,6 +58,22 @@ func TestLoginStatusReportsGatewayProxyAuthenticationFailure(t *testing.T) {
 	_, err := adapter.LoginStatus(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "gateway_token") {
 		t.Fatalf("expected actionable proxy authentication error, got %v", err)
+	}
+}
+
+func TestLoginStatusReportsProxyRejectionFromAuthStatusFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/api/tickle" {
+			_, _ = w.Write([]byte(`{"authenticated":false}`))
+			return
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	_, err := NewBroker(config.IBKRConfig{GatewayURL: server.URL}).LoginStatus(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "gateway_token") || !strings.Contains(err.Error(), "/iserver/auth/status") {
+		t.Fatalf("expected proxy rejection with endpoint, got %v", err)
 	}
 }
 

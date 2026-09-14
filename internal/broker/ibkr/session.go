@@ -65,7 +65,7 @@ func (c *Client) LoginStatus(ctx context.Context) (broker.LoginAction, error) {
 	}
 	defer resp.Body.Close()
 	if gatewayProxyRejected(resp) {
-		return action, fmt.Errorf("ibkr: gateway proxy authentication failed; check gateway_token")
+		return action, gatewayUnauthorizedError(resp, "/tickle")
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized {
 		return action, fmt.Errorf("ibkr: gateway session probe returned %s", resp.Status)
@@ -92,7 +92,7 @@ func (c *Client) authStatus(ctx context.Context, fallback broker.LoginAction) (b
 	}
 	defer resp.Body.Close()
 	if gatewayProxyRejected(resp) {
-		return fallback, fmt.Errorf("ibkr: gateway proxy authentication failed; check gateway_token")
+		return fallback, gatewayUnauthorizedError(resp, "/iserver/auth/status")
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fallback, nil
@@ -115,6 +115,20 @@ func gatewayProxyRejected(resp *http.Response) bool {
 	if resp.StatusCode != http.StatusUnauthorized {
 		return false
 	}
-	challenge := strings.ToLower(resp.Header.Get("WWW-Authenticate"))
-	return strings.Contains(challenge, "ibkr gateway")
+	for _, challenge := range resp.Header.Values("WWW-Authenticate") {
+		challenge = strings.ToLower(strings.TrimSpace(challenge))
+		// Gateway Manager challenges with plain Bearer; older proxies used
+		// an explicit IBKR Gateway realm.
+		if challenge == "bearer" || strings.HasPrefix(challenge, "bearer ") || strings.Contains(challenge, "ibkr gateway") {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayUnauthorizedError(resp *http.Response, path string) error {
+	if gatewayProxyRejected(resp) {
+		return fmt.Errorf("ibkr: %s: gateway proxy authentication failed (HTTP 401); check the selected instance's Gateway Proxy Token (gateway_token) and gateway URL", path)
+	}
+	return fmt.Errorf("ibkr: %s: gateway session unavailable (HTTP 401); sign in to the configured Gateway instance and check its IBKR session status", path)
 }

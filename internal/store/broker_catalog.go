@@ -331,6 +331,17 @@ func configuredSecretKeys(secrets map[string]string) []string {
 }
 
 func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerConnection) (BrokerConnection, error) {
+	if err := upsertBrokerConnection(ctx, s.execContext, connection); err != nil {
+		return BrokerConnection{}, err
+	}
+	result, err := s.getBrokerConnection(ctx, strings.ToUpper(strings.TrimSpace(connection.ProviderCode)), strings.TrimSpace(connection.ConnectionKey))
+	if errors.Is(err, ErrNotFound) {
+		return BrokerConnection{}, fmt.Errorf("broker provider %s is not initialized", connection.ProviderCode)
+	}
+	return result, err
+}
+
+func upsertBrokerConnection(ctx context.Context, exec func(context.Context, string, ...any) (sql.Result, error), connection BrokerConnection) error {
 	connection.ProviderCode = strings.ToUpper(strings.TrimSpace(connection.ProviderCode))
 	connection.ConnectionKey = strings.TrimSpace(connection.ConnectionKey)
 	connection.Name = strings.TrimSpace(connection.Name)
@@ -340,7 +351,7 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 	connection.AuthType = strings.ToLower(strings.TrimSpace(connection.AuthType))
 	connection.Status = strings.ToLower(strings.TrimSpace(connection.Status))
 	if connection.ProviderCode == "" || connection.ConnectionKey == "" {
-		return BrokerConnection{}, fmt.Errorf("provider code and connection key are required")
+		return fmt.Errorf("provider code and connection key are required")
 	}
 	if connection.Environment == "" {
 		connection.Environment = "default"
@@ -352,7 +363,7 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 	if connection.Config != nil {
 		encoded, err := json.Marshal(connection.Config)
 		if err != nil {
-			return BrokerConnection{}, fmt.Errorf("encode connection config: %w", err)
+			return fmt.Errorf("encode connection config: %w", err)
 		}
 		configJSON = string(encoded)
 	}
@@ -360,11 +371,11 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 	if connection.Secrets != nil {
 		encoded, err := json.Marshal(connection.Secrets)
 		if err != nil {
-			return BrokerConnection{}, fmt.Errorf("encode connection secrets: %w", err)
+			return fmt.Errorf("encode connection secrets: %w", err)
 		}
 		secretsJSON = string(encoded)
 	}
-	if _, err := s.execContext(ctx, `
+	if _, err := exec(ctx, `
 		INSERT INTO broker_connections (
 			provider_code, connection_key, name, provider_user_id, username,
 			environment, auth_type, config_json, secrets_json, enabled, status
@@ -388,15 +399,10 @@ func (s *Store) UpsertBrokerConnection(ctx context.Context, connection BrokerCon
 		connection.Environment, connection.AuthType, configJSON, secretsJSON, connection.Enabled,
 		connection.Status, connection.ProviderCode, configJSON, secretsJSON, connection.Status,
 	); err != nil {
-		return BrokerConnection{}, err
+		return err
 	}
-	result, err := s.getBrokerConnection(ctx, connection.ProviderCode, connection.ConnectionKey)
-	if errors.Is(err, ErrNotFound) {
-		return BrokerConnection{}, fmt.Errorf("broker provider %s is not initialized", connection.ProviderCode)
-	}
-	return result, err
+	return nil
 }
-
 func (s *Store) getBrokerConnection(ctx context.Context, providerCode, connectionKey string) (BrokerConnection, error) {
 	connection, err := scanBrokerConnection(s.queryRowContext(ctx, `
 		SELECT c.id, c.provider_code, c.connection_key, c.name,
@@ -466,6 +472,12 @@ type rowScanner interface {
 }
 
 func scanBrokerConnection(scanner rowScanner) (BrokerConnection, error) {
+	connection, err := scanBrokerConnectionRuntime(scanner)
+	connection.Secrets = nil
+	return connection, err
+}
+
+func scanBrokerConnectionRuntime(scanner rowScanner) (BrokerConnection, error) {
 	var connection BrokerConnection
 	var configJSON, secretsJSON string
 	var lastAuthenticated sql.NullString
@@ -486,6 +498,7 @@ func scanBrokerConnection(scanner rowScanner) (BrokerConnection, error) {
 		return BrokerConnection{}, fmt.Errorf("decode connection secrets: %w", err)
 	}
 	connection.ConfiguredSecretKeys = configuredSecretKeys(secrets)
+	connection.Secrets = secrets
 	if lastAuthenticated.Valid {
 		connection.LastAuthenticatedAt = lastAuthenticated.String
 	}

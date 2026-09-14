@@ -58,6 +58,7 @@ type CandleCacheRepository interface {
 
 // BrokerCatalogRepository manages static providers and configured connection instances.
 type BrokerCatalogRepository interface {
+	SaveIBKRManagerConfig(context.Context, map[string]any, map[string]string, []BrokerConnection) (BrokerProvider, error)
 	ListBrokerProviders(context.Context) ([]BrokerProvider, error)
 	UpdateBrokerProviderConfig(context.Context, string, map[string]any, map[string]string) (BrokerProvider, error)
 	ListBrokerConnections(context.Context) ([]BrokerConnection, error)

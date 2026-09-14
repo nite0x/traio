@@ -41,6 +41,10 @@ func TestIBKRManagerRoutesAndConnectionSelection(t *testing.T) {
 		switch r.URL.Path {
 		case "/healthz":
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/management/v1/connections":
+			_ = json.NewEncoder(w).Encode(map[string]any{"connections": []map[string]any{{
+				"id": "paper", "proxy_url": gateway.URL, "proxy_token": gatewayToken,
+			}}})
 		case "/management/v1/gateways":
 			_ = json.NewEncoder(w).Encode(map[string]any{"gateways": []map[string]any{{
 				"id": "paper", "proxy_url": gateway.URL + "/", "proxy_listening": true, "proxy_token_configured": true,

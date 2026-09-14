@@ -53,6 +53,27 @@ type ManagerGateway struct {
 	Status               ManagerGatewayStatus `json:"status"`
 }
 
+// ManagerConnection is a server-only credential export, never a public API DTO.
+type ManagerConnection struct {
+	ID         string `json:"id"`
+	ProxyURL   string `json:"proxy_url"`
+	ProxyToken string `json:"proxy_token"`
+	AutoStart  bool   `json:"auto_start"`
+}
+
+func (c *ManagerClient) Connections(ctx context.Context) ([]ManagerConnection, error) {
+	var response struct {
+		Connections []ManagerConnection `json:"connections"`
+	}
+	if err := c.getJSON(ctx, "/management/v1/connections", true, &response); err != nil {
+		return nil, fmt.Errorf("读取实例连接失败，请确认 Gateway Manager 已升级并支持自动导入: %w", err)
+	}
+	if response.Connections == nil {
+		return nil, fmt.Errorf("IBKR Gateway Manager returned no connections list")
+	}
+	return response.Connections, nil
+}
+
 func NewManagerClient(origin, apiToken string) (*ManagerClient, error) {
 	normalized, err := normalizeManagerOrigin(origin)
 	if err != nil {
@@ -138,6 +159,10 @@ func (c *ManagerClient) getJSON(ctx context.Context, path string, authenticated 
 		return fmt.Errorf("IBKR Gateway Manager response is too large")
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if path == "/management/v1/connections" {
+			// Credential responses must never be echoed in errors or logs.
+			return fmt.Errorf("IBKR Gateway Manager returned %d", resp.StatusCode)
+		}
 		detail := strings.TrimSpace(string(body))
 		if detail == "" {
 			detail = http.StatusText(resp.StatusCode)
