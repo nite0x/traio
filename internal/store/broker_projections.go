@@ -80,6 +80,7 @@ func (s *Store) ReplaceBrokerConnectionAccounts(ctx context.Context, connectionI
 				first_discovered_at, last_seen_at, synced_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(provider_code, provider_account_id) DO UPDATE SET
+				archived_at = '', archive_reason = '',
 				display_name = CASE WHEN excluded.display_name = '' THEN broker_accounts.display_name ELSE excluded.display_name END,
 				account_type = CASE WHEN excluded.account_type = '' THEN broker_accounts.account_type ELSE excluded.account_type END,
 				status = CASE WHEN excluded.status = '' THEN broker_accounts.status ELSE excluded.status END,
@@ -167,28 +168,26 @@ func (s *Store) promoteOrDeleteBrokerAccountTx(ctx context.Context, tx *sql.Tx, 
 		return err
 	}
 	if count == 0 {
-		_, err := s.txExecContext(ctx, tx, `DELETE FROM broker_accounts WHERE id = ?`, accountID)
+		_, err := s.txExecContext(ctx, tx, `UPDATE broker_accounts SET archived_at = ?, archive_reason = 'no_connections' WHERE id = ?`, nowRFC3339(), accountID)
 		return err
 	}
-	var primaryCount int
-	if err := tx.QueryRowContext(ctx, s.bind(`
-		SELECT COUNT(*) FROM broker_account_connections
-		WHERE account_id = ? AND is_primary = 1`), accountID).Scan(&primaryCount); err != nil {
+	// Gateway wins over a report-only primary, independently of discovery order.
+	var preferred int64
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT ac.connection_id
+        FROM broker_account_connections ac JOIN broker_connections c ON c.id=ac.connection_id
+        WHERE ac.account_id=? ORDER BY c.enabled DESC,
+        CASE WHEN c.provider_code='IBKR' AND c.auth_type='api_key' THEN 1 ELSE 0 END,
+        ac.is_primary DESC, ac.first_seen_at, ac.connection_id LIMIT 1`), accountID).Scan(&preferred)
+	if err != nil {
 		return err
 	}
-	if primaryCount > 0 {
-		return nil
+	if _, err := s.txExecContext(ctx, tx, `UPDATE broker_account_connections SET is_primary=0 WHERE account_id=? AND connection_id<>?`, accountID, preferred); err != nil {
+		return err
 	}
-	_, err := s.txExecContext(ctx, tx, `
-		UPDATE broker_account_connections SET is_primary = 1
-		WHERE account_id = ? AND connection_id = (
-			SELECT ac.connection_id
-			FROM broker_account_connections ac
-			JOIN broker_connections c ON c.id = ac.connection_id
-			WHERE ac.account_id = ?
-			ORDER BY c.enabled DESC, ac.first_seen_at, ac.connection_id LIMIT 1
-		)`, accountID, accountID)
-	return err
+	if _, err := s.txExecContext(ctx, tx, `UPDATE broker_account_connections SET is_primary=1 WHERE account_id=? AND connection_id=?`, accountID, preferred); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) ReplaceBrokerConnectionAccountDetails(ctx context.Context, connectionID int64, account broker.Account) error {
@@ -283,6 +282,11 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 	if err != nil {
 		return err
 	}
+	if allowed, err := s.allowIBKRProjectionTx(ctx, tx, connectionID, accountID); err != nil {
+		return err
+	} else if !allowed {
+		return nil
+	}
 	if _, err := s.txExecContext(ctx, tx, `DELETE FROM broker_asset_positions WHERE account_id = ?`, accountID); err != nil {
 		return err
 	}
@@ -302,18 +306,27 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 			marketPrice = position.MarketValue / position.Quantity
 		}
 		assetType, assetKey := positionAssetIdentity(position)
+		if providerCode == "IBKR" && position.ExternalID == "" && position.ConID > 0 {
+			position.ExternalID = strconv.FormatInt(position.ConID, 10)
+		}
+
 		instrument, err := s.resolveInstrumentTx(ctx, tx, InstrumentIdentity{
-			ProviderCode: providerCode,
-			ExternalID:   position.ExternalID,
-			AssetType:    assetType,
-			Market:       position.Market,
-			Symbol:       symbol,
-			Name:         position.Name,
-			Exchange:     position.Exchange,
-			Currency:     position.Currency,
+			PreserveBrokerIdentity: providerCode == "IBKR",
+			ProviderCode:           providerCode,
+			ExternalID:             position.ExternalID,
+			AssetType:              assetType,
+			Market:                 position.Market,
+			Symbol:                 symbol,
+			Name:                   position.Name,
+			Exchange:               position.Exchange,
+			Currency:               position.Currency,
 		})
 		if err != nil {
 			return fmt.Errorf("resolve instrument %s: %w", symbol, err)
+		}
+		positionAsOf := strings.TrimSpace(position.SyncedAt)
+		if positionAsOf == "" {
+			positionAsOf = syncedAt
 		}
 		if _, err := s.txExecContext(ctx, tx, `
 			INSERT INTO broker_asset_positions (
@@ -326,7 +339,7 @@ func (s *Store) ReplaceBrokerConnectionAccountPositions(ctx context.Context, con
 			position.Quantity, nullableFloat(position.AvgCost), nullableFloat(marketPrice),
 			position.MarketValue, nullableFloat(position.Unrealized), nullableFloat(position.Realized),
 			nullableFloatPtr(position.DailyPnL), nullableFloatPtr(position.DailyPnLPct),
-			strings.ToUpper(strings.TrimSpace(position.Currency)), syncedAt,
+			strings.ToUpper(strings.TrimSpace(position.Currency)), positionAsOf,
 		); err != nil {
 			return err
 		}
@@ -436,10 +449,10 @@ func (s *Store) listBrokerAccounts(ctx context.Context, connectionID *int64) ([]
 	if s.dialect == dialectPostgres {
 		connectionIDsAggregate = "STRING_AGG(ac.connection_id::text, ',' ORDER BY ac.connection_id)"
 	}
-	whereClause := ""
+	whereClause := "WHERE a.archived_at = ''"
 	args := []any{}
 	if connectionID != nil {
-		whereClause = `WHERE EXISTS (
+		whereClause = `WHERE a.archived_at = '' AND EXISTS (
 			SELECT 1 FROM broker_account_connections requested
 			WHERE requested.account_id = a.id AND requested.connection_id = ?
 		)`
@@ -513,6 +526,7 @@ func (s *Store) ListBrokerAccountPerformance(ctx context.Context) ([]BrokerAccou
 		FROM broker_account_performance x
 		JOIN broker_accounts a ON a.id = x.account_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
+		WHERE a.archived_at = ''
 		ORDER BY a.provider_code, a.provider_account_id`)
 	if err != nil {
 		return nil, err
@@ -547,4 +561,19 @@ func parseInt64CSV(value string) []int64 {
 		}
 	}
 	return ids
+}
+
+// A Flex snapshot must never overwrite a Gateway primary, even if imported later
+// or if the authoritative Gateway snapshot is empty.
+func (s *Store) allowIBKRProjectionTx(ctx context.Context, tx *sql.Tx, connectionID, accountID int64) (bool, error) {
+	var provider, auth string
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code,auth_type FROM broker_connections WHERE id=?`), connectionID).Scan(&provider, &auth); err != nil {
+		return false, err
+	}
+	if provider != "IBKR" || auth != "api_key" {
+		return true, nil
+	}
+	var primary bool
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT is_primary FROM broker_account_connections WHERE account_id=? AND connection_id=?`), accountID, connectionID).Scan(&primary)
+	return primary, err
 }

@@ -16,6 +16,7 @@ import (
 	traioauth "github.com/nite/traio/internal/auth"
 	"github.com/nite/traio/internal/bootstrap"
 	"github.com/nite/traio/internal/config"
+	"github.com/nite/traio/internal/history"
 	"github.com/nite/traio/internal/market/yahoo"
 	"github.com/nite/traio/internal/news"
 	"github.com/nite/traio/internal/runtime"
@@ -87,6 +88,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	brokerSync.StartBackground(ctx, 0)
+	stopTradingEvents := connections.StartTradingEvents(ctx, brokerSync)
+	defer stopTradingEvents()
+	historyService := history.New(st)
+	historyService.Start(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -121,6 +126,7 @@ func main() {
 		WebDir:           config.ResolveWebDir(),
 		Auth:             authService,
 		Trading:          connections.Trading,
+		History:          historyService,
 	}
 
 	addr := config.ResolveServerListenAddr()

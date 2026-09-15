@@ -78,7 +78,7 @@ func (s *Store) ListBrokerPositions(ctx context.Context) ([]broker.Position, err
 		JOIN instruments i ON i.id = x.instrument_id
 		LEFT JOIN broker_instruments bi ON bi.provider_code = a.provider_code
 			AND bi.external_id = x.external_id AND bi.instrument_id = x.instrument_id
-		WHERE x.asset_type <> 'cash'
+		WHERE x.asset_type <> 'cash' AND a.archived_at = ''
 		ORDER BY a.provider_code, a.provider_account_id, x.market_value DESC, x.symbol`)
 	if err != nil {
 		return nil, err

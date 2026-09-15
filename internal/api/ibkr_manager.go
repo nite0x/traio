@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/broker/ibkr"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
@@ -84,6 +85,29 @@ func discoverIBKRConnections(ctx context.Context, st brokerStore, req *providerC
 
 func prepareIBKRConnection(ctx context.Context, st brokerStore, providerCode string, connectionID int64, req *brokerConnectionRequest) (int, error) {
 	if !strings.EqualFold(strings.TrimSpace(providerCode), ibkrProviderCode) {
+		return 0, nil
+	}
+	if ibkr.IsFlexConnection(req.Config) {
+		if connectionID > 0 {
+			current, err := st.GetBrokerConnectionRuntimeConfig(ctx, connectionID)
+			if err != nil {
+				return http.StatusBadRequest, err
+			}
+			merged := current.Secrets
+			if merged == nil {
+				merged = map[string]string{}
+			}
+			for key, value := range req.Secrets {
+				merged[key] = value
+			}
+			req.Secrets = merged
+		}
+		session, err := ibkr.NewFactory().Open(ctx, broker.ConnectionConfig{Config: req.Config, Secrets: req.Secrets})
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
+		_ = session.Close(ctx)
+		req.AuthType = "api_key"
 		return 0, nil
 	}
 	gatewayID := mapString(req.Config, ibkrGatewayIDKey)

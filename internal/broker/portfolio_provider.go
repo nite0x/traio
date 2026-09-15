@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -12,6 +13,9 @@ import (
 type PortfolioProvider interface {
 	ListAccountSnapshots(ctx context.Context) ([]AccountSnapshot, error)
 }
+
+// ErrSnapshotResourceNotProvided means a report omitted an optional section.
+var ErrSnapshotResourceNotProvided = errors.New("snapshot resource not provided")
 
 // AccountSnapshotErrors keeps failures isolated by resource. A provider may
 // still return the other resources for an account when one upstream call
@@ -28,7 +32,7 @@ type AccountSnapshotErrors struct {
 // calls.
 func (s AccountSnapshot) Resolve(ctx context.Context) (AccountSnapshot, AccountSnapshotErrors) {
 	if s.resolve == nil {
-		return s, AccountSnapshotErrors{}
+		return s, s.ResourceErrors
 	}
 	return s.resolve(ctx)
 }

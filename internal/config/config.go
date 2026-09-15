@@ -158,12 +158,15 @@ type AlpacaConfig struct {
 }
 
 type IBKRConfig struct {
-	SubAccount   string `json:"sub_account" yaml:"sub_account"`
-	FlexToken    string `json:"flex_token" yaml:"flex_token"`
-	FlexQueryID  string `json:"flex_query_id" yaml:"flex_query_id"`
-	FlexBaseURL  string `json:"flex_base_url" yaml:"flex_base_url"`
-	GatewayURL   string `json:"gateway_url" yaml:"gateway_url"`
-	GatewayToken string `json:"gateway_token" yaml:"gateway_token"`
+	FlexActivityQueryID    string `json:"flex_activity_query_id" yaml:"flex_activity_query_id"`
+	ActivityHistoryEnabled bool   `json:"activity_history_enabled" yaml:"activity_history_enabled"`
+	ActivityHistoryFrom    string `json:"activity_history_from" yaml:"activity_history_from"`
+	SubAccount             string `json:"sub_account" yaml:"sub_account"`
+	FlexToken              string `json:"flex_token" yaml:"flex_token"`
+	FlexQueryID            string `json:"flex_query_id" yaml:"flex_query_id"`
+	FlexBaseURL            string `json:"flex_base_url" yaml:"flex_base_url"`
+	GatewayURL             string `json:"gateway_url" yaml:"gateway_url"`
+	GatewayToken           string `json:"gateway_token" yaml:"gateway_token"`
 }
 
 type FinnhubConfig struct {

@@ -30,14 +30,16 @@ type Instrument struct {
 // InstrumentIdentity is the normalized evidence available while synchronizing
 // one provider position.
 type InstrumentIdentity struct {
-	ProviderCode string
-	ExternalID   string
-	AssetType    string
-	Market       string
-	Symbol       string
-	Name         string
-	Exchange     string
-	Currency     string
+	// Reports use the established Conid mapping even when their labels differ.
+	PreserveBrokerIdentity bool
+	ProviderCode           string
+	ExternalID             string
+	AssetType              string
+	Market                 string
+	Symbol                 string
+	Name                   string
+	Exchange               string
+	Currency               string
 }
 
 func NormalizeInstrumentSymbol(symbol string) string {
@@ -66,16 +68,18 @@ func normalizeInstrumentIdentity(identity InstrumentIdentity) (InstrumentIdentit
 
 func normalizeInstrumentAssetType(value string) string {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
-	case "", "SECURITY", "EQUITY", "US_EQUITY", "STOCK":
+	case "", "SECURITY", "EQUITY", "US_EQUITY", "STOCK", "STK":
 		return "stock"
-	case "OPTION", "OPTION_CONTRACT":
+	case "OPTION", "OPTION_CONTRACT", "OPT":
 		return "option"
 	case "ETF":
 		return "etf"
-	case "MUTUAL_FUND", "MUTUALFUND":
+	case "MUTUAL_FUND", "MUTUALFUND", "FUND":
 		return "mutual_fund"
 	case "FIXED_INCOME", "BOND":
 		return "bond"
+	case "FUT", "FUTURE":
+		return "future"
 	case "CRYPTO", "CRYPTOCURRENCY":
 		return "crypto"
 	default:
@@ -128,7 +132,7 @@ func (s *Store) resolveInstrumentTx(ctx context.Context, tx *sql.Tx, identity In
 	}
 	if identity.ProviderCode != "" && identity.ExternalID != "" {
 		instrument, err := s.getInstrumentByBrokerIdentityTx(ctx, tx, identity.ProviderCode, identity.ExternalID)
-		if err == nil && instrument.AssetType == identity.AssetType && instrument.Market == identity.Market {
+		if err == nil && ((identity.ProviderCode == "IBKR" && identity.PreserveBrokerIdentity) || (instrument.AssetType == identity.AssetType && instrument.Market == identity.Market)) {
 			if _, err := s.txExecContext(ctx, tx, `
 				UPDATE instruments SET
 					name = CASE WHEN name = '' THEN ? ELSE name END,

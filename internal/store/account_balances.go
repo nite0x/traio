@@ -32,6 +32,7 @@ func (s *Store) ListBrokerAccountBalances(ctx context.Context) ([]BrokerAccountB
 		FROM broker_account_balances b
 		JOIN broker_accounts a ON a.id = b.account_id
 		LEFT JOIN broker_account_connections ac ON ac.account_id = a.id AND ac.is_primary = 1
+		WHERE a.archived_at = ''
 		ORDER BY a.provider_code, a.provider_account_id, b.currency`)
 	if err != nil {
 		return nil, err

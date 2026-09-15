@@ -46,6 +46,7 @@ type Deps struct {
 	WebDir           string
 	Auth             *traioauth.Service
 	Trading          *broker.TradingService
+	History          historyAPI
 }
 
 func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
@@ -213,7 +214,20 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.POST("/broker-connections/:connection_id/oauth/exchange", requirePermission(traioauth.PermissionBrokerManage), exchangeBrokerConnectionOAuthCode(deps.Connections))
 		v1.GET("/broker-connections/:connection_id/accounts", listBrokerConnectionAccounts(deps.Brokers))
 		v1.POST("/broker-connections/:connection_id/sync", requirePermission(traioauth.PermissionBrokerSync), syncBrokerConnection(deps.Brokers, deps.BrokerSync))
+		v1.PUT("/broker-connections/:connection_id/history-config", requirePermission(traioauth.PermissionBrokerManage), updateHistoryConfig(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
+		v1.GET("/transaction-history/accounts", listHistoryAccounts(deps.History))
+		v1.GET("/transactions", listTransactions(deps.History))
+		v1.GET("/transactions/:id", getTransaction(deps.History))
+		v1.GET("/transactions/:id/revisions", getTransactionRevisions(deps.History))
+		v1.GET("/transaction-history/coverage", getHistoryCoverage(deps.History))
+		v1.GET("/transaction-history/issues", listHistoryIssues(deps.History))
+		v1.POST("/transaction-history/sync", requirePermission(traioauth.PermissionBrokerSync), syncHistory(deps.History))
+		v1.GET("/transaction-history/jobs/:id", getHistoryJob(deps.History))
+		v1.POST("/transaction-history/imports", requirePermission(traioauth.PermissionBrokerManage), createHistoryImport(deps.History))
+		v1.GET("/transaction-history/imports/:id", requirePermission(traioauth.PermissionBrokerManage), getHistoryImport(deps.History))
+		v1.POST("/transaction-history/imports/:id/commit", requirePermission(traioauth.PermissionBrokerManage), commitHistoryImport(deps.History))
+		v1.POST("/transaction-history/issues/:id/resolve", requirePermission(traioauth.PermissionBrokerManage), resolveHistoryIssue(deps.History))
 		v1.GET("/watchlist/groups", listWatchlistGroups(deps.Watchlists))
 		v1.GET("/watchlist/groups/:group_id/items", listWatchlistItems(deps.Watchlists))
 		v1.POST("/watchlist/groups/:group_id/items", requirePermission(traioauth.PermissionWatchlistWrite), upsertWatchlistItem(deps.Watchlists))

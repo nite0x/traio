@@ -28,7 +28,9 @@ type AccountSnapshot struct {
 	Positions        []Position       `json:"positions"`
 	DailyPerformance DailyPerformance `json:"daily_performance"`
 
-	resolve accountSnapshotResolver
+	// ResourceErrors preserves missing sections in partial report snapshots.
+	ResourceErrors AccountSnapshotErrors `json:"-"`
+	resolve        accountSnapshotResolver
 }
 
 // LoginAction describes the UI action needed to finish broker authentication.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -24,10 +25,13 @@ import (
 type Client struct {
 	cfg        config.IBKRConfig
 	httpClient *http.Client
+	flexClient *http.Client
 
 	pnlMu        sync.Mutex
 	pnlFetchedAt time.Time
 	pnlSnapshot  map[string]dailyPnLEntry
+
+	orderState liveOrderState
 }
 
 func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, error) {
@@ -85,10 +89,16 @@ func (c *Client) HistoricalEquity(ctx context.Context) ([]broker.AccountEquityPo
 }
 
 type flexPeriod struct {
-	days int // Flex "p" override: last N days (max 365)
+	days     int // Flex "p" override: last N days (max 365)
+	from, to string
 }
 
 func applyFlexPeriod(q url.Values, period flexPeriod) {
+	if period.from != "" && period.to != "" {
+		q.Set("fd", strings.ReplaceAll(period.from, "-", ""))
+		q.Set("td", strings.ReplaceAll(period.to, "-", ""))
+		return
+	}
 	if period.days <= 0 || period.days > 365 {
 		return
 	}
@@ -96,37 +106,22 @@ func applyFlexPeriod(q url.Values, period flexPeriod) {
 }
 
 func (c *Client) flexSendRequest(ctx context.Context, token, queryID string, period flexPeriod) (string, error) {
-	u, err := url.Parse(c.cfg.FlexBaseURL + "/SendRequest")
-	if err != nil {
-		return "", err
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("t", token)
 	q.Set("q", queryID)
 	q.Set("v", "3")
 	applyFlexPeriod(q, period)
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	body, err := c.flexRequestBody(ctx, "SendRequest", q)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Java")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ibkr flex: send request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ibkr flex: send status %d", resp.StatusCode)
-	}
 
 	var parsed flexResponse
-	if err := xml.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", fmt.Errorf("ibkr flex: decode send response: %w", err)
+	if err := xml.NewDecoder(bytes.NewReader(body)).Decode(&parsed); err != nil {
+		return "", errors.New("ibkr flex: invalid SendRequest response")
 	}
 	if strings.EqualFold(parsed.Status, "Fail") || parsed.ErrorCode != "" {
-		return "", fmt.Errorf("ibkr flex: %s %s", parsed.ErrorCode, parsed.ErrorMessage)
+		return "", newFlexError(parsed.ErrorCode)
 	}
 	if strings.TrimSpace(parsed.ReferenceCode) == "" {
 		return "", fmt.Errorf("ibkr flex: missing reference code")
@@ -160,33 +155,16 @@ func (c *Client) flexGetStatement(ctx context.Context, token, refCode string, pe
 }
 
 func (c *Client) flexGetStatementOnce(ctx context.Context, token, refCode string, period flexPeriod) ([]byte, error) {
-	u, err := url.Parse(c.cfg.FlexBaseURL + "/GetStatement")
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("t", token)
 	q.Set("q", refCode)
 	q.Set("v", "3")
+	// Keep the existing NAV request shape. IBKR binds the range to the reference
+	// code, but has historically tolerated the same override on retrieval.
 	applyFlexPeriod(q, period)
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	body, err := c.flexRequestBody(ctx, "GetStatement", q)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("User-Agent", "Java")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr flex: get statement: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ibkr flex: get status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("ibkr flex: read statement: %w", err)
 	}
 	if flexErr := parseFlexError(body); flexErr != nil {
 		return nil, flexErr
@@ -198,12 +176,14 @@ func New(cfg config.IBKRConfig) *Client {
 	return &Client{
 		cfg:        cfg,
 		httpClient: newGatewayHTTPClient(cfg.GatewayURL, cfg.GatewayToken, 15*time.Second),
+		flexClient: newFlexHTTPClient(),
 	}
 }
 
 func (c *Client) SetConfig(cfg config.IBKRConfig) {
 	c.cfg = cfg
 	c.httpClient = newGatewayHTTPClient(cfg.GatewayURL, cfg.GatewayToken, 15*time.Second)
+	c.flexClient = newFlexHTTPClient()
 	c.pnlMu.Lock()
 	c.pnlFetchedAt = time.Time{}
 	c.pnlSnapshot = nil
@@ -470,34 +450,52 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 	if accountID == "" {
 		return nil, fmt.Errorf("ibkr: account ID is required")
 	}
+	if broker.FreshPositionsRequested(ctx) {
+		if err := c.invalidatePositions(ctx, accountID); err != nil {
+			return nil, err
+		}
+	}
 
 	out := []broker.Position{}
 	for page := 0; page < 1000; page++ {
 		path := fmt.Sprintf("/portfolio/%s/positions/%d", url.PathEscape(accountID), page)
 		var raw []struct {
-			ConID         int64   `json:"conid"`
-			AccountID     string  `json:"acctId"`
-			ContractDesc  string  `json:"contractDesc"`
-			Ticker        string  `json:"ticker"`
-			Name          string  `json:"name"`
-			FullName      string  `json:"fullName"`
-			AssetClass    string  `json:"assetClass"`
-			Type          string  `json:"type"`
-			Position      float64 `json:"position"`
-			MktPrice      float64 `json:"mktPrice"`
-			MktValue      float64 `json:"mktValue"`
-			AvgCost       float64 `json:"avgCost"`
-			UnrealizedPnl float64 `json:"unrealizedPnl"`
-			RealizedPnl   float64 `json:"realizedPnl"`
-			Currency      string  `json:"currency"`
+			ConID         int64    `json:"conid"`
+			AccountID     string   `json:"acctId"`
+			ContractDesc  string   `json:"contractDesc"`
+			Ticker        string   `json:"ticker"`
+			Name          string   `json:"name"`
+			FullName      string   `json:"fullName"`
+			AssetClass    string   `json:"assetClass"`
+			Type          string   `json:"type"`
+			Position      *float64 `json:"position"`
+			MktPrice      float64  `json:"mktPrice"`
+			MktValue      float64  `json:"mktValue"`
+			AvgCost       float64  `json:"avgCost"`
+			UnrealizedPnl float64  `json:"unrealizedPnl"`
+			RealizedPnl   float64  `json:"realizedPnl"`
+			Currency      string   `json:"currency"`
 		}
 		if err := c.getGatewayJSON(ctx, path, "positions", &raw); err != nil {
 			return nil, err
 		}
+		if raw == nil {
+			return nil, errors.New("ibkr: incomplete positions response")
+		}
 
 		for _, p := range raw {
 			symbol := strings.TrimSpace(firstNonEmpty(p.Ticker, p.ContractDesc))
-			if symbol == "" || p.Position == 0 {
+			if p.Position == nil {
+				return nil, errors.New("ibkr: missing position quantity")
+			}
+			quantity := *p.Position
+			if p.AccountID != "" && p.AccountID != accountID {
+				return nil, errors.New("ibkr: position account mismatch")
+			}
+			if quantity != 0 && (symbol == "" || p.ConID <= 0 || p.Currency == "") {
+				return nil, errors.New("ibkr: incomplete position identity")
+			}
+			if quantity == 0 {
 				continue
 			}
 			out = append(out, broker.Position{
@@ -507,7 +505,7 @@ func (c *Client) ListAccountPositions(ctx context.Context, accountID string) ([]
 				Symbol:      symbol,
 				Name:        strings.TrimSpace(firstNonEmpty(p.Name, p.FullName)),
 				ConID:       p.ConID,
-				Quantity:    p.Position,
+				Quantity:    quantity,
 				AvgCost:     p.AvgCost,
 				MarketPrice: p.MktPrice,
 				MarketValue: p.MktValue,
@@ -699,9 +697,43 @@ func (e flexError) Error() string {
 	return "ibkr flex: " + e.code + " " + e.message
 }
 
+// newFlexError deliberately maps only documented codes. Flex credentials are
+// query parameters, so reflecting an upstream error message could disclose a
+// token or reference code through logs and API error responses.
+func newFlexError(code string) flexError {
+	code = strings.TrimSpace(code)
+	messages := map[string]string{
+		"1001": "statement could not be generated yet",
+		"1003": "statement is not available",
+		"1004": "statement is incomplete",
+		"1005": "settlement data is not ready",
+		"1006": "FIFO data is not ready",
+		"1007": "mark-to-market data is not ready",
+		"1008": "profit and loss data is not ready",
+		"1009": "report service is busy",
+		"1010": "legacy Flex query is unsupported",
+		"1011": "Flex service account is inactive",
+		"1012": "Flex token has expired",
+		"1013": "Flex IP restriction rejected the request",
+		"1014": "Flex query is invalid",
+		"1015": "Flex token is invalid",
+		"1016": "Flex account is invalid",
+		"1017": "Flex reference code is invalid",
+		"1018": "Flex request rate limit exceeded",
+		"1019": "statement generation is in progress",
+		"1020": "Flex request could not be validated",
+		"1021": "statement could not be retrieved",
+	}
+	message := messages[code]
+	if message == "" {
+		message = "report service returned an error"
+	}
+	return flexError{code: code, message: message}
+}
+
 func isRetryableFlexError(err error) bool {
-	fe, ok := err.(flexError)
-	if !ok {
+	var fe flexError
+	if !errors.As(err, &fe) {
 		return false
 	}
 	switch fe.code {
@@ -718,10 +750,7 @@ func parseFlexError(body []byte) error {
 		return nil
 	}
 	if strings.EqualFold(parsed.Status, "Fail") || parsed.ErrorCode != "" {
-		return flexError{
-			code:    strings.TrimSpace(parsed.ErrorCode),
-			message: strings.TrimSpace(parsed.ErrorMessage),
-		}
+		return newFlexError(parsed.ErrorCode)
 	}
 	return nil
 }
@@ -943,4 +972,19 @@ func exchangeFromHeader(value string) string {
 		return ""
 	}
 	return strings.TrimSpace(value[start+1 : end])
+}
+
+// FlexErrorCode preserves the numeric broker diagnostic without exposing its
+// upstream message, credentials, reference code or request URL.
+func FlexErrorCode(err error) string {
+	var fe flexError
+	if !errors.As(err, &fe) || len(fe.code) != 4 {
+		return ""
+	}
+	for _, r := range fe.code {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return fe.code
 }

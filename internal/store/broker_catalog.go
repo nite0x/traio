@@ -70,15 +70,19 @@ var defaultBrokerProviders = []providerSeed{
 		displayInfo:  `{"short_name":"IBKR"}`,
 		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance"},
 		providerFields: []BrokerFieldDefinition{
-			{Key: "manager_url", Label: "Gateway Manager 地址", Type: "url", Required: true, Description: "IBKR Gateway Manager 的 HTTP(S) origin"},
+			{Key: "manager_url", Label: "Gateway Manager 地址", Type: "url", Description: "IBKR Gateway Manager 的 HTTP(S) origin"},
 			{Key: "manager_api_token", Label: "Manager API Token", Type: "string", Secret: true, Description: "Gateway Manager 的 api_token"},
 		},
 		connectionFields: []BrokerFieldDefinition{
+			{Key: "connection_type", Label: "数据来源", Type: "string"},
 			{Key: "username", Label: "登录用户名", Type: "string"},
-			{Key: "gateway_id", Label: "Gateway 实例", Type: "string", Required: true, Description: "从 Gateway Manager 返回的实例中选择"},
+			{Key: "gateway_id", Label: "Gateway 实例", Type: "string", Description: "从 Gateway Manager 返回的实例中选择"},
 			{Key: "gateway_token", Label: "Gateway Proxy Token", Type: "string", Secret: true},
 			{Key: "flex_token", Label: "Flex Token", Type: "string", Secret: true},
 			{Key: "flex_query_id", Label: "Flex Query ID", Type: "string"},
+			{Key: "flex_activity_query_id", Label: "Activity Flex Query ID", Type: "string"},
+			{Key: "activity_history_enabled", Label: "同步账户活动", Type: "boolean"},
+			{Key: "activity_history_from", Label: "历史回填起点", Type: "date"},
 			{Key: "flex_base_url", Label: "Flex API 地址", Type: "url"},
 		},
 	},
@@ -349,6 +353,9 @@ func upsertBrokerConnection(ctx context.Context, exec func(context.Context, stri
 	connection.Username = strings.TrimSpace(connection.Username)
 	connection.Environment = strings.TrimSpace(connection.Environment)
 	connection.AuthType = strings.ToLower(strings.TrimSpace(connection.AuthType))
+	if connection.ProviderCode == "IBKR" && connection.Config["connection_type"] == "flex" {
+		connection.AuthType = "api_key"
+	}
 	connection.Status = strings.ToLower(strings.TrimSpace(connection.Status))
 	if connection.ProviderCode == "" || connection.ConnectionKey == "" {
 		return fmt.Errorf("provider code and connection key are required")

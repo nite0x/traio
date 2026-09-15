@@ -41,10 +41,19 @@ func OpenRepository(driver, dataSource string) (Repository, error) {
 }
 
 func (s *Store) migrate() error {
+	var err error
 	if s.dialect == dialectPostgres {
-		return s.migratePostgres()
+		err = s.migratePostgres()
+	} else {
+		err = s.migrateSQLite()
 	}
-	return s.migrateSQLite()
+	if err != nil {
+		return err
+	}
+	if err := s.migrateActivities(); err != nil {
+		return err
+	}
+	return s.migrateIBKRFlexConnections()
 }
 
 func (s *Store) bind(query string) string {

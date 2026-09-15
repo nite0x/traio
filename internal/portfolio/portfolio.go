@@ -2,6 +2,7 @@ package portfolio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -57,6 +58,8 @@ type SyncService struct {
 	sources   []Source
 	syncNow   chan struct{}
 	syncMu    sync.Mutex
+	pendingMu sync.Mutex
+	pending   map[accountRefreshKey]accountRefresh
 
 	cfgMu sync.RWMutex
 	cfg   config.BrokerSyncConfig
@@ -105,6 +108,8 @@ func (s *SyncService) StartBackground(ctx context.Context, interval time.Duratio
 		_ = s.Sync(ctx)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		refreshTicker := time.NewTicker(250 * time.Millisecond)
+		defer refreshTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -113,6 +118,8 @@ func (s *SyncService) StartBackground(ctx context.Context, interval time.Duratio
 				_ = s.Sync(ctx)
 			case <-s.syncNow:
 				_ = s.Sync(ctx)
+			case <-refreshTicker.C:
+				s.refreshPendingAccounts(ctx)
 			}
 		}
 	}()
@@ -146,7 +153,7 @@ func (s *SyncService) SyncConnection(ctx context.Context, connectionID int64) er
 	return fmt.Errorf("broker connection %d does not support account synchronization", connectionID)
 }
 
-func (s *SyncService) syncSources(ctx context.Context, sources []Source) error {
+func (s *SyncService) syncSources(ctx context.Context, sources []Source, accountScope ...string) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
@@ -191,7 +198,7 @@ func (s *SyncService) syncSources(ctx context.Context, sources []Source) error {
 		}
 		err = func() error {
 			defer release()
-			return s.syncBrokerResources(ctx, name, source.ConnectionID, provider)
+			return s.syncBrokerResources(ctx, name, source.ConnectionID, provider, accountScope...)
 		}()
 		if err != nil {
 			errs = append(errs, name+": "+err.Error())
@@ -204,7 +211,7 @@ func (s *SyncService) syncSources(ctx context.Context, sources []Source) error {
 	return fmt.Errorf("%s", strings.Join(errs, "; "))
 }
 
-func (s *SyncService) syncBrokerResources(ctx context.Context, name string, connectionID int64, provider broker.PortfolioProvider) error {
+func (s *SyncService) syncBrokerResources(ctx context.Context, name string, connectionID int64, provider broker.PortfolioProvider, accountScope ...string) error {
 	brokerSnapshots, err := provider.ListAccountSnapshots(ctx)
 	if err != nil {
 		return s.recordBrokerResourceError(ctx, connectionID, "", store.SyncDataAccounts, fmt.Errorf("list account snapshots: %w", err))
@@ -229,6 +236,9 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 	var errs []string
 	for _, listedAccount := range listed {
 		accountID := strings.TrimSpace(listedAccount.ID)
+		if len(accountScope) > 0 && accountScope[0] != "" && accountID != accountScope[0] {
+			continue
+		}
 		if accountID == "" {
 			errs = append(errs, "account list contains an empty ID")
 			continue
@@ -242,7 +252,11 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 			continue
 		}
 
-		snapshot, resourceErrors := snapshots[accountID].Resolve(ctx)
+		resolveCtx := ctx
+		if len(accountScope) > 0 {
+			resolveCtx = broker.WithFreshPositions(ctx)
+		}
+		snapshot, resourceErrors := snapshots[accountID].Resolve(resolveCtx)
 		account := snapshot.Account
 		if resourceErrors.AccountDetails != nil {
 			err = fmt.Errorf("account %s details: %w", accountID, resourceErrors.AccountDetails)
@@ -264,7 +278,9 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 		}
 
 		balances := snapshot.CashBalances
-		if resourceErrors.CashBalances != nil {
+		if errors.Is(resourceErrors.CashBalances, broker.ErrSnapshotResourceNotProvided) {
+			// Keep the prior resource when the report omits this optional section.
+		} else if resourceErrors.CashBalances != nil {
 			err = fmt.Errorf("account %s cash balances: %w", accountID, resourceErrors.CashBalances)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataCashBalances, err).Error())
 		} else {
@@ -278,7 +294,9 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 		}
 
 		positions := snapshot.Positions
-		if resourceErrors.Positions != nil {
+		if errors.Is(resourceErrors.Positions, broker.ErrSnapshotResourceNotProvided) {
+			// Keep the prior resource when the report omits this optional section.
+		} else if resourceErrors.Positions != nil {
 			err = fmt.Errorf("account %s positions: %w", accountID, resourceErrors.Positions)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataPositions, err).Error())
 		} else {
@@ -293,7 +311,9 @@ func (s *SyncService) syncBrokerResources(ctx context.Context, name string, conn
 		}
 
 		performance := snapshot.DailyPerformance
-		if resourceErrors.DailyPerformance != nil {
+		if errors.Is(resourceErrors.DailyPerformance, broker.ErrSnapshotResourceNotProvided) {
+			// Keep the prior resource when the report omits this optional section.
+		} else if resourceErrors.DailyPerformance != nil {
 			err = fmt.Errorf("account %s daily performance: %w", accountID, resourceErrors.DailyPerformance)
 			errs = append(errs, s.recordBrokerResourceError(ctx, connectionID, accountID, store.SyncDataDailyPerformance, err).Error())
 		} else {

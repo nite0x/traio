@@ -104,6 +104,7 @@ type InstrumentRepository interface {
 // Repository is the complete persistence contract assembled at process startup.
 // Consumers should accept one of the narrower interfaces above.
 type Repository interface {
+	ActivityRepository
 	AuthRepository
 	WatchlistRepository
 	SettingsRepository

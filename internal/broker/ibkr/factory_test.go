@@ -71,3 +71,27 @@ func TestFactoryRejectsInvalidGatewayOrigin(t *testing.T) {
 		t.Fatalf("Open error = %v", err)
 	}
 }
+
+func TestFactoryMapsActivityHistoryConfiguration(t *testing.T) {
+	cfg, err := connectionConfig(brokerapi.ConnectionConfig{
+		Config: map[string]any{
+			"gateway_id":               "primary",
+			"gateway_url":              "https://gateway.example.test",
+			"flex_activity_query_id":   "activity-query",
+			"activity_history_enabled": true,
+			"activity_history_from":    "2026-01-02",
+		},
+		Secrets: map[string]string{"flex_token": "secret"},
+	})
+	if err != nil {
+		t.Fatalf("connectionConfig: %v", err)
+	}
+	if cfg.FlexActivityQueryID != "activity-query" || !cfg.ActivityHistoryEnabled || cfg.ActivityHistoryFrom != "2026-01-02" {
+		t.Fatalf("activity configuration lost: %#v", cfg)
+	}
+	if _, err := connectionConfig(brokerapi.ConnectionConfig{Config: map[string]any{
+		"gateway_id": "primary", "gateway_url": "https://gateway.example.test", "activity_history_from": "01/02/2026",
+	}}); err == nil {
+		t.Fatal("invalid activity_history_from accepted")
+	}
+}

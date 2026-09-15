@@ -74,14 +74,15 @@ func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broke
 }
 
 func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.Order, error) {
-	var raw struct {
-		Orders []map[string]any `json:"orders"`
+	if orders, ok := c.cachedOrders(q); ok {
+		return orders, nil
 	}
-	if err := c.orderRequest(ctx, http.MethodGet, "/iserver/account/orders?force=true", nil, &raw); err != nil {
+	rows, err := c.fetchOrderRows(ctx, false)
+	if err != nil {
 		return nil, err
 	}
-	out := make([]broker.Order, 0, len(raw.Orders))
-	for _, item := range raw.Orders {
+	out := make([]broker.Order, 0, len(rows))
+	for _, item := range rows {
 		account := textValue(item["acct"])
 		if q.AccountID != "" && account != q.AccountID {
 			continue
@@ -149,7 +150,7 @@ func normalizeIBKROrder(account string, m map[string]any) broker.Order {
 	if id == "" {
 		id = textValue(m["order_id"])
 	}
-	return broker.Order{ID: id, AccountID: account, Symbol: textValue(m["ticker"]), InstrumentID: textValue(m["conid"]), Side: strings.ToLower(textValue(m["side"])), OrderType: strings.ToLower(textValue(m["orderType"])), Quantity: floatValue(m["totalSize"]), FilledQuantity: floatValue(m["filledQuantity"]), LimitPrice: floatValue(m["price"]), AverageFillPrice: floatValue(m["avgPrice"]), TimeInForce: strings.ToLower(textValue(m["tif"])), Status: normalizeIBKRStatus(raw), RawStatus: raw}
+	return broker.Order{ID: id, AccountID: account, Symbol: textValue(m["ticker"]), InstrumentID: textValue(m["conid"]), Side: strings.ToLower(textValue(m["side"])), OrderType: strings.ToLower(textValue(m["orderType"])), Quantity: floatValue(m["totalSize"]), FilledQuantity: floatValue(m["filledQuantity"]), LimitPrice: floatValue(m["price"]), AverageFillPrice: floatValue(m["avgPrice"]), TimeInForce: strings.ToLower(firstNonEmpty(textValue(m["timeInForce"]), textValue(m["tif"]))), Status: normalizeIBKRStatus(raw), RawStatus: raw}
 }
 func normalizeIBKRStatus(s string) string {
 	switch strings.ToLower(strings.ReplaceAll(s, " ", "")) {
