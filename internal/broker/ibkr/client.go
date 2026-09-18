@@ -32,6 +32,7 @@ type Client struct {
 	pnlSnapshot  map[string]dailyPnLEntry
 
 	orderState liveOrderState
+	orderFlow  orderWorkflowState
 }
 
 func (c *Client) AccountSummary(ctx context.Context) (broker.AccountSummary, error) {

@@ -187,7 +187,22 @@ func (s *Store) SaveHistoryRaw(ctx context.Context, j HistoryJob, records []acti
 			h = historyHash(string(r.Payload) + historyJSON(r.Activity.CostAdjustments))
 		}
 		id := uuid.NewString()
-		_, err = s.txExecContext(ctx, tx, `INSERT INTO broker_raw_records(id,account_id,source,namespace,record_type,source_key,payload_hash,payload,normalized,source_updated_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,namespace,record_type,source_key,payload_hash) DO NOTHING`, id, accountID, r.Source, r.Namespace, r.RecordType, r.Key, h, string(r.Payload), historyJSON(r), r.SourceUpdatedAt, nowRFC3339())
+		_, err = s.txExecContext(ctx, tx, `
+			INSERT INTO broker_raw_records(
+				id,account_id,source,namespace,record_type,source_key,payload_hash,payload,
+				normalized,source_updated_at,normalization_rule_version,created_at
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(account_id,namespace,record_type,source_key,payload_hash) DO UPDATE SET
+				normalized=CASE
+					WHEN broker_raw_records.normalization_rule_version<>excluded.normalization_rule_version THEN excluded.normalized
+					ELSE broker_raw_records.normalized
+				END,
+				normalize_status=CASE
+					WHEN broker_raw_records.normalization_rule_version<>excluded.normalization_rule_version THEN 'pending'
+					ELSE broker_raw_records.normalize_status
+				END,
+				normalization_rule_version=excluded.normalization_rule_version`,
+			id, accountID, r.Source, r.Namespace, r.RecordType, r.Key, h, string(r.Payload), historyJSON(r), r.SourceUpdatedAt, activity.RuleVersion, nowRFC3339())
 		if err != nil {
 			return err
 		}
@@ -398,16 +413,25 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 	oldPriority := 0
 	oldTime := ""
 	oldID := ""
+	oldRuleVersion := ""
 	var old activity.Activity
 	if id != "" {
 		var b string
-		err = tx.QueryRowContext(ctx, s.bind(`SELECT v.id,v.revision_no,v.payload,v.source_priority,v.source_updated_at FROM account_activities a JOIN activity_revisions v ON v.activity_id=a.id AND v.revision_no=a.current_revision WHERE a.id=?`), id).Scan(&oldID, &revision, &b, &oldPriority, &oldTime)
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT v.id,v.revision_no,v.payload,v.source_priority,v.source_updated_at,v.rule_version FROM account_activities a JOIN activity_revisions v ON v.activity_id=a.id AND v.revision_no=a.current_revision WHERE a.id=?`), id).Scan(&oldID, &revision, &b, &oldPriority, &oldTime, &oldRuleVersion)
 		if err != nil {
 			return "", err
 		}
 		if err = json.Unmarshal([]byte(b), &old); err != nil {
 			return "", err
 		}
+	}
+	ruleUpgrade := false
+	if revision > 0 && oldRuleVersion != activity.RuleVersion && oldPriority < acceptedRevisionSourcePriority {
+		var currentPrincipal int
+		if err = tx.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM activity_sources WHERE revision_id=? AND raw_record_id=? AND role='principal'`), oldID, rawID).Scan(&currentPrincipal); err != nil {
+			return "", err
+		}
+		ruleUpgrade = currentPrincipal == 1
 	}
 	if id == "" {
 		id = uuid.NewString()
@@ -445,6 +469,11 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 		}
 		if manualDuplicate > 0 {
 			replace = false
+			unorderedConflict = false
+		} else if ruleUpgrade {
+			// A deterministic parser upgrade may revise its own derived activity,
+			// but must never override an accepted or manually reviewed revision.
+			replace = true
 			unorderedConflict = false
 		}
 	}
@@ -575,6 +604,11 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 			return "", err
 		}
 	}
+	if ruleUpgrade && replace {
+		if _, err = s.txExecContext(ctx, tx, `UPDATE activity_reconciliation_issues SET status='resolved',resolution=?,updated_at=? WHERE raw_record_id=? AND status='open'`, "superseded_by_"+activity.RuleVersion, nowRFC3339(), rawID); err != nil {
+			return "", err
+		}
+	}
 	for _, key := range identities {
 		if key.ExternalID == "" {
 			continue
@@ -591,6 +625,12 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 		result = "duplicate"
 	}
 	status := "done"
+	if ruleUpgrade && !replace && (a.Status == activity.StatusNeedsReview || a.Status == activity.StatusUnsupported) {
+		// The upgraded rule reached the same review result. Preserve the existing
+		// issue and raw-record status instead of silently counting it as complete.
+		status = a.Status
+		result = status
+	}
 	if unorderedConflict {
 		status = "needs_review"
 		result = status

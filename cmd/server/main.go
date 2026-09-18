@@ -70,6 +70,8 @@ func main() {
 	}
 	brokerSync := runtime.BuildBrokerSync(st, connections)
 	brokerSync.SetSyncConfig(cfg.BrokerSync)
+	historyService := history.New(st)
+	historyService.SetSyncConfig(cfg.BrokerSync)
 	accountEquity := runtime.BuildAccountEquity(connections)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
@@ -80,6 +82,7 @@ func main() {
 			return
 		}
 		brokerSync.SetSyncConfig(updated.BrokerSync)
+		historyService.SetSyncConfig(updated.BrokerSync)
 		brokerSync.Invalidate()
 		newsSvc.SetConfig(updated.Finnhub)
 		aiSvc.SetConfig(updated.Claude)
@@ -90,7 +93,6 @@ func main() {
 	brokerSync.StartBackground(ctx, 0)
 	stopTradingEvents := connections.StartTradingEvents(ctx, brokerSync)
 	defer stopTradingEvents()
-	historyService := history.New(st)
 	historyService.Start(ctx)
 
 	quit := make(chan os.Signal, 1)

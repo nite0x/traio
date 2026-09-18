@@ -11,11 +11,12 @@ import (
 	"github.com/nite/traio/internal/store"
 )
 
-// AggregatedPosition is one portfolio holding grouped by Traio instrument ID.
-// Legs preserve the account-level broker projections used to calculate it.
+// AggregatedPosition is one portfolio holding grouped by its canonical listing
+// identity. Legs preserve the account-level broker projections used to calculate it.
 type AggregatedPosition struct {
 	PositionID           string            `json:"position_id"`
 	InstrumentID         int64             `json:"instrument_id"`
+	InstrumentIDs        []int64           `json:"instrument_ids"`
 	AssetType            string            `json:"asset_type"`
 	Market               string            `json:"market"`
 	Symbol               string            `json:"symbol"`
@@ -38,34 +39,90 @@ type AggregatedPosition struct {
 }
 
 type aggregatedPositionAccumulator struct {
-	position    AggregatedPosition
-	costBasis   float64
-	dailyPnL    float64
-	hasDailyPnL bool
-	brokerNames map[string]struct{}
+	position      AggregatedPosition
+	costBasis     float64
+	dailyPnL      float64
+	hasDailyPnL   bool
+	brokerNames   map[string]struct{}
+	instrumentIDs map[int64]struct{}
+}
+
+func isEquityListing(assetType string) bool {
+	switch strings.ToLower(strings.TrimSpace(assetType)) {
+	case "", "security", "stock", "stk", "equity", "us_equity", "etf", "fund", "collective_investment":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedPositionMarket(position broker.Position) string {
+	market := strings.ToUpper(strings.TrimSpace(position.Market))
+	if market != "" && market != "UNKNOWN" {
+		return market
+	}
+	if strings.EqualFold(strings.TrimSpace(position.Currency), "USD") {
+		return "US"
+	}
+	if market != "" {
+		return market
+	}
+	return "UNKNOWN"
+}
+
+func positionAggregationKey(position broker.Position) string {
+	if !isEquityListing(position.AssetType) {
+		return "instrument:" + strconv.FormatInt(position.InstrumentID, 10)
+	}
+	symbol := store.NormalizeInstrumentSymbol(position.Symbol)
+	currency := strings.ToUpper(strings.TrimSpace(position.Currency))
+	if symbol == "" || currency == "" {
+		return "instrument:" + strconv.FormatInt(position.InstrumentID, 10)
+	}
+	return strings.Join([]string{
+		"equity",
+		symbol,
+		normalizedPositionMarket(position),
+		currency,
+	}, ":")
 }
 
 func aggregatePositions(positions []broker.Position, netAssetValue float64) ([]AggregatedPosition, error) {
 	groups := map[string]*aggregatedPositionAccumulator{}
+	instrumentGroups := map[int64]string{}
 	for _, leg := range positions {
 		if leg.InstrumentID <= 0 {
 			return nil, fmt.Errorf("position %s in %s is missing instrument_id", leg.Symbol, leg.Account)
 		}
-		key := "instrument:" + strconv.FormatInt(leg.InstrumentID, 10)
+		key := positionAggregationKey(leg)
+		if existingKey, ok := instrumentGroups[leg.InstrumentID]; ok {
+			key = existingKey
+		} else {
+			instrumentGroups[leg.InstrumentID] = key
+		}
 		group := groups[key]
 		if group == nil {
 			group = &aggregatedPositionAccumulator{
 				position: AggregatedPosition{
 					PositionID: "position:" + strconv.FormatInt(leg.InstrumentID, 10), InstrumentID: leg.InstrumentID,
-					AssetType: leg.AssetType, Market: leg.Market, Symbol: leg.Symbol,
-					Name: leg.Name, Currency: leg.Currency, Brokers: []string{}, Legs: []broker.Position{},
+					InstrumentIDs: []int64{},
+					AssetType:     leg.AssetType, Market: normalizedPositionMarket(leg), Symbol: store.NormalizeInstrumentSymbol(leg.Symbol),
+					Name: leg.Name, Currency: strings.ToUpper(strings.TrimSpace(leg.Currency)), Brokers: []string{}, Legs: []broker.Position{},
 				},
-				brokerNames: map[string]struct{}{},
+				brokerNames: map[string]struct{}{}, instrumentIDs: map[int64]struct{}{},
 			}
 			groups[key] = group
 		}
+		group.instrumentIDs[leg.InstrumentID] = struct{}{}
+		if leg.InstrumentID < group.position.InstrumentID {
+			group.position.InstrumentID = leg.InstrumentID
+			group.position.PositionID = "position:" + strconv.FormatInt(leg.InstrumentID, 10)
+		}
 		if group.position.Name == "" && leg.Name != "" {
 			group.position.Name = leg.Name
+		}
+		if !strings.EqualFold(group.position.AssetType, "etf") && strings.EqualFold(leg.AssetType, "etf") {
+			group.position.AssetType = leg.AssetType
 		}
 		group.position.Quantity += leg.Quantity
 		group.position.MarketValue += leg.MarketValue
@@ -108,7 +165,11 @@ func aggregatePositions(positions []broker.Position, netAssetValue float64) ([]A
 		for brokerName := range group.brokerNames {
 			position.Brokers = append(position.Brokers, brokerName)
 		}
+		for instrumentID := range group.instrumentIDs {
+			position.InstrumentIDs = append(position.InstrumentIDs, instrumentID)
+		}
 		sort.Strings(position.Brokers)
+		sort.Slice(position.InstrumentIDs, func(i, j int) bool { return position.InstrumentIDs[i] < position.InstrumentIDs[j] })
 		sort.Slice(position.Legs, func(i, j int) bool {
 			if position.Legs[i].Broker == position.Legs[j].Broker {
 				return position.Legs[i].Account < position.Legs[j].Account

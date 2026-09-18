@@ -104,10 +104,15 @@ func connectionConfig(connection brokerapi.ConnectionConfig) (config.IBKRConfig,
 		return config.IBKRConfig{}, errors.New("activity_history_from must use YYYY-MM-DD")
 	}
 	enabled, _ := connection.Config["activity_history_enabled"].(bool)
+	managerURL := configString(connection.Config, "manager_url")
+	if managerURL == "" {
+		managerURL = configString(connection.ProviderConfig, "manager_url")
+	}
 	return config.IBKRConfig{
 		FlexActivityQueryID: configString(connection.Config, "flex_activity_query_id"), ActivityHistoryEnabled: enabled, ActivityHistoryFrom: historyFrom,
 		FlexToken: connection.Secrets["flex_token"], FlexQueryID: configString(connection.Config, "flex_query_id"),
 		FlexBaseURL: flexBaseURL, GatewayURL: gatewayURL, GatewayToken: connection.Secrets["gateway_token"],
+		ManagerURL: managerURL,
 	}, nil
 }
 

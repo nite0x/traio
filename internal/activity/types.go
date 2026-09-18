@@ -4,7 +4,7 @@ package activity
 
 import "encoding/json"
 
-const RuleVersion = "ibkr-activity-v1"
+const RuleVersion = "ibkr-activity-v2"
 const (
 	StatusEffective    = "effective"
 	StatusVoided       = "voided"

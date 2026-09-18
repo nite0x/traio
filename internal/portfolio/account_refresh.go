@@ -16,7 +16,10 @@ type accountRefresh struct {
 	attempt int
 }
 
-func (s *SyncService) SyncEnabled() bool { return s.syncConfig().Enabled }
+func (s *SyncService) SyncEnabled() bool {
+	cfg := s.syncConfig()
+	return cfg.Enabled || cfg.AutomaticEnabled("IBKR")
+}
 
 // InvalidateAccount coalesces fills without delaying the first pending refresh.
 // Later passes account for IBKR's independently updated positions/cash feeds.

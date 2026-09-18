@@ -72,16 +72,24 @@ type Service struct {
 	now   func() time.Time
 	owner string
 
-	mu      sync.Mutex
-	lastRun map[string]time.Time
-	wake    chan struct{}
+	mu              sync.Mutex
+	lastRun         map[string]time.Time
+	wake            chan struct{}
+	autoSyncEnabled bool
 }
 
 func New(repo Repository) *Service {
 	return &Service{
 		repo: repo, now: time.Now, owner: "history-" + uuid.NewString(),
-		lastRun: map[string]time.Time{}, wake: make(chan struct{}, 1),
+		lastRun: map[string]time.Time{}, wake: make(chan struct{}, 1), autoSyncEnabled: true,
 	}
+}
+
+// SetSyncConfig only controls new scheduled jobs. Explicit jobs and in-flight work can finish.
+func (s *Service) SetSyncConfig(cfg config.BrokerSyncConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoSyncEnabled = cfg.AutomaticEnabled("IBKR")
 }
 
 func (s *Service) Capabilities() []Capability {

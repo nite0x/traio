@@ -9,7 +9,7 @@ import (
 	"github.com/nite/traio/internal/config"
 )
 
-func TestBrokerLoginUsesConfiguredGatewayWithoutManagingProcess(t *testing.T) {
+func TestBrokerLoginOpensManagerAndProbesConfiguredGateway(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/api/tickle":
@@ -21,12 +21,12 @@ func TestBrokerLoginUsesConfiguredGatewayWithoutManagingProcess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := NewBroker(config.IBKRConfig{GatewayURL: server.URL})
+	adapter := NewBroker(config.IBKRConfig{GatewayURL: server.URL, ManagerURL: "https://manager.example.test/"})
 	action, err := adapter.BeginLogin(t.Context())
 	if err != nil {
 		t.Fatalf("begin login: %v", err)
 	}
-	if action.URL != server.URL+"/sso/Login" || action.Authenticated || action.AccountID != "" {
+	if action.URL != "https://manager.example.test/manager/" || action.Authenticated || action.AccountID != "" {
 		t.Fatalf("unexpected login action: %#v", action)
 	}
 	status, err := adapter.LoginStatus(t.Context())
@@ -35,6 +35,16 @@ func TestBrokerLoginUsesConfiguredGatewayWithoutManagingProcess(t *testing.T) {
 	}
 	if !status.Authenticated || status.AccountID != "U123" {
 		t.Fatalf("unexpected login status: %#v", status)
+	}
+}
+
+func TestBrokerLoginRequiresValidManagerWithoutGatewayFallback(t *testing.T) {
+	for _, managerURL := range []string{"", "not-a-url", "javascript:alert(1)", "https://user:secret@manager.example.test", "https://manager.example.test/sso/Login", "https://manager.example.test?token=secret"} {
+		adapter := NewBroker(config.IBKRConfig{GatewayURL: "https://gateway.example.test", ManagerURL: managerURL})
+		action, err := adapter.BeginLogin(t.Context())
+		if err == nil || action.URL != "" || !strings.Contains(err.Error(), "Gateway Manager") || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("expected configuration guidance without a login URL or credentials, action=%#v err=%v", action, err)
+		}
 	}
 }
 

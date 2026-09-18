@@ -230,3 +230,35 @@ func TestSyncSkipsDisabledConnection(t *testing.T) {
 		t.Fatalf("disabled connection called broker %d times", provider.listAccountCalls)
 	}
 }
+
+func TestIBKRAutomaticPauseStillAllowsExplicitUpdate(t *testing.T) {
+	provider := &fakeBroker{}
+	svc := newTestSyncService(t, StaticSource("IBKR", 0, testPortfolioProvider(t, provider)))
+	enabled := false
+	svc.SetSyncConfig(config.BrokerSyncConfig{Enabled: true, IBKREnabled: &enabled})
+	if err := svc.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if provider.listAccountCalls != 0 {
+		t.Fatal("paused IBKR was synchronized automatically")
+	}
+	if err := svc.SyncConnection(t.Context(), svc.sources[0].ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	if provider.listAccountCalls != 1 || provider.positionCalls != 2 {
+		t.Fatal("explicit update did not refresh positions")
+	}
+	svc.SetSyncConfig(config.BrokerSyncConfig{Enabled: false})
+	if err := svc.SyncConnection(t.Context(), svc.sources[0].ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	if provider.listAccountCalls != 2 {
+		t.Fatal("legacy master switch blocked explicit update")
+	}
+	if err := svc.SyncNow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if provider.listAccountCalls != 3 {
+		t.Fatal("global manual update was blocked")
+	}
+}

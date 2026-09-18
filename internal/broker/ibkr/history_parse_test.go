@@ -58,6 +58,60 @@ func TestParseActivityXMLNormalizesEvidenceWithoutDoubleCounting(t *testing.T) {
 	}
 }
 
+func TestParseActivityXMLValidatesFXUsingReportedCurrencyLegs(t *testing.T) {
+	body := []byte(`<FlexQueryResponse><FlexStatements><FlexStatement accountId="U1">
+<Trades>
+  <Trade levelOfDetail="EXECUTION" assetCategory="CASH" currency="HKD" symbol="USD.HKD" tradeID="FX1" ibExecID="FX1" tradeDate="20260722" buySell="BUY" quantity="4081.37" tradePrice="7.8405" multiplier="1" proceeds="-31999.981485" ibCommission="-2" ibCommissionCurrency="USD" taxes="0" netCash="0"/>
+  <Trade levelOfDetail="EXECUTION" assetCategory="CASH" currency="USD" symbol="EUR.USD" tradeID="FX2" ibExecID="FX2" tradeDate="20260709" buySell="SELL" quantity="-104.98" tradePrice="1.1427" multiplier="1" proceeds="119.960646" ibCommission="-2" ibCommissionCurrency="USD" taxes="0" netCash="0"/>
+</Trades>
+</FlexStatement></FlexStatements></FlexQueryResponse>`)
+
+	records, err := ParseActivityXML(body)
+	if err != nil {
+		t.Fatalf("ParseActivityXML: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2", len(records))
+	}
+	usdHKD := records[0].Activity
+	if usdHKD.Status != activity.StatusEffective || hasWarning(usdHKD, "reported_net_cash_mismatch") {
+		t.Fatalf("valid USD.HKD conversion requires review: %#v", usdHKD)
+	}
+	if usdHKD.CashEffectsByCurrency["USD"] != "4079.37" || usdHKD.CashEffectsByCurrency["HKD"] != "-31999.981485" {
+		t.Fatalf("unexpected USD.HKD effects: %#v", usdHKD.CashEffectsByCurrency)
+	}
+	eurUSD := records[1].Activity
+	if eurUSD.Status != activity.StatusEffective || hasWarning(eurUSD, "reported_net_cash_mismatch") {
+		t.Fatalf("valid EUR.USD conversion requires review: %#v", eurUSD)
+	}
+	if eurUSD.CashEffectsByCurrency["EUR"] != "-104.98" || eurUSD.CashEffectsByCurrency["USD"] != "117.960646" {
+		t.Fatalf("unexpected EUR.USD effects: %#v", eurUSD.CashEffectsByCurrency)
+	}
+}
+
+func TestParseActivityXMLFlagsFXProceedsMismatchAndKeepsTradeNetCashCheck(t *testing.T) {
+	body := []byte(`<FlexQueryResponse><FlexStatements><FlexStatement accountId="U1">
+<Trades>
+  <Trade levelOfDetail="EXECUTION" assetCategory="CASH" currency="HKD" symbol="USD.HKD" tradeID="FX1" ibExecID="FX1" tradeDate="20260722" buySell="BUY" quantity="4081.37" tradePrice="7.8405" multiplier="1" proceeds="-31999" ibCommission="0" ibCommissionCurrency="USD" taxes="0" netCash="0"/>
+  <Trade levelOfDetail="EXECUTION" assetCategory="STK" currency="USD" symbol="AAPL" conid="265598" tradeID="T1" ibExecID="T1" tradeDate="20260722" buySell="BUY" quantity="1" tradePrice="200" multiplier="1" proceeds="-200" ibCommission="-1" ibCommissionCurrency="USD" taxes="0" netCash="0"/>
+</Trades>
+</FlexStatement></FlexStatements></FlexQueryResponse>`)
+
+	records, err := ParseActivityXML(body)
+	if err != nil {
+		t.Fatalf("ParseActivityXML: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2", len(records))
+	}
+	if records[0].Activity.Status != activity.StatusNeedsReview || !hasWarning(records[0].Activity, "reported_fx_proceeds_mismatch") {
+		t.Fatalf("FX proceeds mismatch was not retained: %#v", records[0].Activity)
+	}
+	if records[1].Activity.Status != activity.StatusNeedsReview || !hasWarning(records[1].Activity, "reported_net_cash_mismatch") {
+		t.Fatalf("security net cash mismatch was not retained: %#v", records[1].Activity)
+	}
+}
+
 func TestParseActivityXMLComplexEventsUseOnlyReportedEffects(t *testing.T) {
 	body := []byte(`<FlexStatementResponse><FlexStatements><FlexStatement accountId="U2">
 <Transfers><Transfer transactionID="X1" type="ACATS" direction="IN" assetCategory="STK" currency="USD" symbol="XYZ" conid="10" quantity="4" date="20260901" positionAmount="9999" transferAccount="private"/></Transfers>

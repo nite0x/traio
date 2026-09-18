@@ -23,7 +23,16 @@ type Config struct {
 
 // BrokerSyncConfig controls the IBKR account projection synchronization loop.
 type BrokerSyncConfig struct {
-	Enabled bool `json:"enabled" yaml:"enabled"`
+	Enabled     bool  `json:"enabled" yaml:"enabled"`
+	IBKREnabled *bool `json:"ibkr_enabled,omitempty" yaml:"ibkr_enabled,omitempty"`
+}
+
+// AutomaticEnabled preserves the legacy default until a provider override is saved.
+func (c BrokerSyncConfig) AutomaticEnabled(provider string) bool {
+	if strings.EqualFold(provider, "IBKR") && c.IBKREnabled != nil {
+		return *c.IBKREnabled
+	}
+	return c.Enabled
 }
 
 const (
@@ -167,6 +176,7 @@ type IBKRConfig struct {
 	FlexBaseURL            string `json:"flex_base_url" yaml:"flex_base_url"`
 	GatewayURL             string `json:"gateway_url" yaml:"gateway_url"`
 	GatewayToken           string `json:"gateway_token" yaml:"gateway_token"`
+	ManagerURL             string `json:"manager_url" yaml:"manager_url"`
 }
 
 type FinnhubConfig struct {

@@ -180,3 +180,19 @@ func TestResolvePasswordAuthConfigRejectsPartialBootstrap(t *testing.T) {
 		t.Fatal("partial built-in login bootstrap should fail")
 	}
 }
+
+func TestIBKRAutomaticOverridePreservesOtherProviders(t *testing.T) {
+	paused := false
+	cfg := BrokerSyncConfig{Enabled: true, IBKREnabled: &paused}
+	if cfg.AutomaticEnabled("IBKR") || !cfg.AutomaticEnabled("SCHWAB") {
+		t.Fatal("IBKR override affected another provider")
+	}
+	enabled := true
+	cfg = BrokerSyncConfig{Enabled: false, IBKREnabled: &enabled}
+	if !cfg.AutomaticEnabled("IBKR") || cfg.AutomaticEnabled("ALPACA") {
+		t.Fatal("IBKR override did not preserve legacy default")
+	}
+	if (BrokerSyncConfig{Enabled: false}).AutomaticEnabled("IBKR") {
+		t.Fatal("legacy disabled setting was not preserved")
+	}
+}

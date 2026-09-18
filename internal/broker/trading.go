@@ -3,12 +3,18 @@ package broker
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 )
 
 // ValidateOrder enforces invariants shared by every provider before a live request.
 func ValidateOrder(r OrderRequest) error {
+	for _, value := range []float64{r.Quantity, r.Notional, r.LimitPrice, r.StopPrice, r.TrailPrice, r.TrailPercent} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return fmt.Errorf("order quantities and prices must be finite, non-negative numbers")
+		}
+	}
 	if strings.TrimSpace(r.AccountID) == "" {
 		return fmt.Errorf("account_id is required")
 	}

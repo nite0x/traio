@@ -45,6 +45,7 @@ func TestGatewaySessionExposesProviderNeutralAuthentication(t *testing.T) {
 	defer server.Close()
 	sessionValue, err := NewFactory().Open(t.Context(), brokerapi.ConnectionConfig{
 		ID: 42, ProviderCode: "IBKR", Config: map[string]any{"gateway_id": "primary", "gateway_url": server.URL}, Secrets: map[string]string{"gateway_token": "proxy-secret"},
+		ProviderConfig: map[string]any{"manager_url": "https://manager.example.test"},
 	})
 	if err != nil {
 		t.Fatalf("open session: %v", err)
@@ -54,12 +55,38 @@ func TestGatewaySessionExposesProviderNeutralAuthentication(t *testing.T) {
 		t.Fatal("IBKR session does not expose authentication")
 	}
 	begin, err := authentication.BeginAuthentication(t.Context(), brokerapi.AuthenticationRequest{State: "ignored"})
-	if err != nil || begin.URL != server.URL+"/sso/Login" {
+	if err != nil || begin.URL != "https://manager.example.test/manager/" {
 		t.Fatalf("begin = %#v, err=%v", begin, err)
 	}
 	status, err := authentication.AuthenticationStatus(t.Context())
 	if err != nil || !status.Authenticated || status.AccountID != "U123" {
 		t.Fatalf("status = %#v, err=%v", status, err)
+	}
+}
+
+func TestGatewayLoginKeepsConnectionManagerIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		connection string
+		want       string
+	}{
+		{name: "connection manager", connection: "https://original-manager.example.test/", want: "https://original-manager.example.test/manager/"},
+		{name: "provider fallback", want: "https://current-manager.example.test/manager/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := NewFactory().Open(t.Context(), brokerapi.ConnectionConfig{
+				ID: 42, ProviderCode: "IBKR",
+				Config:         map[string]any{"gateway_id": "primary", "gateway_url": "https://gateway.example.test", "manager_url": test.connection},
+				ProviderConfig: map[string]any{"manager_url": "https://current-manager.example.test"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			action, err := session.(brokerapi.AuthenticationProvider).BeginAuthentication(t.Context(), brokerapi.AuthenticationRequest{})
+			if err != nil || action.URL != test.want {
+				t.Fatalf("login action = %#v, err=%v", action, err)
+			}
+		})
 	}
 }
 

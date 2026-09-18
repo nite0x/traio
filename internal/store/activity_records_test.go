@@ -214,6 +214,96 @@ func TestHistoryRepositoryContract(t *testing.T) {
 	}
 }
 
+func TestHistoryRuleUpgradeReprocessesCurrentRawEvidence(t *testing.T) {
+	for _, driver := range []string{"sqlite", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			s := historyTestStore(t, driver)
+			_, _ = seedHistoryAccount(t, s)
+			ctx := context.Background()
+
+			record := historyTrade("fx-rule-upgrade", "0", "2026-07-22T10:00:00Z")
+			record.Activity.Type = "fx_conversion"
+			record.Activity.Description = "USD.HKD"
+			record.Activity.Status = activity.StatusNeedsReview
+			record.Activity.Warnings = []string{"reported_net_cash_mismatch"}
+			record.Activity.Fill = &activity.Fill{ExecutionID: record.Key, Side: "buy", Quantity: "4081.37", Price: "7.8405", PriceCurrency: "HKD", Multiplier: "1", ReportedNetCash: "0"}
+			record.Activity.Legs = []activity.Leg{
+				{Kind: "cash", Component: "fx_principal", Currency: "USD", CashDelta: "4081.37", EffectiveDate: "2026-09-01"},
+				{Kind: "cash", Component: "principal", Currency: "HKD", CashDelta: "-31999.981485", EffectiveDate: "2026-09-01"},
+			}
+
+			counts := runHistoryRecords(t, s, record)
+			if counts.Conflicts != 1 {
+				t.Fatalf("initial counts %#v", counts)
+			}
+			issues, err := s.ListHistoryIssues(ctx)
+			if err != nil || len(issues) != 1 || issues[0].Status != "open" {
+				t.Fatalf("initial issues %#v err=%v", issues, err)
+			}
+			issue := issues[0]
+			if _, err = s.execContext(ctx, `UPDATE activity_revisions SET rule_version='ibkr-activity-v1' WHERE activity_id=?`, issue.ActivityID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.execContext(ctx, `UPDATE broker_raw_records SET normalization_rule_version='ibkr-activity-v1' WHERE id=?`, issue.RawRecordID); err != nil {
+				t.Fatal(err)
+			}
+
+			corrected := record
+			corrected.Activity.Status = activity.StatusEffective
+			corrected.Activity.Warnings = []string{}
+			counts = runHistoryRecords(t, s, corrected)
+			if counts.Updated != 1 || counts.Conflicts != 0 {
+				t.Fatalf("upgrade counts %#v", counts)
+			}
+			current, err := s.GetActivity(ctx, issue.ActivityID)
+			if err != nil || current.Revision != 2 || current.Status != activity.StatusEffective || len(current.Warnings) != 0 {
+				t.Fatalf("upgraded activity %#v err=%v", current, err)
+			}
+			issues, err = s.ListHistoryIssues(ctx)
+			if err != nil || len(issues) != 1 || issues[0].Status != "resolved" || issues[0].Resolution != "superseded_by_"+activity.RuleVersion {
+				t.Fatalf("upgraded issues %#v err=%v", issues, err)
+			}
+			var normalizeStatus, normalizedVersion string
+			if err = s.queryRowContext(ctx, `SELECT normalize_status,normalization_rule_version FROM broker_raw_records WHERE id=?`, issue.RawRecordID).Scan(&normalizeStatus, &normalizedVersion); err != nil {
+				t.Fatal(err)
+			}
+			if normalizeStatus != "done" || normalizedVersion != activity.RuleVersion {
+				t.Fatalf("raw normalization status=%q version=%q", normalizeStatus, normalizedVersion)
+			}
+		})
+	}
+}
+
+func TestActivityNormalizationMigrationUpgradesV1Schema(t *testing.T) {
+	for _, driver := range []string{"sqlite", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			s := historyTestStore(t, driver)
+			ctx := context.Background()
+			if _, err := s.execContext(ctx, `DELETE FROM activity_schema_migrations WHERE version=2`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.execContext(ctx, `ALTER TABLE broker_raw_records DROP COLUMN normalization_rule_version`); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.migrateActivities(); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = seedHistoryAccount(t, s)
+			counts := runHistoryRecords(t, s, historyTrade("migration-v2", "-1", "2026-09-02T10:00:00Z"))
+			if counts.Added != 1 {
+				t.Fatalf("post-migration counts %#v", counts)
+			}
+			var version string
+			if err := s.queryRowContext(ctx, `SELECT normalization_rule_version FROM broker_raw_records`).Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			if version != activity.RuleVersion {
+				t.Fatalf("normalization version=%q", version)
+			}
+		})
+	}
+}
+
 func TestHistoryImportAndLeaseContract(t *testing.T) {
 	for _, driver := range []string{"sqlite", "postgres"} {
 		t.Run(driver, func(t *testing.T) {

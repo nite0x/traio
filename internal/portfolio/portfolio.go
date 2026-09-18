@@ -135,9 +135,14 @@ func (s *SyncService) Invalidate() {
 
 // Sync refreshes each enabled broker projection independently.
 // A failed source keeps its previous successful projection readable.
-// When the master switch is off, Sync is a no-op.
+// Automatic synchronization follows the saved provider scheduling preferences.
 func (s *SyncService) Sync(ctx context.Context) error {
 	return s.syncSources(ctx, s.brokerSources())
+}
+
+// SyncNow is an explicit user request and is independent of automatic scheduling.
+func (s *SyncService) SyncNow(ctx context.Context) error {
+	return s.syncSelectedSources(ctx, s.brokerSources(), false)
 }
 
 // SyncConnection refreshes only the adapter registered for connectionID.
@@ -147,13 +152,18 @@ func (s *SyncService) SyncConnection(ctx context.Context, connectionID int64) er
 	}
 	for _, source := range s.brokerSources() {
 		if source.ConnectionID == connectionID {
-			return s.syncSources(ctx, []Source{source})
+			return s.syncSelectedSources(ctx, []Source{source}, false)
 		}
 	}
 	return fmt.Errorf("broker connection %d does not support account synchronization", connectionID)
 }
 
 func (s *SyncService) syncSources(ctx context.Context, sources []Source, accountScope ...string) error {
+	return s.syncSelectedSources(ctx, sources, true, accountScope...)
+}
+
+// Explicit connection updates bypass scheduling preferences, but never enable a disabled connection.
+func (s *SyncService) syncSelectedSources(ctx context.Context, sources []Source, automatic bool, accountScope ...string) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
@@ -162,13 +172,12 @@ func (s *SyncService) syncSources(ctx context.Context, sources []Source, account
 	}
 
 	cfg := s.syncConfig()
-	if !cfg.Enabled {
-		return nil
-	}
-
 	var errs []string
 	for _, source := range sources {
 		name := strings.ToUpper(strings.TrimSpace(source.Name))
+		if automatic && !cfg.AutomaticEnabled(name) {
+			continue
+		}
 		if name == "" {
 			continue
 		}

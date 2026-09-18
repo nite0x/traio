@@ -30,6 +30,12 @@ func (s *Service) schedulerLoop(ctx context.Context) {
 }
 
 func (s *Service) schedule(ctx context.Context) {
+	s.mu.Lock()
+	enabled := s.autoSyncEnabled
+	s.mu.Unlock()
+	if !enabled {
+		return
+	}
 	connections, err := s.repo.ListBrokerConnections(ctx)
 	if err != nil {
 		return

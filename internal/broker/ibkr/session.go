@@ -44,10 +44,14 @@ func tickleAccount(result map[string]interface{}) string {
 	return ""
 }
 
-// BeginLogin returns the configured Gateway's browser login page without
-// starting or otherwise mutating the external process.
+// BeginLogin sends users to Gateway Manager to choose and manage their session.
+// Opening management must not probe or mutate the Gateway, or expose its SSO URL.
 func (c *Client) BeginLogin(_ context.Context) (broker.LoginAction, error) {
-	return broker.LoginAction{URL: c.BaseURL() + "/sso/Login"}, nil
+	manager, err := NewManagerClient(c.cfg.ManagerURL, "")
+	if err != nil {
+		return broker.LoginAction{}, fmt.Errorf("请在连接设置中配置有效的 IBKR Gateway Manager 地址")
+	}
+	return broker.LoginAction{URL: manager.ManagementURL()}, nil
 }
 
 // LoginStatus probes only the configured external Gateway endpoint.

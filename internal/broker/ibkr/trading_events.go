@@ -471,7 +471,7 @@ func (c *Client) cachedOrders(q broker.OrderQuery) ([]broker.Order, bool) {
 	for _, key := range keys {
 		row := state.rows[key]
 		order := normalizeIBKROrder(textValue(row.fields["acct"]), row.fields)
-		if (q.AccountID != "" && order.AccountID != q.AccountID) || (q.Status != "" && q.Status != "all" && order.Status != q.Status) {
+		if (q.AccountID != "" && order.AccountID != q.AccountID) || !matchesOrderStatus(q.Status, order.Status) {
 			continue
 		}
 		orders = append(orders, order)

@@ -99,32 +99,36 @@ type OrderRequest struct {
 	TimeInForce    string  `json:"time_in_force"` // day | gtc | ioc | fok | opg | cls
 	ExtendedHours  bool    `json:"extended_hours,omitempty"`
 	ClientOrderID  string  `json:"client_order_id,omitempty"`
+	Currency       string  `json:"currency,omitempty"`
 }
 
 // Order is the normalized lifecycle view returned by every trading adapter.
 type Order struct {
-	ID               string  `json:"id"`
-	ClientOrderID    string  `json:"client_order_id,omitempty"`
-	AccountID        string  `json:"account_id"`
-	Symbol           string  `json:"symbol,omitempty"`
-	InstrumentID     string  `json:"instrument_id,omitempty"`
-	AssetClass       string  `json:"asset_class,omitempty"`
-	Side             string  `json:"side,omitempty"`
-	OrderType        string  `json:"order_type,omitempty"`
-	Quantity         float64 `json:"quantity,omitempty"`
-	FilledQuantity   float64 `json:"filled_quantity,omitempty"`
-	LimitPrice       float64 `json:"limit_price,omitempty"`
-	StopPrice        float64 `json:"stop_price,omitempty"`
-	AverageFillPrice float64 `json:"average_fill_price,omitempty"`
-	TimeInForce      string  `json:"time_in_force,omitempty"`
-	Status           string  `json:"status"`
-	SubmittedAt      string  `json:"submitted_at,omitempty"`
-	UpdatedAt        string  `json:"updated_at,omitempty"`
-	RawStatus        string  `json:"raw_status,omitempty"`
+	ID               string             `json:"id"`
+	ClientOrderID    string             `json:"client_order_id,omitempty"`
+	AccountID        string             `json:"account_id"`
+	Symbol           string             `json:"symbol,omitempty"`
+	InstrumentID     string             `json:"instrument_id,omitempty"`
+	AssetClass       string             `json:"asset_class,omitempty"`
+	Side             string             `json:"side,omitempty"`
+	OrderType        string             `json:"order_type,omitempty"`
+	Quantity         float64            `json:"quantity,omitempty"`
+	FilledQuantity   float64            `json:"filled_quantity,omitempty"`
+	LimitPrice       float64            `json:"limit_price,omitempty"`
+	StopPrice        float64            `json:"stop_price,omitempty"`
+	AverageFillPrice float64            `json:"average_fill_price,omitempty"`
+	TimeInForce      string             `json:"time_in_force,omitempty"`
+	Status           string             `json:"status"`
+	SubmittedAt      string             `json:"submitted_at,omitempty"`
+	UpdatedAt        string             `json:"updated_at,omitempty"`
+	RawStatus        string             `json:"raw_status,omitempty"`
+	Currency         string             `json:"currency,omitempty"`
+	Confirmation     *OrderConfirmation `json:"confirmation,omitempty"`
 }
 
 // OrderQuery controls an order listing without leaking provider-specific query shapes.
 type OrderQuery struct {
+	Fresh     bool   `json:"-"`
 	AccountID string `json:"account_id"`
 	Status    string `json:"status,omitempty"` // open | closed | all
 	Limit     int    `json:"limit,omitempty"`

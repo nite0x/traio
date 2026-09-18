@@ -246,6 +246,13 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/account/equity", accountEquity(deps.Account))
 		v1.GET("/news/:symbol", getNews(deps.News))
 		v1.POST("/orders", requirePermission(traioauth.PermissionTrade), placeOrder(deps.Trading))
+		v1.GET("/orders/attempts/:client_order_id", requirePermission(traioauth.PermissionTrade), tradingRead(deps.Trading, "attempt"))
+		v1.POST("/orders/preview", requirePermission(traioauth.PermissionTrade), previewOrder(deps.Trading))
+		v1.POST("/orders/reply/:reply_id", requirePermission(traioauth.PermissionTrade), replyOrder(deps.Trading))
+		v1.GET("/trading/accounts", tradingRead(deps.Trading, "accounts"))
+		v1.GET("/trading/instruments", tradingRead(deps.Trading, "instruments"))
+		v1.GET("/trading/instruments/:conid", tradingRead(deps.Trading, "instrument"))
+		v1.GET("/trading/instruments/:conid/quote", tradingRead(deps.Trading, "quote"))
 		v1.GET("/orders", listOrders(deps.Trading))
 		v1.GET("/orders/:order_id", getOrder(deps.Trading))
 		v1.DELETE("/orders/:order_id", requirePermission(traioauth.PermissionTrade), cancelOrder(deps.Trading))
@@ -607,7 +614,7 @@ func syncBrokers(svc *portfolio.SyncService) gin.HandlerFunc {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker sync is not available"})
 			return
 		}
-		if err := svc.Sync(c.Request.Context()); err != nil {
+		if err := svc.SyncNow(c.Request.Context()); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
@@ -675,17 +682,20 @@ func placeOrder(trading *broker.TradingService) gin.HandlerFunc {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "trading is not configured"})
 			return
 		}
-		var req placeOrderRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		req, ok := bindOrder(c)
+		if !ok {
 			return
 		}
 		order, err := trading.PlaceOrder(c.Request.Context(), req.ConnectionID, req.OrderRequest)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeOrderError(c, err)
 			return
 		}
-		c.JSON(http.StatusCreated, order)
+		status := http.StatusCreated
+		if order.Confirmation != nil {
+			status = http.StatusAccepted
+		}
+		c.JSON(status, order)
 	}
 }
 
@@ -696,7 +706,7 @@ func orderQuery(c *gin.Context) (int64, broker.OrderQuery, bool) {
 		return 0, broker.OrderQuery{}, false
 	}
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	return id, broker.OrderQuery{AccountID: c.Query("account_id"), Status: c.DefaultQuery("status", "all"), Limit: limit}, true
+	return id, broker.OrderQuery{AccountID: c.Query("account_id"), Status: c.DefaultQuery("status", "all"), Limit: limit, Fresh: c.Query("refresh") == "1"}, true
 }
 func listOrders(trading *broker.TradingService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -710,7 +720,7 @@ func listOrders(trading *broker.TradingService) gin.HandlerFunc {
 		}
 		orders, err := trading.ListOrders(c.Request.Context(), id, q)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeOrderError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, orders)
@@ -732,7 +742,7 @@ func getOrder(trading *broker.TradingService) gin.HandlerFunc {
 		}
 		order, err := trading.GetOrder(c.Request.Context(), id, q.AccountID, c.Param("order_id"))
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeOrderError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, order)
@@ -753,7 +763,7 @@ func cancelOrder(trading *broker.TradingService) gin.HandlerFunc {
 			return
 		}
 		if err := trading.CancelOrder(c.Request.Context(), id, q.AccountID, c.Param("order_id")); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeOrderError(c, err)
 			return
 		}
 		c.Status(http.StatusNoContent)

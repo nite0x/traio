@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
 )
 
@@ -311,5 +312,34 @@ func TestDefaultFlexSyncUsesConfiguredReportPeriod(t *testing.T) {
 	reset, err := st.GetHistoryJob(t.Context(), claimed.ID)
 	if err != nil || reset.Status != "queued" || reset.Attempt != 0 || reset.Error != "" {
 		t.Fatalf("retry=%+v err=%v", reset, err)
+	}
+}
+
+func TestPausedSchedulerAllowsManualHistoryJob(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "paused.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	connection, err := st.UpsertBrokerConnection(t.Context(), store.BrokerConnection{ProviderCode: "IBKR", ConnectionKey: "flex", Enabled: true, Config: map[string]any{"connection_type": "flex", "flex_activity_query_id": "123", "activity_history_enabled": true}, Secrets: map[string]string{"flex_token": "test-only"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st)
+	paused := false
+	svc.SetSyncConfig(config.BrokerSyncConfig{Enabled: true, IBKREnabled: &paused})
+	svc.schedule(t.Context())
+	if _, err := st.ClaimHistoryJob(t.Context(), "paused-test"); err == nil {
+		t.Fatal("paused scheduler created a job")
+	}
+	job, err := svc.Enqueue(t.Context(), store.HistoryRequest{ConnectionID: connection.ID, Source: "flex"})
+	if err != nil || job.ID == "" || !job.Request.UseQueryPeriod {
+		t.Fatalf("manual job while paused: %+v %v", job, err)
+	}
+	enabled := true
+	svc.SetSyncConfig(config.BrokerSyncConfig{Enabled: false, IBKREnabled: &enabled})
+	svc.schedule(t.Context())
+	if len(svc.lastRun) == 0 {
+		t.Fatal("resuming IBKR did not resume the scheduler")
 	}
 }

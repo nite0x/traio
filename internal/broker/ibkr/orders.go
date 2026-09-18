@@ -16,52 +16,8 @@ import (
 
 var _ broker.TradingProvider = (*Client)(nil)
 
-func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (broker.Order, error) {
-	if err := broker.ValidateOrder(req); err != nil {
-		return broker.Order{}, fmt.Errorf("ibkr: %w", err)
-	}
-	if req.Notional > 0 {
-		return broker.Order{}, fmt.Errorf("ibkr: notional orders are not supported by this adapter")
-	}
-	conid, err := strconv.ParseInt(strings.TrimSpace(req.InstrumentID), 10, 64)
-	if err != nil || conid <= 0 {
-		return broker.Order{}, fmt.Errorf("ibkr: instrument_id must be a numeric conid")
-	}
-	if req.AccountID == "" {
-		req.AccountID, err = c.resolveAccountID(ctx)
-		if err != nil {
-			return broker.Order{}, err
-		}
-	}
-	payload := map[string]any{"acctId": req.AccountID, "conid": conid, "side": strings.ToUpper(req.Side), "orderType": ibkrOrderType(req.OrderType), "quantity": req.Quantity, "tif": strings.ToUpper(req.TimeInForce)}
-	if req.LimitPrice > 0 {
-		payload["price"] = req.LimitPrice
-	}
-	if req.StopPrice > 0 {
-		payload["auxPrice"] = req.StopPrice
-	}
-	if req.ClientOrderID != "" {
-		payload["cOID"] = req.ClientOrderID
-	}
-	if req.ExtendedHours {
-		payload["outsideRTH"] = true
-	}
-	body, _ := json.Marshal(map[string]any{"orders": []any{payload}})
-	var response []map[string]any
-	if err := c.orderRequest(ctx, http.MethodPost, "/iserver/account/"+url.PathEscape(req.AccountID)+"/orders", body, &response); err != nil {
-		return broker.Order{}, err
-	}
-	if len(response) == 0 {
-		return broker.Order{}, fmt.Errorf("ibkr: empty order response")
-	}
-	if replyID := textValue(response[0]["id"]); replyID != "" && textValue(response[0]["order_id"]) == "" {
-		return broker.Order{}, fmt.Errorf("ibkr: order requires confirmation (reply_id=%s): %s", replyID, textValue(response[0]["message"]))
-	}
-	return normalizeIBKROrder(req.AccountID, response[0]), nil
-}
-
 func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broker.Order, error) {
-	orders, err := c.ListOrders(ctx, broker.OrderQuery{AccountID: accountID, Status: "all"})
+	orders, err := c.ListOrders(ctx, broker.OrderQuery{AccountID: accountID, Status: "all", Fresh: true})
 	if err != nil {
 		return broker.Order{}, err
 	}
@@ -70,12 +26,14 @@ func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broke
 			return order, nil
 		}
 	}
-	return broker.Order{}, fmt.Errorf("ibkr: order %s not found", orderID)
+	return broker.Order{}, fmt.Errorf("ibkr: order not found in current session for this account")
 }
-
 func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.Order, error) {
-	if orders, ok := c.cachedOrders(q); ok {
+	if orders, ok := c.cachedOrders(q); ok && !q.Fresh {
 		return orders, nil
+	}
+	if _, err := c.TradingAccounts(ctx); err != nil {
+		return nil, err
 	}
 	rows, err := c.fetchOrderRows(ctx, false)
 	if err != nil {
@@ -83,12 +41,12 @@ func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.
 	}
 	out := make([]broker.Order, 0, len(rows))
 	for _, item := range rows {
-		account := textValue(item["acct"])
+		account := firstNonEmpty(textValue(item["acct"]), textValue(item["account"]))
 		if q.AccountID != "" && account != q.AccountID {
 			continue
 		}
 		order := normalizeIBKROrder(account, item)
-		if q.Status != "" && q.Status != "all" && order.Status != q.Status {
+		if !matchesOrderStatus(q.Status, order.Status) {
 			continue
 		}
 		out = append(out, order)
@@ -98,44 +56,96 @@ func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.
 	}
 	return out, nil
 }
-
 func (c *Client) CancelOrder(ctx context.Context, accountID, orderID string) error {
-	return c.orderRequest(ctx, http.MethodDelete, "/iserver/account/"+url.PathEscape(accountID)+"/order/"+url.PathEscape(orderID), nil, nil)
+	c.orderFlow.mu.Lock()
+	defer c.orderFlow.mu.Unlock()
+	if c.orderFlow.pending != nil {
+		return broker.NewOrderError("confirmation_pending", "resolve the pending IBKR order confirmation first")
+	}
+	id, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil || id <= 0 {
+		return invalidOrder("order_id must be a positive integer")
+	}
+	if _, err := c.tradingAccount(ctx, accountID); err != nil {
+		return err
+	}
+	orders, err := c.ListOrders(ctx, broker.OrderQuery{AccountID: accountID, Status: "all", Fresh: true})
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, order := range orders {
+		if order.ID == orderID {
+			found = true
+			if order.Status != "open" && order.Status != "pending_cancel" {
+				return invalidOrder("order is no longer open")
+			}
+		}
+	}
+	if !found {
+		return invalidOrder("order was not found in the selected account")
+	}
+	var result map[string]any
+	if err := c.orderRequest(ctx, http.MethodDelete, "/iserver/account/"+url.PathEscape(accountID)+"/order/"+url.PathEscape(orderID), nil, &result); err != nil {
+		return err
+	}
+	if !strings.EqualFold(textValue(result["msg"]), "Request was submitted") {
+		return broker.NewOrderError("order_outcome_unknown", "IBKR cancellation result is unknown; refresh order status")
+	}
+	c.invalidateOrderCache()
+	return nil
 }
 
+// Mutating requests are sent once, never followed across redirects or retried.
 func (c *Client) orderRequest(ctx context.Context, method, path string, body []byte, out any) error {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.cfg.GatewayURL, "/")+"/v1/api"+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL()+"/v1/api"+path, reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("ibkr: invalid order request")
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.httpClient.Do(req)
+	req.Header.Set("Content-Type", "application/json")
+	hc := *c.httpClient
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("ibkr: order request: %w", err)
+		return broker.NewOrderError("order_outcome_unknown", "IBKR request outcome is unknown; check orders before submitting again")
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
+	if resp.StatusCode == http.StatusUnauthorized {
+		return gatewayUnauthorizedError(resp, strings.Split(path, "?")[0])
 	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("ibkr: order request status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		return broker.NewOrderError("order_outcome_unknown", "IBKR response could not be read; check order status")
 	}
-	if out != nil && len(bytes.TrimSpace(data)) > 0 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return broker.NewOrderError("order_outcome_unknown", fmt.Sprintf("IBKR order request returned HTTP %d; check order status before retrying", resp.StatusCode))
+	}
+	var payload any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if decoder.Decode(&payload) != nil {
+		return broker.NewOrderError("order_outcome_unknown", "IBKR returned an invalid response; check order status")
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return broker.NewOrderError("order_outcome_unknown", "IBKR returned trailing response data; check order status")
+	}
+	if obj, ok := payload.(map[string]any); ok && textValue(obj["error"]) != "" {
+		return broker.NewOrderError("order_rejected", c.safeOrderText(textValue(obj["error"])))
+	}
+	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("ibkr: decode order response: %w", err)
+			return broker.NewOrderError("order_outcome_unknown", "IBKR returned an unexpected response; check order status")
 		}
 	}
 	return nil
 }
 func ibkrOrderType(v string) string {
-	return map[string]string{"market": "MKT", "limit": "LMT", "stop": "STP", "stop_limit": "STOP_LIMIT", "trailing_stop": "TRAIL"}[v]
+	return map[string]string{"market": "MKT", "limit": "LMT", "stop": "STP", "stop_limit": "STP LMT"}[v]
 }
 func textValue(v any) string {
 	if v == nil {
@@ -145,22 +155,57 @@ func textValue(v any) string {
 }
 func floatValue(v any) float64 { f, _ := strconv.ParseFloat(textValue(v), 64); return f }
 func normalizeIBKROrder(account string, m map[string]any) broker.Order {
-	raw := textValue(m["status"])
-	id := textValue(m["orderId"])
-	if id == "" {
-		id = textValue(m["order_id"])
+	raw := firstNonEmpty(textValue(m["status"]), textValue(m["order_status"]))
+	id := firstNonEmpty(textValue(m["orderId"]), textValue(m["order_id"]))
+	kind := firstNonEmpty(textValue(m["orderType"]), textValue(m["order_type"]))
+	orderType := map[string]string{"MKT": "market", "LMT": "limit", "STP": "stop", "STP LMT": "stop_limit", "STOP_LIMIT": "stop_limit", "TRAIL": "trailing_stop"}[strings.ToUpper(kind)]
+	if orderType == "" {
+		orderType = strings.ToLower(kind)
 	}
-	return broker.Order{ID: id, AccountID: account, Symbol: textValue(m["ticker"]), InstrumentID: textValue(m["conid"]), Side: strings.ToLower(textValue(m["side"])), OrderType: strings.ToLower(textValue(m["orderType"])), Quantity: floatValue(m["totalSize"]), FilledQuantity: floatValue(m["filledQuantity"]), LimitPrice: floatValue(m["price"]), AverageFillPrice: floatValue(m["avgPrice"]), TimeInForce: strings.ToLower(firstNonEmpty(textValue(m["timeInForce"]), textValue(m["tif"]))), Status: normalizeIBKRStatus(raw), RawStatus: raw}
+	side := strings.ToLower(textValue(m["side"]))
+	if side == "b" {
+		side = "buy"
+	}
+	if side == "s" {
+		side = "sell"
+	}
+	order := broker.Order{ID: id, AccountID: account, Currency: textValue(m["currency"]), ClientOrderID: firstNonEmpty(textValue(m["order_ref"]), textValue(m["cOID"])), Symbol: firstNonEmpty(textValue(m["ticker"]), textValue(m["symbol"])), InstrumentID: textValue(m["conid"]), Side: side, OrderType: orderType, Quantity: floatValue(firstNonEmpty(textValue(m["totalSize"]), textValue(m["total_size"]))), FilledQuantity: floatValue(firstNonEmpty(textValue(m["filledQuantity"]), textValue(m["cum_fill"]))), AverageFillPrice: floatValue(firstNonEmpty(textValue(m["avgPrice"]), textValue(m["avg_price"]))), TimeInForce: strings.ToLower(firstNonEmpty(textValue(m["timeInForce"]), textValue(m["tif"]))), Status: normalizeIBKRStatus(raw), RawStatus: raw}
+	if orderType == "limit" || orderType == "stop_limit" {
+		order.LimitPrice = floatValue(m["price"])
+	}
+	if orderType == "stop" {
+		order.StopPrice = floatValue(m["price"])
+	}
+	if orderType == "stop_limit" {
+		order.StopPrice = floatValue(m["auxPrice"])
+	}
+	return order
 }
 func normalizeIBKRStatus(s string) string {
 	switch strings.ToLower(strings.ReplaceAll(s, " ", "")) {
-	case "submitted", "presubmitted", "pendingsubmit", "pendingcancel", "partiallyfilled":
+	case "submitted", "presubmitted", "pendingsubmit", "partiallyfilled":
 		return "open"
+	case "pendingcancel":
+		return "pending_cancel"
 	case "filled":
 		return "filled"
-	case "cancelled", "apicancelled", "inactive":
+	case "cancelled", "canceled", "apicancelled":
 		return "canceled"
+	case "inactive", "rejected":
+		return "rejected"
 	default:
 		return strings.ToLower(s)
+	}
+}
+func matchesOrderStatus(filter, status string) bool {
+	switch filter {
+	case "", "all":
+		return true
+	case "open":
+		return status == "open" || status == "pending_cancel"
+	case "closed":
+		return status == "filled" || status == "canceled" || status == "rejected" || status == "expired"
+	default:
+		return status == filter
 	}
 }

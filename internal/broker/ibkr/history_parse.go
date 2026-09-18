@@ -234,7 +234,8 @@ func normalizeFlexTrade(r *activity.RawRecord, m map[string]string) {
 	f := &activity.Fill{ExecutionID: execution, OrderID: m["ibOrderID"], Side: strings.ToLower(side), OpenClose: m["openCloseIndicator"], Quantity: qty, Price: m["tradePrice"], PriceCurrency: currency, Multiplier: m["multiplier"], Exchange: m["exchange"], ReportedNetCash: m["netCash"], ReportedRealizedPnL: m["fifoPnlRealized"]}
 	a.Fill = f
 	typ := strings.ToUpper(m["assetCategory"])
-	if typ == "CASH" || typ == "FX" {
+	isFX := typ == "CASH" || typ == "FX"
+	if isFX {
 		pair := strings.Split(strings.ToUpper(m["symbol"]), ".")
 		if len(pair) != 2 || !activity.ValidCurrency(pair[0]) || pair[1] != currency || pair[0] == pair[1] {
 			markHistoryUnsupported(a, "fx_currency_pair_missing")
@@ -286,7 +287,9 @@ func normalizeFlexTrade(r *activity.RawRecord, m map[string]string) {
 		// provider aliases must be attached to the same immutable activity lineage.
 		r.Identities = append(r.Identities, activity.Identity{Namespace: "ibkr.trade", Kind: "trade", ExternalID: m["origTradeID"]})
 	}
-	if m["netCash"] != "" && a.Status == activity.StatusEffective && typ != "FUT" {
+	if isFX {
+		validateFlexFXProceeds(a, signed, m["tradePrice"], m["proceeds"])
+	} else if m["netCash"] != "" && a.Status == activity.StatusEffective && typ != "FUT" {
 		effects, e := activity.CashEffects(a.Legs)
 		if e == nil {
 			if value := effects[currency]; value != "" {
@@ -295,6 +298,38 @@ func normalizeFlexTrade(r *activity.RawRecord, m map[string]string) {
 				}
 			}
 		}
+	}
+}
+
+// Flex reports can emit netCash=0 for spot FX even though proceeds contains the
+// reported quote-currency movement. Validate the two currency legs directly and
+// retain netCash only as source evidence for those rows.
+func validateFlexFXProceeds(a *activity.Activity, signedQuantity, price, proceeds string) {
+	if price == "" {
+		markHistoryReview(a, "fx_trade_price_missing")
+		return
+	}
+	if proceeds == "" {
+		// normalizeFlexTrade already records trade_proceeds_missing.
+		return
+	}
+	expected, err := activity.Mul(signedQuantity, price)
+	if err != nil {
+		markHistoryReview(a, "invalid_fx_trade_price")
+		return
+	}
+	expected, err = activity.Negate(expected)
+	if err != nil {
+		markHistoryReview(a, "invalid_fx_trade_price")
+		return
+	}
+	comparison, err := activity.Compare(expected, proceeds)
+	if err != nil {
+		markHistoryReview(a, "invalid_fx_proceeds")
+		return
+	}
+	if comparison != 0 {
+		markHistoryReview(a, "reported_fx_proceeds_mismatch")
 	}
 }
 func normalizeFlexCash(r *activity.RawRecord, m map[string]string) {

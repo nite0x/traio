@@ -36,28 +36,52 @@ func (s *Store) migrateActivities() error {
 		if existing != checksum {
 			return fmt.Errorf("activity migration checksum mismatch")
 		}
-		return tx.Commit()
-	}
-	if err != sql.ErrNoRows {
+	} else if err != sql.ErrNoRows {
 		return err
-	}
-	for _, column := range []string{"archived_at TEXT NOT NULL DEFAULT ''", "archive_reason TEXT NOT NULL DEFAULT ''", "activity_generation BIGINT NOT NULL DEFAULT 0"} {
-		if _, err = tx.Exec(`ALTER TABLE broker_accounts ADD COLUMN ` + column); err != nil {
-			return fmt.Errorf("activity account migration: %w", err)
-		}
-	}
-	for _, stmt := range strings.Split(schema, ";") {
-		if strings.TrimSpace(stmt) != "" {
-			if _, err = tx.Exec(stmt); err != nil {
-				return fmt.Errorf("activity schema: %w", err)
+	} else {
+		for _, column := range []string{"archived_at TEXT NOT NULL DEFAULT ''", "archive_reason TEXT NOT NULL DEFAULT ''", "activity_generation BIGINT NOT NULL DEFAULT 0"} {
+			if _, err = tx.Exec(`ALTER TABLE broker_accounts ADD COLUMN ` + column); err != nil {
+				return fmt.Errorf("activity account migration: %w", err)
 			}
 		}
+		for _, stmt := range strings.Split(schema, ";") {
+			if strings.TrimSpace(stmt) != "" {
+				if _, err = tx.Exec(stmt); err != nil {
+					return fmt.Errorf("activity schema: %w", err)
+				}
+			}
+		}
+		if _, err = s.txExecContext(ctx, tx, `INSERT INTO activity_schema_migrations(version,checksum,applied_at) VALUES(1,?,?)`, checksum, nowRFC3339()); err != nil {
+			return err
+		}
 	}
-	if _, err = s.txExecContext(ctx, tx, `INSERT INTO activity_schema_migrations(version,checksum,applied_at) VALUES(1,?,?)`, checksum, nowRFC3339()); err != nil {
+	if err = s.migrateActivityNormalizationVersion(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
+
+func (s *Store) migrateActivityNormalizationVersion(ctx context.Context, tx *sql.Tx) error {
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(activityNormalizationVersionSchema)))
+	var existing string
+	err := tx.QueryRow(`SELECT checksum FROM activity_schema_migrations WHERE version=2`).Scan(&existing)
+	if err == nil {
+		if existing != checksum {
+			return fmt.Errorf("activity normalization migration checksum mismatch")
+		}
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	if _, err = tx.Exec(activityNormalizationVersionSchema); err != nil {
+		return fmt.Errorf("activity normalization migration: %w", err)
+	}
+	_, err = s.txExecContext(ctx, tx, `INSERT INTO activity_schema_migrations(version,checksum,applied_at) VALUES(2,?,?)`, checksum, nowRFC3339())
+	return err
+}
+
+const activityNormalizationVersionSchema = `ALTER TABLE broker_raw_records ADD COLUMN normalization_rule_version TEXT NOT NULL DEFAULT 'ibkr-activity-v1'`
 
 const activitySchema = `
 CREATE TABLE account_activities (
