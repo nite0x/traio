@@ -239,6 +239,9 @@ func (s *Store) resolveHistoryDuplicate(ctx context.Context, issueID, action, ta
 	if _, err = s.txExecContext(ctx, tx, `UPDATE broker_accounts SET activity_generation=activity_generation+1 WHERE id=?`, accountID); err != nil {
 		return err
 	}
+	if err = s.markPerformanceDirtyTx(ctx, tx, accountID, earliestPerformanceDate(current, reviewed)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -390,6 +393,9 @@ func (s *Store) resolveHistoryRevisionConflict(ctx context.Context, issueID, tar
 		return err
 	}
 	if _, err = s.txExecContext(ctx, tx, `UPDATE broker_accounts SET activity_generation=activity_generation+1 WHERE id=?`, accountID); err != nil {
+		return err
+	}
+	if err = s.markPerformanceDirtyTx(ctx, tx, accountID, earliestPerformanceDate(current, accepted)); err != nil {
 		return err
 	}
 	return tx.Commit()

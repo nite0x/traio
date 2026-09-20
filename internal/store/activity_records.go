@@ -603,6 +603,9 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 		if _, err = s.txExecContext(ctx, tx, `UPDATE broker_accounts SET activity_generation=activity_generation+1 WHERE id=?`, accountID); err != nil {
 			return "", err
 		}
+		if err = s.markPerformanceDirtyTx(ctx, tx, accountID, earliestPerformanceDate(old, a)); err != nil {
+			return "", err
+		}
 	}
 	if ruleUpgrade && replace {
 		if _, err = s.txExecContext(ctx, tx, `UPDATE activity_reconciliation_issues SET status='resolved',resolution=?,updated_at=? WHERE raw_record_id=? AND status='open'`, "superseded_by_"+activity.RuleVersion, nowRFC3339(), rawID); err != nil {

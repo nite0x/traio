@@ -107,6 +107,11 @@ func (s *Service) runJob(parent context.Context, job store.HistoryJob) {
 			status = "partial"
 		}
 		err = s.repo.FinishHistoryJob(ctx, job, status, counts, "")
+		if err == nil {
+			if refreshErr := s.notifyHistoryChanged(ctx, affectedAccountIDs(job), job.Request.From); refreshErr != nil {
+				log.Printf("history performance refresh failed job=%s error=performance_refresh_failed", job.ID)
+			}
+		}
 	}
 	if err != nil {
 		select {
@@ -118,6 +123,24 @@ func (s *Service) runJob(parent context.Context, job store.HistoryJob) {
 			s.finishFailure(parent, job, err)
 		}
 	}
+}
+
+func affectedAccountIDs(job store.HistoryJob) []int64 {
+	seen := map[int64]bool{}
+	result := make([]int64, 0, len(job.Request.AccountIDs)+len(job.Coverage))
+	for _, accountID := range job.Request.AccountIDs {
+		if accountID > 0 && !seen[accountID] {
+			seen[accountID] = true
+			result = append(result, accountID)
+		}
+	}
+	for _, coverage := range job.Coverage {
+		if coverage.AccountID > 0 && !seen[coverage.AccountID] {
+			seen[coverage.AccountID] = true
+			result = append(result, coverage.AccountID)
+		}
+	}
+	return result
 }
 
 type fetchResult struct {

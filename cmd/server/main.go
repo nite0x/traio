@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,8 +19,11 @@ import (
 	"github.com/nite/traio/internal/bootstrap"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/history"
+	"github.com/nite/traio/internal/market"
+	"github.com/nite/traio/internal/market/tiingo"
 	"github.com/nite/traio/internal/market/yahoo"
 	"github.com/nite/traio/internal/news"
+	"github.com/nite/traio/internal/performance"
 	"github.com/nite/traio/internal/runtime"
 	"github.com/nite/traio/internal/settings"
 	"github.com/nite/traio/internal/store"
@@ -45,6 +50,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("API token: %v", err)
 	}
+	marketDataSecrets, err := market.NewSecretCipher(apiToken)
+	if err != nil {
+		log.Fatalf("market data credentials: %v", err)
+	}
 	database := startup.Database
 	st, err := store.OpenRepository(database.Driver, database.DataSource)
 	if err != nil {
@@ -68,10 +77,49 @@ func main() {
 	if err != nil {
 		log.Fatalf("brokers: %v", err)
 	}
+	marketData := market.NewService(connections.MarketData, nil, yahoo.New())
+	reloadTiingo := func(ctx context.Context) error {
+		provider, loadErr := st.GetBrokerProviderRuntimeConfig(ctx, "TIINGO")
+		if loadErr != nil {
+			return loadErr
+		}
+		enabled, _ := provider.Config["enabled"].(bool)
+		if !enabled {
+			marketData.SetTiingo(nil)
+			return nil
+		}
+		encrypted := strings.TrimSpace(provider.Secrets["api_token"])
+		if encrypted == "" {
+			return market.NewProviderError(market.ErrorNotConfigured, "tiingo", "configure", "API token is not configured", nil)
+		}
+		token, decryptErr := marketDataSecrets.Decrypt(encrypted, "tiingo/api_token")
+		if decryptErr != nil {
+			return fmt.Errorf("Tiingo credential cannot be decrypted; save the token again")
+		}
+		baseURL, _ := provider.Config["base_url"].(string)
+		client, clientErr := tiingo.New(tiingo.Config{APIToken: token, BaseURL: baseURL})
+		if clientErr != nil {
+			return clientErr
+		}
+		marketData.SetTiingo(client)
+		return nil
+	}
+	if err := reloadTiingo(context.Background()); err != nil {
+		log.Fatalf("Tiingo market data: %v", err)
+	}
 	brokerSync := runtime.BuildBrokerSync(st, connections)
 	brokerSync.SetSyncConfig(cfg.BrokerSync)
 	historyService := history.New(st)
 	historyService.SetSyncConfig(cfg.BrokerSync)
+	performanceMode, err := performance.ParseRetentionMode(os.Getenv("TRAIO_PERFORMANCE_RETENTION_MODE"))
+	if err != nil {
+		log.Fatalf("performance retention: %v", err)
+	}
+	if performanceMode == performance.RetentionLicensedPersistence && !strings.EqualFold(strings.TrimSpace(os.Getenv("TRAIO_MARKET_DATA_PERSISTENCE_LICENSED")), "true") {
+		log.Fatal("performance retention: licensed_persistence requires TRAIO_MARKET_DATA_PERSISTENCE_LICENSED=true and applicable written permission")
+	}
+	performanceService := performance.New(st, performance.NewMarketValuationProvider(marketData), performanceMode)
+	historyService.SetOnHistoryChanged(performanceService.RefreshAccounts)
 	accountEquity := runtime.BuildAccountEquity(connections)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
@@ -111,24 +159,27 @@ func main() {
 			brokerSync.Invalidate()
 			return nil
 		},
-		Watchlists:       st,
-		CandleCache:      st,
-		Settings:         settingsMgr,
-		Instruments:      connections.MarketData,
-		Quotes:           connections.MarketData,
-		Candles:          connections.MarketData,
-		PublicMarketData: yahoo.New(),
-		BrokerSync:       brokerSync,
-		Account:          accountEquity,
-		News:             newsSvc,
-		AI:               aiSvc,
-		APIToken:         apiToken,
-		AllowedAPIHosts:  config.ResolveAllowedAPIHosts(),
-		AllowedOrigins:   config.ResolveAllowedOrigins(),
-		WebDir:           config.ResolveWebDir(),
-		Auth:             authService,
-		Trading:          connections.Trading,
-		History:          historyService,
+		Watchlists:          st,
+		CandleCache:         st,
+		Settings:            settingsMgr,
+		Instruments:         connections.MarketData,
+		Quotes:              connections.MarketData,
+		Candles:             connections.MarketData,
+		PublicMarketData:    marketData,
+		MarketDataSecrets:   marketDataSecrets,
+		OnMarketDataChanged: reloadTiingo,
+		BrokerSync:          brokerSync,
+		Account:             accountEquity,
+		News:                newsSvc,
+		AI:                  aiSvc,
+		APIToken:            apiToken,
+		AllowedAPIHosts:     config.ResolveAllowedAPIHosts(),
+		AllowedOrigins:      config.ResolveAllowedOrigins(),
+		WebDir:              config.ResolveWebDir(),
+		Auth:                authService,
+		Trading:             connections.Trading,
+		History:             historyService,
+		Performance:         performanceService,
 	}
 
 	addr := config.ResolveServerListenAddr()

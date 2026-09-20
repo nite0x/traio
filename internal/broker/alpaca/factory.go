@@ -20,7 +20,7 @@ func (*Factory) Definition() broker.ProviderDefinition {
 		Capabilities: broker.NewCapabilitySet(
 			broker.CapabilityAccounts, broker.CapabilityCashBalances,
 			broker.CapabilityPositions, broker.CapabilityDailyPerformance,
-			broker.CapabilityTrading, broker.CapabilityAccountEquity,
+			broker.CapabilityTrading, broker.CapabilityAccountEquity, broker.CapabilityMarketData,
 		),
 		ConfigSchema: broker.ConfigSchema{
 			ProviderFields: []broker.ConfigField{
@@ -32,6 +32,7 @@ func (*Factory) Definition() broker.ProviderDefinition {
 				{Key: "api_key", Label: "API Key", Type: "string", Secret: true, Required: true},
 				{Key: "api_secret", Label: "API Secret", Type: "string", Secret: true, Required: true},
 				{Key: "base_url", Label: "API 地址覆盖", Type: "url"},
+				{Key: "data_base_url", Label: "Market Data API 地址", Type: "url"},
 			},
 		},
 	}
@@ -48,6 +49,7 @@ func (*Factory) Open(_ context.Context, connection broker.ConnectionConfig) (bro
 	}
 	cfg := config.AlpacaConfig{
 		APIKey: connection.Secrets["api_key"], APISecret: connection.Secrets["api_secret"], BaseURL: baseURL,
+		DataBaseURL: firstConfigString(connection.Config, connection.ProviderConfig, "data_base_url"),
 	}
 	cfg.Normalize()
 	client := New(cfg)
@@ -63,6 +65,7 @@ var _ broker.BrokerSession = (*Session)(nil)
 var _ broker.AuthenticationProvider = (*Session)(nil)
 var _ broker.TradingProvider = (*Session)(nil)
 var _ broker.AccountEquityProvider = (*Session)(nil)
+var _ broker.MarketDataProvider = (*Session)(nil)
 
 func (s *Session) ConnectionID() int64       { return s.id }
 func (*Session) ProviderCode() string        { return "ALPACA" }
@@ -86,4 +89,11 @@ func (s *Session) Health(ctx context.Context) (broker.ConnectionHealth, error) {
 func configString(values map[string]any, key string) string {
 	value, _ := values[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func firstConfigString(primary, fallback map[string]any, key string) string {
+	if value := configString(primary, key); value != "" {
+		return value
+	}
+	return configString(fallback, key)
 }

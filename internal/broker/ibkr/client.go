@@ -226,7 +226,7 @@ func (c *Client) getQuoteSnapshot(ctx context.Context, conIDs []int64) ([]broker
 	}
 	q := u.Query()
 	q.Set("conids", joinConIDs(conIDs))
-	q.Set("fields", "31,84,86,82,83,87")
+	q.Set("fields", "31,55,84,86,82,83,87,6509")
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -253,18 +253,35 @@ func (c *Client) getQuoteSnapshot(ctx context.Context, conIDs []int64) ([]broker
 
 	out := make([]broker.Quote, 0, len(raw))
 	for _, r := range raw {
+		availability := strings.ToUpper(strings.TrimSpace(asString(firstRaw(r, "6509", "availability"))))
 		out = append(out, broker.Quote{
-			ConID:     parseConID(firstRaw(r, "conid", "conidEx")),
-			Symbol:    strings.TrimSpace(asString(firstRaw(r, "symbol", "55"))),
-			Last:      parseFloat(firstRaw(r, "31", "last_price")),
-			Bid:       parseFloat(firstRaw(r, "84", "bid_price")),
-			Ask:       parseFloat(firstRaw(r, "86", "ask_price")),
-			Change:    parseFloat(firstRaw(r, "82", "change_price")),
-			ChangePct: parseFloat(firstRaw(r, "83", "change_percent")),
-			Volume:    parseInt64(firstRaw(r, "87_raw", "87", "volume")),
+			ConID:          parseConID(firstRaw(r, "conid", "conidEx")),
+			Symbol:         strings.TrimSpace(asString(firstRaw(r, "symbol", "55"))),
+			Last:           parseFloat(firstRaw(r, "31", "last_price")),
+			Bid:            parseFloat(firstRaw(r, "84", "bid_price")),
+			Ask:            parseFloat(firstRaw(r, "86", "ask_price")),
+			Change:         parseFloat(firstRaw(r, "82", "change_price")),
+			ChangePct:      parseFloat(firstRaw(r, "83", "change_percent")),
+			Volume:         parseInt64(firstRaw(r, "87_raw", "87", "volume")),
+			Delayed:        strings.HasPrefix(availability, "D") || strings.HasPrefix(availability, "Z"),
+			Source:         "ibkr",
+			Status:         "official",
+			AsOf:           ibkrQuoteAsOf(firstRaw(r, "_updated", "updated_at")),
+			AdjustmentType: "none",
 		})
 	}
 	return out, nil
+}
+
+func ibkrQuoteAsOf(value any) int64 {
+	millis := parseInt64(value)
+	if millis > 1_000_000_000_000 {
+		return millis / 1000
+	}
+	if millis > 0 {
+		return millis
+	}
+	return time.Now().Unix()
 }
 
 // GetCandles fetches OHLCV history via IBKR CPAPI /iserver/marketdata/history.

@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/config"
+	"github.com/nite/traio/internal/market"
 )
 
 const (
@@ -198,6 +200,7 @@ type schwabQuoteResponse struct {
 		NetChange        float64 `json:"netChange"`
 		NetPercentChange float64 `json:"netPercentChange"`
 		TotalVolume      int64   `json:"totalVolume"`
+		QuoteTime        int64   `json:"quoteTime"`
 	} `json:"quote"`
 	Regular struct {
 		LastPrice  float64 `json:"regularMarketLastPrice"`
@@ -224,15 +227,30 @@ func (q schwabQuoteResponse) normalized(fallbackSymbol string) *broker.Quote {
 		changePct = q.Regular.NetPercent
 	}
 	return &broker.Quote{
-		Symbol:    symbol,
-		Last:      last,
-		Bid:       q.Quote.BidPrice,
-		Ask:       q.Quote.AskPrice,
-		Change:    change,
-		ChangePct: changePct,
-		Volume:    q.Quote.TotalVolume,
-		High:      q.Quote.HighPrice,
-		Low:       q.Quote.LowPrice,
-		Delayed:   !q.Realtime,
+		Symbol:         symbol,
+		Last:           last,
+		Bid:            q.Quote.BidPrice,
+		Ask:            q.Quote.AskPrice,
+		Change:         change,
+		ChangePct:      changePct,
+		Volume:         q.Quote.TotalVolume,
+		High:           q.Quote.HighPrice,
+		Low:            q.Quote.LowPrice,
+		Delayed:        !q.Realtime,
+		Source:         "schwab",
+		Status:         market.StatusOfficial,
+		Currency:       "USD",
+		AsOf:           schwabQuoteTime(q.Quote.QuoteTime),
+		AdjustmentType: market.AdjustmentNone,
 	}
+}
+
+func schwabQuoteTime(value int64) int64 {
+	if value <= 0 {
+		return time.Now().Unix()
+	}
+	if value > 1_000_000_000_000 {
+		return value / 1000
+	}
+	return value
 }

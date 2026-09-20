@@ -149,7 +149,7 @@ func (c *Client) GetQuotes(ctx context.Context, symbols []string) ([]broker.Quot
 	return out, nil
 }
 
-var ranges = map[string]string{"1d": "1d", "5d": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "2y": "2y", "5y": "5y"}
+var ranges = map[string]string{"1d": "1d", "5d": "5d", "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "2y": "2y", "5y": "5y", "max": "max"}
 var intervals = map[string]string{"1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m", "1h": "1h", "1d": "1d", "1w": "1wk"}
 
 func (c *Client) GetHistory(ctx context.Context, symbol, period, bar string, refresh bool) ([]broker.Candle, error) {

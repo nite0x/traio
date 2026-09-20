@@ -52,6 +52,7 @@ func TestCurrentBrokerCapabilityMatrix(t *testing.T) {
 				broker.CapabilityCashBalances,
 				broker.CapabilityPositions,
 				broker.CapabilityDailyPerformance,
+				broker.CapabilityMarketData,
 				broker.CapabilityTrading,
 				broker.CapabilityAccountEquity,
 			),

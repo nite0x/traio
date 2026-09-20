@@ -57,7 +57,8 @@ func parseQuotes(body []byte) ([]broker.Quote, error) {
 		}
 		out = append(out, broker.Quote{Symbol: strings.ToUpper(q.Symbol), Last: *q.Price, Change: change, ChangePct: pct,
 			Bid: q.Bid, Ask: q.Ask, Volume: q.Volume, High: q.High, Low: q.Low,
-			Delayed: q.Delay == nil || *q.Delay > 0, Source: "yahoo", Currency: q.Currency, AsOf: q.Time,
+			Delayed: q.Delay == nil || *q.Delay > 0, Source: "yahoo", Status: market.StatusProvisional,
+			Currency: q.Currency, AsOf: q.Time, AdjustmentType: market.AdjustmentNone,
 			MarketState: q.State, Week52High: q.High52, Week52Low: q.Low52})
 	}
 	return out, nil

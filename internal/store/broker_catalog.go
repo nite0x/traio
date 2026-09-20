@@ -105,7 +105,7 @@ var defaultBrokerProviders = []providerSeed{
 	{
 		code: "ALPACA", name: "Alpaca Markets", displayName: "Alpaca",
 		displayInfo:  `{"short_name":"Alpaca"}`,
-		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance", "trading"},
+		capabilities: []string{"accounts", "cash_balances", "positions", "daily_performance", "trading", "market_data"},
 		providerFields: []BrokerFieldDefinition{
 			{Key: "paper_base_url", Label: "Paper API 地址", Type: "url"},
 			{Key: "live_base_url", Label: "Live API 地址", Type: "url"},
@@ -114,6 +114,17 @@ var defaultBrokerProviders = []providerSeed{
 			{Key: "api_key", Label: "API Key", Type: "string", Secret: true, Required: true},
 			{Key: "api_secret", Label: "API Secret", Type: "string", Secret: true, Required: true},
 			{Key: "base_url", Label: "API 地址覆盖", Type: "url"},
+			{Key: "data_base_url", Label: "Market Data API 地址", Type: "url"},
+		},
+	},
+	{
+		code: "TIINGO", name: "Tiingo Market Data", displayName: "Tiingo",
+		displayInfo:  `{"short_name":"Tiingo","category":"market_data"}`,
+		capabilities: []string{"market_data", "historical_market_data"},
+		providerFields: []BrokerFieldDefinition{
+			{Key: "api_token", Label: "API Token", Type: "string", Secret: true, Required: true},
+			{Key: "base_url", Label: "API 地址", Type: "url"},
+			{Key: "enabled", Label: "启用", Type: "boolean"},
 		},
 	},
 }

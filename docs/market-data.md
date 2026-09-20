@@ -1,87 +1,141 @@
-# Yahoo Finance market data
+# Market data policy
 
-The server provides Yahoo Finance quotes and historical candles without a broker
-login or API key. The Go adapter in `internal/market/yahoo` follows the Yahoo
-provider from niteX: cookie warmup, crumb authentication, query1/query2 failover,
-bounded retries, and a short quote cache. Cookies and crumbs stay in server memory.
+Traio routes market data by declared use. The server, not the browser, owns the
+selection and fallback order.
+
+| Usage | Selection order |
+| --- | --- |
+| `historical_chart` | Tiingo, then Yahoo |
+| `live_quote` | owning broker connection, then Yahoo |
+| `portfolio_valuation` historical days | Tiingo, then Yahoo |
+| `portfolio_valuation` current UTC day | owning broker connection, then Yahoo |
+| `reconciliation` historical data | Tiingo, then Yahoo |
+
+Broker priority is used only when the request supplies the exact positive
+`connection_id`. The policy never substitutes an arbitrary default broker for a
+holding. `source=broker` without a connection ID keeps the legacy route for
+backward compatibility.
 
 ## API
 
-Existing API authentication still applies. Symbol-based endpoints default to Yahoo:
+Existing API authentication and permissions still apply:
 
 ```text
-GET /api/v1/quotes/AAPL
-GET /api/v1/quotes/symbols?symbols=AAPL,MSFT,0700.HK
-GET /api/v1/quotes/AAPL/history?period=1m&bar=1h
+GET /api/v1/quotes/AAPL?usage=live_quote&connection_id=12
+GET /api/v1/quotes/symbols?symbols=AAPL,MSFT&usage=portfolio_valuation&connection_id=12
+GET /api/v1/quotes/AAPL/history?period=1y&bar=1d
+
+GET /api/v1/market-data/providers/tiingo
+PUT /api/v1/market-data/providers/tiingo
+POST /api/v1/market-data/providers/tiingo/test
+DELETE /api/v1/market-data/providers/tiingo
 ```
 
-Use `source=yahoo` to select Yahoo explicitly. Use `source=broker` to retain the
-previous IBKR/Schwab routing. Contract-ID quotes (`/api/v1/quotes?conids=...`),
-broker positions, account valuation, trading, and the Schwab WebSocket endpoint
-remain broker-backed. Yahoo failures return an error, rather than silently
-substituting a different data source.
+`source=auto` is the default. `source=broker` and `source=yahoo` select
+quote sources explicitly. Tiingo is historical-only, so `source=tiingo` on a
+quote request is rejected. A history request defaults to
+`usage=historical_chart`; quote requests default to `usage=live_quote`.
 
-Use Yahoo symbols including exchange suffixes, e.g. `0700.HK`, `2330.TW`,
-`600519.SS`, and share-class syntax such as `BRK-B`. No automatic conversion from
-broker symbols or contract IDs is performed. A batch accepts up to 100 symbols,
-normalizes case, removes duplicates, and preserves request order. Missing or
-unpriced symbols are omitted; when all requested symbols are missing the response
-is 404. An empty batch returns an empty array.
+Every successful quote includes `source`, `status`, `as_of`, `delayed`,
+`currency`, and `adjustment_type`. Historical responses use the same fields in
+their response envelope and include stable attribution:
 
-Quotes include `source`, `currency`, `as_of` (Unix seconds), `market_state`,
-`delayed`, and available 52-week high/low values. `last` and daily change describe
-the **regular-session** quote; they do not switch to pre/post-market prices. On a
-closed market this may be the previous session's price. Do not equate polling
-frequency with exchange data freshness. Unknown exchange delay is treated as
-delayed.
+- Tiingo: `Data sourced by Tiingo`;
+- Yahoo: `Data sourced by Yahoo Finance`.
 
-## History and caching
+Status values are:
 
-Periods: `1d`, `5d`, `1m`, `3m`, `6m`, `1y`, `2y`, `5y`.
-Bars: `1min`, `5min`, `15min`, `30min`, `1h`, `1d`, `1w`.
-Omitting `bar` uses Traio's existing period defaults.
+- `official`: the selected broker or Tiingo adjusted EOD history;
+- `provisional`: Yahoo fallback data;
+- `estimated`: Tiingo reference/current quotes.
 
-The adapter maps Traio's `1m` period to Yahoo's `1mo`, `1min` bars to `1m`, and
-weekly bars to `1wk`. Invalid combinations exceeding the intraday history window
-return 400. Missing OHLC samples are skipped rather than converted to zero-price
-candles. Timestamps remain Unix seconds.
+Tiingo daily charts use split-and-dividend-adjusted OHLCV and report
+`adjustment_type=split_dividend_adjusted`. Intraday Tiingo and Yahoo charts
+report `unadjusted`. A mixed-source batch is explicit both per quote and through
+`X-Market-Data-Source: mixed`.
 
-Quotes are cached for two seconds; charts for thirty seconds. Chart requests with
-`refresh=1` bypass the chart cache. The bounded in-memory caches are separate from
-broker candle storage. Concurrent requests share the cache and serialized
-authentication flow. Network requests time out, use at most three attempts, and
-respect cancellation. Upstream 401 triggers credential refresh; 403, 429 and 5xx
-use bounded backoff and host failover.
-HTTP responses use `Cache-Control: no-store` so browsers and proxies do not add
-another stale cache. The provider's in-memory cache remains the source of reuse.
+Errors include a stable `code`: `not_configured`, `authentication_failed`,
+`market_data_permission_denied`, `rate_limited`, `upstream_unavailable`,
+`security_not_found`, or `invalid_request`.
 
-## Frontend
+## Tiingo BYO token
 
-Overview, Holdings and chart quotes poll every thirty seconds. The Yahoo chart also
-polls candles every thirty seconds, refreshes on window focus or reconnection, and
-keeps existing candles visible during background refresh. Its refresh button
-bypasses the server's candle cache with `refresh=1`.
+The current configuration is explicitly deployment-scoped
+(`"scope":"deployment"`). It is appropriate for a single-user or
+single-workspace deployment. It is not a per-user secret store; multi-tenant
+production remains blocked until credentials, requests, and caches are truly
+tenant-isolated.
 
-The Overview and Holdings pages fetch quotes through their shared
-portfolio hook. Yahoo updates the displayed current price and fills missing
-broker daily PnL with `quote.change × current quantity`, marked as an estimate
-with the quote source/time. Existing broker daily PnL (including zero), account
-totals, position market values and unrealized accounting PnL remain broker data.
-Estimates exclude intraday trades and fees. Currency mismatches and derivatives
-are not priced from equity ticker quotes. Failed quote requests do not prevent
-the broker portfolio from loading.
+`license_mode` describes handling of public market-data responses and currently
+only accepts `transient`. It does not enable or describe daily-performance
+retention. Derived performance persistence is controlled independently by
+`TRAIO_PERFORMANCE_RETENTION_MODE` plus
+`TRAIO_MARKET_DATA_PERSISTENCE_LICENSED=true`.
 
-The legacy Today, Watchlist and Analysis pages have been removed. Their old URLs
-fall back to Overview. The chart remains available from portfolio holding rows.
+Configure Tiingo with:
+
+```json
+{
+  "api_token": "user-owned-token",
+  "enabled": true
+}
+```
+
+`base_url` is optional and defaults to `https://api.tiingo.com`. Blank
+`api_token` values preserve an already saved token. GET and PUT responses expose
+only `token_configured`; they never return the token or its ciphertext.
+
+`POST /test` validates a candidate token, or the saved deployment token when
+the body omits `api_token`. It never saves a candidate. Its stable response is:
+
+```json
+{"connected":true,"status":"connected","checked_at":"2026-09-20T00:00:00Z"}
+```
+
+Failures use `connected=false`, one of `not_configured`, `unauthorized`,
+`rate_limited`, or `unavailable`, plus a stable `error_code`.
+
+`DELETE` returns 204 after disabling Tiingo and clearing the deployment token.
+There is no Tiingo persistent candle cache or durable request queue to purge.
+Persisted derived performance suffixes whose `source_mix` contains Tiingo are
+deleted and marked dirty before future recomputation; broker activities, cash,
+positions, and independent broker market-data caches are not deleted.
+
+The token is sent in Tiingo's `Authorization: Token …` header, never in a URL.
+Before persistence it is encrypted with AES-GCM using a purpose-bound key
+derived from Traio's protected runtime API token. Changing that runtime token
+requires saving the Tiingo token again.
+
+Tiingo and Yahoo public responses are parsed directly in memory. Their raw
+responses and normalized public candles are not written to the broker candle
+cache, database, queues, backups, or persistent logs. This rule does not remove
+the existing broker `candle_cache`; broker-sourced caching is a separate
+capability and remains subject to each broker subscription and license.
+
+## Provider notes
+
+- IBKR current quotes use the requested connection's conid search and snapshot.
+- Schwab current quotes use the requested OAuth connection.
+- Alpaca current quotes use the Market Data snapshot API; `data_base_url`
+  defaults to `https://data.alpaca.markets` and is separate from the trading API.
+- Yahoo keeps its short in-memory quote/chart caches and remains available when
+  Tiingo is disabled or unavailable.
+
+The server does not implement or assume a data-redistribution license. Tiingo
+attribution remains available in every response's `source` field; a client that
+displays the data should surface that attribution and comply with the user's
+plan.
 
 ## Verification
 
 ```sh
-go test -race ./internal/market/... ./internal/api
-TRAIO_TEST_YAHOO_LIVE=1 go test ./internal/market/yahoo -run '^TestLiveYahoo$' -count=1 -v
+go test ./...
+go vet ./...
+git diff --check
 ```
 
-The second command makes public network requests for US/Hong Kong quotes and
-historical candles. Normal tests use an injected HTTP transport and no Yahoo
-network access. Yahoo's public web endpoints can change or rate-limit requests;
-their availability is separate from the broker connections' health.
+Tests use local HTTP servers and synthetic credentials. They cover provider
+selection and fallback, attribution, Tiingo test/delete and derived-result
+invalidation, adjusted chart versus unadjusted valuation history, credential
+encryption/non-disclosure, and broker-to-Yahoo current quote routing without
+making live market-data requests.

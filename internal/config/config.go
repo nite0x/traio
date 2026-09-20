@@ -163,7 +163,8 @@ type AlpacaConfig struct {
 	APIKey    string `json:"api_key" yaml:"api_key"`
 	APISecret string `json:"api_secret" yaml:"api_secret"`
 	// BaseURL is the trading API root, e.g. https://paper-api.alpaca.markets
-	BaseURL string `json:"base_url" yaml:"base_url"`
+	BaseURL     string `json:"base_url" yaml:"base_url"`
+	DataBaseURL string `json:"data_base_url" yaml:"data_base_url"`
 }
 
 type IBKRConfig struct {
@@ -225,6 +226,11 @@ func (c *AlpacaConfig) Normalize() {
 	base = strings.TrimRight(base, "/")
 	base = strings.TrimSuffix(base, "/v2")
 	c.BaseURL = base
+	dataBase := strings.TrimRight(strings.TrimSpace(c.DataBaseURL), "/")
+	if dataBase == "" {
+		dataBase = "https://data.alpaca.markets"
+	}
+	c.DataBaseURL = strings.TrimSuffix(dataBase, "/v2")
 }
 
 // ResolveServerPort picks the HTTP listen port for traio-server.
