@@ -72,10 +72,28 @@ type Service struct {
 	now   func() time.Time
 	owner string
 
-	mu              sync.Mutex
-	lastRun         map[string]time.Time
-	wake            chan struct{}
-	autoSyncEnabled bool
+	mu               sync.Mutex
+	lastRun          map[string]time.Time
+	wake             chan struct{}
+	autoSyncEnabled  bool
+	onHistoryChanged func(context.Context, []int64, string) error
+}
+
+// SetOnHistoryChanged installs the post-commit performance refresh hook.
+func (s *Service) SetOnHistoryChanged(callback func(context.Context, []int64, string) error) {
+	s.mu.Lock()
+	s.onHistoryChanged = callback
+	s.mu.Unlock()
+}
+
+func (s *Service) notifyHistoryChanged(ctx context.Context, accountIDs []int64, from string) error {
+	s.mu.Lock()
+	callback := s.onHistoryChanged
+	s.mu.Unlock()
+	if callback == nil {
+		return nil
+	}
+	return callback(ctx, accountIDs, from)
 }
 
 func New(repo Repository) *Service {

@@ -31,6 +31,7 @@ func WithHTTPClient(client *http.Client) Option {
 }
 
 func New(cfg config.AlpacaConfig, opts ...Option) *Client {
+	cfg.Normalize()
 	c := &Client{
 		cfg:        cfg,
 		httpClient: http.DefaultClient,

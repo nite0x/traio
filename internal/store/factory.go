@@ -53,6 +53,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateActivities(); err != nil {
 		return err
 	}
+	if err := s.migratePerformance(); err != nil {
+		return err
+	}
 	return s.migrateIBKRFlexConnections()
 }
 

@@ -20,6 +20,7 @@ type brokerStore interface {
 	store.BrokerRuntimeConfigRepository
 	ListBrokerAccounts(ctx context.Context) ([]store.BrokerAccount, error)
 	ListBrokerAccountsByConnection(ctx context.Context, connectionID int64) ([]store.BrokerAccount, error)
+	InvalidatePerformanceSource(context.Context, string) error
 }
 
 type brokerConnectionRuntime interface {
@@ -71,7 +72,14 @@ func listBrokerProviders(st brokerStore) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, providers)
+		brokers := make([]store.BrokerProvider, 0, len(providers))
+		for _, provider := range providers {
+			if strings.EqualFold(provider.Code, "TIINGO") {
+				continue
+			}
+			brokers = append(brokers, provider)
+		}
+		c.JSON(http.StatusOK, brokers)
 	}
 }
 
@@ -79,6 +87,10 @@ func updateBrokerProvider(st brokerStore, onChanged func(context.Context) error)
 	return func(c *gin.Context) {
 		if st == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "broker store unavailable"})
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Param("code")), "TIINGO") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "use /market-data/providers/tiingo to update Tiingo credentials"})
 			return
 		}
 		var req providerConfigRequest

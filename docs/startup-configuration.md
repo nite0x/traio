@@ -26,6 +26,8 @@ Infisical Secret 名称与下表一致。只加载白名单中的名称；远程
 | `TRAIO_DATABASE_DRIVER` | `sqlite` / `postgres` / `postgresql`；默认 SQLite |
 | `TRAIO_DATABASE_DSN` | PostgreSQL 必填；SQLite 默认使用运行目录中的数据库 |
 | `TRAIO_AUTH_MODE` | `local` / `password` / `oidc` / `disabled-dev`；保留原有部署模式默认值和限制 |
+| `TRAIO_PERFORMANCE_RETENTION_MODE` | 仅控制每日派生收益结果：`transient`（默认，不保存每日派生序列）或 `licensed_persistence`；与 Tiingo 配置中的公共行情 `license_mode` 无关 |
+| `TRAIO_MARKET_DATA_PERSISTENCE_LICENSED` | 只有已取得适用书面许可时才设为 `true`；否则服务拒绝启用 `licensed_persistence` |
 | `TRAIO_OIDC_ISSUER_URL` | OIDC 必填，HTTP(S) URL |
 | `TRAIO_OIDC_CLIENT_ID` | OIDC 必填 |
 | `TRAIO_OIDC_CLIENT_SECRET` | 按身份提供方需要配置；远程读取失败时不降级为无 Secret 客户端 |

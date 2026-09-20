@@ -26,27 +26,30 @@ import (
 )
 
 type Deps struct {
-	Brokers          brokerStore
-	Connections      brokerConnectionRuntime
-	OnBrokersChanged func(context.Context) error
-	Watchlists       store.WatchlistRepository
-	CandleCache      store.CandleCacheRepository
-	Settings         *settings.Manager
-	Instruments      broker.InstrumentProvider
-	Quotes           broker.BatchMarketDataProvider
-	Candles          broker.CandleProvider
-	PublicMarketData market.SymbolProvider
-	BrokerSync       *portfolio.SyncService
-	Account          *account.Service
-	News             *news.Service
-	AI               *ai.Service
-	APIToken         string
-	AllowedAPIHosts  []string
-	AllowedOrigins   []string
-	WebDir           string
-	Auth             *traioauth.Service
-	Trading          *broker.TradingService
-	History          historyAPI
+	Brokers             brokerStore
+	Connections         brokerConnectionRuntime
+	OnBrokersChanged    func(context.Context) error
+	Watchlists          store.WatchlistRepository
+	CandleCache         store.CandleCacheRepository
+	Settings            *settings.Manager
+	Instruments         broker.InstrumentProvider
+	Quotes              broker.BatchMarketDataProvider
+	Candles             broker.CandleProvider
+	PublicMarketData    market.SymbolProvider
+	MarketDataSecrets   *market.SecretCipher
+	OnMarketDataChanged func(context.Context) error
+	BrokerSync          *portfolio.SyncService
+	Account             *account.Service
+	News                *news.Service
+	AI                  *ai.Service
+	APIToken            string
+	AllowedAPIHosts     []string
+	AllowedOrigins      []string
+	WebDir              string
+	Auth                *traioauth.Service
+	Trading             *broker.TradingService
+	History             historyAPI
+	Performance         performanceAPI
 }
 
 func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
@@ -217,6 +220,8 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.PUT("/broker-connections/:connection_id/history-config", requirePermission(traioauth.PermissionBrokerManage), updateHistoryConfig(deps.Brokers, deps.OnBrokersChanged))
 		v1.GET("/broker-accounts", listBrokerAccounts(deps.Brokers))
 		v1.GET("/transaction-history/accounts", listHistoryAccounts(deps.History))
+		v1.GET("/performance/accounts/:account_id/daily", getDailyPerformance(deps.Performance))
+		v1.POST("/performance/accounts/:account_id/recalculate", requirePermission(traioauth.PermissionBrokerSync), recalculateDailyPerformance(deps.Performance))
 		v1.GET("/transactions", listTransactions(deps.History))
 		v1.GET("/transactions/:id", getTransaction(deps.History))
 		v1.GET("/transactions/:id/revisions", getTransactionRevisions(deps.History))
@@ -237,6 +242,10 @@ func NewRouter(deps Deps, serverCtrl ServerControl) *gin.Engine {
 		v1.GET("/quotes/symbols", publicMarketRoute(deps.PublicMarketData, "quotes", listQuotesBySymbol(resolveSchwab)))
 		v1.GET("/quotes/:symbol", publicMarketRoute(deps.PublicMarketData, "quote", getQuote(resolveSchwab, deps.Instruments, deps.Quotes)))
 		v1.GET("/quotes/:symbol/history", publicMarketRoute(deps.PublicMarketData, "history", getHistory(deps.CandleCache, deps.Instruments, deps.Candles)))
+		v1.GET("/market-data/providers/tiingo", tiingoConfiguration(deps.Brokers))
+		v1.PUT("/market-data/providers/tiingo", requirePermission(traioauth.PermissionBrokerManage), saveTiingoConfiguration(deps.Brokers, deps.MarketDataSecrets, deps.OnMarketDataChanged))
+		v1.POST("/market-data/providers/tiingo/test", requirePermission(traioauth.PermissionBrokerManage), testTiingoConfiguration(deps.Brokers, deps.MarketDataSecrets))
+		v1.DELETE("/market-data/providers/tiingo", requirePermission(traioauth.PermissionBrokerManage), deleteTiingoConfiguration(deps.Brokers, deps.OnMarketDataChanged))
 		v1.GET("/portfolio/overview", portfolioOverview(deps.BrokerSync))
 		v1.GET("/portfolio/positions", portfolioPositions(deps.BrokerSync))
 		v1.GET("/portfolio/positions/:position_id", portfolioPosition(deps.BrokerSync))
@@ -806,10 +815,10 @@ func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentPro
 			if cached, err := st.GetCachedCandles(c.Request.Context(), symbol, period, bar); err == nil && cached != nil {
 				c.Header("X-Cache", "HIT")
 				c.JSON(http.StatusOK, gin.H{
-					"symbol":  symbol,
-					"period":  period,
-					"bar":     bar,
-					"candles": cached,
+					"symbol": symbol, "period": period, "bar": bar,
+					"source": "broker", "status": market.StatusOfficial,
+					"as_of": historyAsOf(cached), "delayed": false, "currency": "",
+					"adjustment_type": market.AdjustmentUnadjusted, "candles": cached,
 				})
 				return
 			}
@@ -852,13 +861,23 @@ func getHistory(st store.CandleCacheRepository, instruments broker.InstrumentPro
 
 		c.Header("X-Cache", "MISS")
 		c.JSON(http.StatusOK, gin.H{
-			"symbol":  instrument.Symbol,
-			"conid":   instrument.ConID,
-			"period":  period,
-			"bar":     bar,
-			"candles": bars,
+			"symbol": instrument.Symbol, "conid": instrument.ConID,
+			"period": period, "bar": bar,
+			"source": "broker", "status": market.StatusOfficial,
+			"as_of": historyAsOf(bars), "delayed": false, "currency": instrument.Currency,
+			"adjustment_type": market.AdjustmentUnadjusted, "candles": bars,
 		})
 	}
+}
+
+func historyAsOf(candles []broker.Candle) int64 {
+	var latest int64
+	for _, candle := range candles {
+		if candle.Time > latest {
+			latest = candle.Time
+		}
+	}
+	return latest
 }
 
 func marketDataCapabilityUnavailable(provider any, capability broker.MarketDataCapability) bool {

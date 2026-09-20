@@ -21,7 +21,7 @@ func TestBrokerProvidersAndConnectionsAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list providers: %v", err)
 	}
-	if len(providers) != 3 || providers[0].Code != "ALPACA" || providers[1].Code != "IBKR" || providers[2].Code != "SCHWAB" {
+	if len(providers) != 4 || providers[0].Code != "ALPACA" || providers[1].Code != "IBKR" || providers[2].Code != "SCHWAB" || providers[3].Code != "TIINGO" {
 		t.Fatalf("unexpected initialized providers: %#v", providers)
 	}
 	if len(providers[1].Capabilities) == 0 || providers[1].DisplayInfo["short_name"] != "IBKR" {
@@ -68,7 +68,7 @@ func TestBrokerProvidersAndConnectionsAreIdempotent(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	providers, err = st.ListBrokerProviders(t.Context())
-	if err != nil || len(providers) != 3 {
+	if err != nil || len(providers) != 4 {
 		t.Fatalf("providers after repeated migration: providers=%#v err=%v", providers, err)
 	}
 	connections, err := st.ListBrokerConnections(t.Context())

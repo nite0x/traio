@@ -49,6 +49,8 @@ func TestBrokerSyncRoutes(t *testing.T) {
 		"PUT /api/v1/schwab/config",
 		"GET /api/v1/alpaca/config",
 		"PUT /api/v1/alpaca/config",
+		"GET /api/v1/market-data/providers/tiingo",
+		"PUT /api/v1/market-data/providers/tiingo",
 	} {
 		if !routes[route] {
 			t.Fatalf("missing broker sync route %s", route)

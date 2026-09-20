@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/nite/traio/internal/broker"
+	"github.com/nite/traio/internal/performance"
 )
 
 // ErrNotFound is returned when a repository lookup has no matching record.
@@ -105,6 +106,7 @@ type InstrumentRepository interface {
 // Consumers should accept one of the narrower interfaces above.
 type Repository interface {
 	ActivityRepository
+	performance.Repository
 	AuthRepository
 	WatchlistRepository
 	SettingsRepository

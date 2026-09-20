@@ -54,14 +54,16 @@ type MarketDataService struct {
 	quotes                map[int64]MarketDataProvider
 	batchQuotes           map[int64]BatchMarketDataProvider
 	candles               map[int64]CandleProvider
+	providerCodes         map[int64]string
 }
 
 func NewMarketDataService() *MarketDataService {
 	return &MarketDataService{
-		instruments: map[int64]InstrumentProvider{},
-		quotes:      map[int64]MarketDataProvider{},
-		batchQuotes: map[int64]BatchMarketDataProvider{},
-		candles:     map[int64]CandleProvider{},
+		instruments:   map[int64]InstrumentProvider{},
+		quotes:        map[int64]MarketDataProvider{},
+		batchQuotes:   map[int64]BatchMarketDataProvider{},
+		candles:       map[int64]CandleProvider{},
+		providerCodes: map[int64]string{},
 	}
 }
 
@@ -72,10 +74,12 @@ func (s *MarketDataService) Replace(sessions map[int64]BrokerSession) {
 	quotes := make(map[int64]MarketDataProvider)
 	batchQuotes := make(map[int64]BatchMarketDataProvider)
 	candles := make(map[int64]CandleProvider)
+	providerCodes := make(map[int64]string)
 	for connectionID, session := range sessions {
 		if session == nil {
 			continue
 		}
+		providerCodes[connectionID] = session.ProviderCode()
 		if provider, ok := session.(InstrumentProvider); ok {
 			instruments[connectionID] = provider
 		}
@@ -95,7 +99,15 @@ func (s *MarketDataService) Replace(sessions map[int64]BrokerSession) {
 	s.quotes = quotes
 	s.batchQuotes = batchQuotes
 	s.candles = candles
+	s.providerCodes = providerCodes
 	s.mu.Unlock()
+}
+
+func (s *MarketDataService) ProviderCode(connectionID int64) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	value, ok := s.providerCodes[connectionID]
+	return value, ok
 }
 
 // SetDefaultConnectionID prefers one connection whenever it implements the

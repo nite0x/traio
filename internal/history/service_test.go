@@ -27,6 +27,13 @@ func TestImportJobRunsFetchAndNormalizePhases(t *testing.T) {
 	}
 
 	svc := New(st)
+	var refreshedAccounts []int64
+	var refreshedFrom string
+	svc.SetOnHistoryChanged(func(_ context.Context, accountIDs []int64, from string) error {
+		refreshedAccounts = append([]int64(nil), accountIDs...)
+		refreshedFrom = from
+		return nil
+	})
 	fixture := []byte(`<?xml version="1.0"?><FlexQueryResponse><FlexStatements><FlexStatement accountId="U123" fromDate="20260901" toDate="20260901"><Trades></Trades><CashTransactions><CashTransaction transactionID="C1" type="Deposit" currency="USD" amount="100" dateTime="20260901;120000" description="Opening deposit"/></CashTransactions><Transfers></Transfers><CorporateActions></CorporateActions><CashReport><CashReportCurrency currency="USD" endingCash="100"/></CashReport><OpenPositions></OpenPositions></FlexStatement></FlexStatements></FlexQueryResponse>`)
 	preview, err := svc.PreviewImport(t.Context(), fixture, 0)
 	if err != nil {
@@ -55,6 +62,9 @@ func TestImportJobRunsFetchAndNormalizePhases(t *testing.T) {
 	}
 	if finished.Status != "succeeded" || finished.Phase != "normalize" || finished.Counts.Added != 1 {
 		t.Fatalf("finished = %#v", finished)
+	}
+	if len(refreshedAccounts) != 1 || refreshedAccounts[0] <= 0 || refreshedFrom != "2026-09-01" {
+		t.Fatalf("performance refresh accounts=%v from=%q", refreshedAccounts, refreshedFrom)
 	}
 	page, err := st.ListActivities(t.Context(), store.HistoryQuery{Limit: 10})
 	if err != nil {

@@ -20,6 +20,7 @@ type alpacaStatusSession interface {
 
 type alpacaConfigResponse struct {
 	BaseURL             string `json:"base_url"`
+	DataBaseURL         string `json:"data_base_url"`
 	APIKeyConfigured    bool   `json:"api_key_configured"`
 	APISecretConfigured bool   `json:"api_secret_configured"`
 	ConnectionID        int64  `json:"connection_id,omitempty"`
@@ -31,6 +32,7 @@ type saveAlpacaConfigRequest struct {
 	APIKey    string `json:"api_key"`
 	APISecret string `json:"api_secret"`
 	BaseURL   string `json:"base_url"`
+	DataBaseURL string `json:"data_base_url"`
 }
 
 func alpacaConfiguration(st brokerStore) gin.HandlerFunc {
@@ -61,10 +63,18 @@ func saveAlpacaConfiguration(st brokerStore, onChanged func(context.Context) err
 		req.APIKey = strings.TrimSpace(req.APIKey)
 		req.APISecret = strings.TrimSpace(req.APISecret)
 		req.BaseURL = strings.TrimSpace(req.BaseURL)
+		req.DataBaseURL = strings.TrimSpace(req.DataBaseURL)
 		if req.BaseURL == "" {
 			req.BaseURL = "https://paper-api.alpaca.markets"
 		}
 		if err := validateBrokerAPIBaseURL(req.BaseURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.DataBaseURL == "" {
+			req.DataBaseURL = "https://data.alpaca.markets"
+		}
+		if err := validateBrokerAPIBaseURL(req.DataBaseURL); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
@@ -97,7 +107,7 @@ func saveAlpacaConfiguration(st brokerStore, onChanged func(context.Context) err
 				Status:        store.BrokerConnectionStatusDisconnected,
 			}
 		}
-		connection.Config = map[string]any{"base_url": req.BaseURL}
+		connection.Config = map[string]any{"base_url": req.BaseURL, "data_base_url": req.DataBaseURL}
 		if providedAPIKey {
 			connection.Secrets = map[string]string{"api_key": req.APIKey, "api_secret": req.APISecret}
 		} else {
@@ -142,6 +152,7 @@ func loadPrimaryAlpacaConnection(c *gin.Context, st brokerStore) (store.BrokerCo
 func newAlpacaConfigResponse(connection store.BrokerConnection) alpacaConfigResponse {
 	response := alpacaConfigResponse{
 		BaseURL:             strings.TrimSpace(stringConfigValue(connection.Config, "base_url")),
+		DataBaseURL:         strings.TrimSpace(stringConfigValue(connection.Config, "data_base_url")),
 		APIKeyConfigured:    configuredSecret(connection.ConfiguredSecretKeys, "api_key"),
 		APISecretConfigured: configuredSecret(connection.ConfiguredSecretKeys, "api_secret"),
 		ConnectionID:        connection.ID,
@@ -149,6 +160,9 @@ func newAlpacaConfigResponse(connection store.BrokerConnection) alpacaConfigResp
 	}
 	if response.BaseURL == "" {
 		response.BaseURL = "https://paper-api.alpaca.markets"
+	}
+	if response.DataBaseURL == "" {
+		response.DataBaseURL = "https://data.alpaca.markets"
 	}
 	response.Available = response.APIKeyConfigured && response.APISecretConfigured && response.ConnectionID != 0 && response.ConnectionEnabled
 	return response
