@@ -7,10 +7,81 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nite/traio/internal/activity"
 	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/config"
 	"github.com/nite/traio/internal/store"
 )
+
+type historyFixtureSession struct {
+	id                        int64
+	provider, source, account string
+}
+
+func (s historyFixtureSession) ConnectionID() int64  { return s.id }
+func (s historyFixtureSession) ProviderCode() string { return s.provider }
+func (s historyFixtureSession) Health(context.Context) (broker.ConnectionHealth, error) {
+	return broker.ConnectionHealth{}, nil
+}
+func (s historyFixtureSession) Close(context.Context) error { return nil }
+func (s historyFixtureSession) FetchHistory(_ context.Context, account, currency, _, _ string) ([]activity.RawRecord, error) {
+	if account != s.account || currency != "USD" {
+		return nil, ErrAccountNotConnected
+	}
+	a := activity.Activity{Provider: s.provider, ProviderAccountID: account, Type: "deposit", Status: activity.StatusEffective, BookingStatus: activity.BookingBooked, TradeDate: "2026-09-01", TimePrecision: "date", Legs: []activity.Leg{{Kind: "cash", Component: "principal", Currency: currency, CashDelta: "10", EffectiveDate: "2026-09-01"}}}
+	return []activity.RawRecord{{Source: s.source, Namespace: s.source + ".activity", Key: "deposit-1", RecordType: "deposit", ProviderAccountID: account, Payload: []byte(`{"id":"deposit-1"}`), Activity: a}}, nil
+}
+
+func TestSchwabAndAlpacaHistoryJobsKeepProviderAccountsSeparate(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "providers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := New(st)
+	sessions := map[int64]broker.BrokerSession{}
+	svc.SetSessionResolver(func(id int64) (broker.BrokerSession, func()) { return sessions[id], func() {} })
+	for _, fixture := range []struct {
+		provider, source string
+		secrets          map[string]string
+	}{
+		{"SCHWAB", SourceSchwab, map[string]string{"access_token": "test-only"}},
+		{"ALPACA", SourceAlpaca, map[string]string{"api_key": "test-only", "api_secret": "test-only"}},
+	} {
+		connection, err := st.UpsertBrokerConnection(t.Context(), store.BrokerConnection{ProviderCode: fixture.provider, ConnectionKey: fixture.source, Enabled: true, Secrets: fixture.secrets})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.ReplaceBrokerConnectionAccounts(t.Context(), connection.ID, []broker.Account{{ID: "SAME-ID", Broker: fixture.provider, BaseCurrency: "USD"}}); err != nil {
+			t.Fatal(err)
+		}
+		sessions[connection.ID] = historyFixtureSession{id: connection.ID, provider: fixture.provider, source: fixture.source, account: "SAME-ID"}
+		job, err := svc.Enqueue(t.Context(), store.HistoryRequest{ConnectionID: connection.ID, Source: fixture.source, From: "2026-09-01", To: "2026-09-02"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := st.ClaimHistoryJob(t.Context(), "fixture-worker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc.runJob(t.Context(), claimed)
+		finished, err := st.GetHistoryJob(t.Context(), job.ID)
+		if err != nil || finished.Status != "succeeded" || finished.Counts.Added != 1 {
+			t.Fatalf("%s job = %+v err=%v", fixture.provider, finished, err)
+		}
+	}
+	page, err := st.ListActivities(t.Context(), store.HistoryQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].Provider == page.Items[1].Provider {
+		t.Fatalf("cross-provider activities = %+v", page.Items)
+	}
+	coverage, err := st.ListHistoryCoverage(t.Context())
+	if err != nil || len(coverage) != 2 || coverage[0].FetchStatus != "observed" || coverage[1].FetchStatus != "observed" {
+		t.Fatalf("coverage = %+v err=%v", coverage, err)
+	}
+}
 
 func TestImportJobRunsFetchAndNormalizePhases(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "history.db"))

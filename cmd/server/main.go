@@ -120,6 +120,7 @@ func main() {
 	}
 	performanceService := performance.New(st, performance.NewMarketValuationProvider(marketData), performanceMode)
 	historyService.SetOnHistoryChanged(performanceService.RefreshAccounts)
+	historyService.SetSessionResolver(connections.AcquireSession)
 	accountEquity := runtime.BuildAccountEquity(connections)
 	newsSvc := news.New(cfg.Finnhub)
 	aiSvc := ai.New(cfg.Claude)
@@ -142,6 +143,7 @@ func main() {
 	stopTradingEvents := connections.StartTradingEvents(ctx, brokerSync)
 	defer stopTradingEvents()
 	historyService.Start(ctx)
+	performanceService.Start(ctx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

@@ -5,20 +5,46 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
+	"github.com/nite/traio/internal/broker"
 	"github.com/nite/traio/internal/config"
 )
 
 const defaultPaperBaseURL = "https://paper-api.alpaca.markets"
+const defaultLiveBaseURL = "https://api.alpaca.markets"
+
+func officialEnvironment(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "paper-api.alpaca.markets":
+		return "paper"
+	case "api.alpaca.markets":
+		return "live"
+	default:
+		return ""
+	}
+}
 
 // Client wraps Alpaca Trading API v2.
 type Client struct {
 	mu         sync.RWMutex
 	cfg        config.AlpacaConfig
 	httpClient *http.Client
+	orders     broker.OrderSessionState
 }
+
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string { return e.Message }
 
 type Option func(*Client)
 
@@ -68,8 +94,11 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 	c.mu.RLock()
 	keyID := c.cfg.APIKey
 	secret := c.cfg.APISecret
-	baseURL := c.baseURL()
+	baseURL := c.cfg.BaseURL
 	c.mu.RUnlock()
+	if baseURL == "" {
+		baseURL = defaultPaperBaseURL
+	}
 
 	if keyID == "" || secret == "" {
 		return nil, fmt.Errorf("alpaca: api_key and api_secret are required")
@@ -87,18 +116,24 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.httpClient.Do(req)
+	httpClient := c.httpClient
+	if method != http.MethodGet && method != http.MethodHead {
+		copy := *httpClient
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &copy
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca: request %s: %w", path, err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := strings.TrimSpace(string(payload))
 		if msg == "" {
 			msg = resp.Status
 		}
-		return nil, fmt.Errorf("alpaca: %s %s: %s", method, path, msg)
+		return nil, &APIError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("alpaca: %s %s: %s", method, path, msg)}
 	}
 	return resp, nil
 }

@@ -13,9 +13,13 @@ import (
 
 type storePerformanceValuation struct {
 	prices map[int64][]perf.Price
+	calls  *int
 }
 
 func (v storePerformanceValuation) DailyPrices(context.Context, []perf.Instrument, time.Time, time.Time) (map[int64][]perf.Price, error) {
+	if v.calls != nil {
+		(*v.calls)++
+	}
 	return v.prices, nil
 }
 func (storePerformanceValuation) DailyFX(context.Context, []perf.FXPair, time.Time, time.Time) (map[perf.FXPair][]perf.FXRate, error) {
@@ -74,6 +78,19 @@ func TestPerformanceEndToEndFromLedgerAndRevision(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM daily_account_performance WHERE account_id=?`, accountID).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("persisted count=%d err=%v", count, err)
 	}
+	accountIDs, err := s.ListPerformanceAccountIDs(context.Background())
+	if err != nil || len(accountIDs) != 1 || accountIDs[0] != accountID {
+		t.Fatalf("performance accounts=%v err=%v", accountIDs, err)
+	}
+	readCalls := 0
+	reader := perf.New(s, storePerformanceValuation{calls: &readCalls}, perf.RetentionLicensedPersistence)
+	readerSeries, err := reader.Calculate(context.Background(), perf.Query{AccountID: accountID, From: day0, To: today})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readCalls != 0 || len(readerSeries.Points) != 3 || readerSeries.AsOf == "" {
+		t.Fatalf("persisted read calls=%d series=%#v", readCalls, readerSeries)
+	}
 	var originalGeneration int64
 	if err := s.db.QueryRow(`SELECT activity_generation FROM daily_account_performance WHERE account_id=? AND performance_date=?`, accountID, day0).Scan(&originalGeneration); err != nil {
 		t.Fatal(err)
@@ -107,6 +124,19 @@ func TestPerformanceEndToEndFromLedgerAndRevision(t *testing.T) {
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM daily_account_performance WHERE account_id=?`, accountID).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("idempotent count=%d err=%v", count, err)
+	}
+
+	secondRevision := datedHistoryTrade("exec-performance", "-3", day1, day1+"T12:00:00Z")
+	runHistoryRecords(t, s, secondRevision)
+	readAfterDirty, err := service.Calculate(context.Background(), perf.Query{AccountID: accountID, From: day0, To: today})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readAfterDirty.Points) != 3 || pointerValue(readAfterDirty.Points[1].TotalValue) != "997" {
+		t.Fatalf("dirty read did not rebuild complete series: %#v", readAfterDirty)
+	}
+	if dirty, err = s.PerformanceDirtyFrom(context.Background(), accountID); err != nil || dirty != "" {
+		t.Fatalf("dirty marker after read=%q err=%v", dirty, err)
 	}
 }
 

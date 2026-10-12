@@ -26,6 +26,8 @@ const (
 	SourceGateway = "gateway"
 	SourceFlex    = "flex"
 	SourceXML     = "xml"
+	SourceSchwab  = "schwab"
+	SourceAlpaca  = "alpaca"
 )
 
 var (
@@ -76,6 +78,8 @@ type Service struct {
 	lastRun          map[string]time.Time
 	wake             chan struct{}
 	autoSyncEnabled  bool
+	autoSyncOthers   bool
+	acquireSession   func(int64) (broker.BrokerSession, func())
 	onHistoryChanged func(context.Context, []int64, string) error
 }
 
@@ -108,6 +112,15 @@ func (s *Service) SetSyncConfig(cfg config.BrokerSyncConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoSyncEnabled = cfg.AutomaticEnabled("IBKR")
+	s.autoSyncOthers = cfg.Enabled
+}
+
+// SetSessionResolver uses the same connection-scoped sessions as portfolio
+// sync, including Schwab's persisted OAuth refresh handler.
+func (s *Service) SetSessionResolver(acquire func(int64) (broker.BrokerSession, func())) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.acquireSession = acquire
 }
 
 func (s *Service) Capabilities() []Capability {
@@ -115,6 +128,12 @@ func (s *Service) Capabilities() []Capability {
 		Provider:       "IBKR",
 		SupportedTypes: []string{"trade", "deposit", "withdrawal", "dividend", "interest", "lending_income", "fee", "tax", "refund", "fx_conversion", "cash_transfer", "security_transfer"},
 		Sources:        []string{SourceGateway, SourceFlex, SourceXML}, Granularity: "activity", Backfill: "configured_range", Connections: []ConnectionCapability{},
+	}, {
+		Provider: "SCHWAB", SupportedTypes: []string{"trade", "deposit", "withdrawal", "dividend", "interest", "cash_transfer", "security_transfer"},
+		Sources: []string{SourceSchwab}, Granularity: "activity", Backfill: "broker_available_range", Connections: []ConnectionCapability{},
+	}, {
+		Provider: "ALPACA", SupportedTypes: []string{"trade", "deposit", "withdrawal", "dividend", "interest", "fee", "tax", "cash_transfer", "security_transfer"},
+		Sources: []string{SourceAlpaca}, Granularity: "activity", Backfill: "broker_available_range", Connections: []ConnectionCapability{},
 	}}
 }
 
@@ -164,7 +183,8 @@ func (s *Service) Coverage(ctx context.Context) (Coverage, error) {
 		return Coverage{}, err
 	}
 	for _, connection := range connections {
-		if !strings.EqualFold(connection.ProviderCode, "IBKR") {
+		index := map[string]int{"IBKR": 0, "SCHWAB": 1, "ALPACA": 2}[strings.ToUpper(connection.ProviderCode)]
+		if index == 0 && !strings.EqualFold(connection.ProviderCode, "IBKR") {
 			continue
 		}
 		runtimeConnection, err := s.repo.GetBrokerConnectionRuntimeConfig(ctx, connection.ID)
@@ -178,7 +198,12 @@ func (s *Service) Coverage(ctx context.Context) (Coverage, error) {
 		if validateConnectionSource(runtimeConnection, SourceFlex) == nil {
 			configured = append(configured, SourceFlex)
 		}
-		capabilities[0].Connections = append(capabilities[0].Connections, ConnectionCapability{ConnectionID: connection.ID, Enabled: connection.Enabled, ConfiguredSources: configured})
+		for _, source := range []string{SourceSchwab, SourceAlpaca} {
+			if validateConnectionSource(runtimeConnection, source) == nil {
+				configured = append(configured, source)
+			}
+		}
+		capabilities[index].Connections = append(capabilities[index].Connections, ConnectionCapability{ConnectionID: connection.ID, Enabled: connection.Enabled, ConfiguredSources: configured})
 	}
 	return Coverage{Items: items, Capabilities: capabilities, Accounts: accounts}, nil
 }
@@ -189,7 +214,7 @@ func (s *Service) Issues(ctx context.Context) ([]store.HistoryIssue, error) {
 
 func (s *Service) Enqueue(ctx context.Context, req store.HistoryRequest) (store.HistoryJob, error) {
 	req.Source = strings.ToLower(strings.TrimSpace(req.Source))
-	if req.Source != "" && req.Source != SourceGateway && req.Source != SourceFlex {
+	if req.Source != "" && req.Source != SourceGateway && req.Source != SourceFlex && req.Source != SourceSchwab && req.Source != SourceAlpaca {
 		return store.HistoryJob{}, ErrInvalidRequest
 	}
 	if err := store.ValidateHistoryDates(req.From, req.To); err != nil {
@@ -258,7 +283,7 @@ func (s *Service) resolveRequestScope(ctx context.Context, req store.HistoryRequ
 		if req.ConnectionID > 0 {
 			requestedConnectionFound = true
 		}
-		if !public.Enabled || !strings.EqualFold(public.ProviderCode, "IBKR") {
+		if !public.Enabled || !historyProviderSupported(public.ProviderCode) {
 			continue
 		}
 		connection, err := s.repo.GetBrokerConnectionRuntimeConfig(ctx, public.ID)
@@ -310,7 +335,7 @@ func (s *Service) resolveRequestScope(ctx context.Context, req store.HistoryRequ
 			if err != nil {
 				return store.BrokerConnection{}, nil, "", err
 			}
-			if !strings.EqualFold(connection.ProviderCode, "IBKR") {
+			if !historyProviderSupported(connection.ProviderCode) {
 				return store.BrokerConnection{}, nil, "", fmt.Errorf("history_not_supported")
 			}
 		}
@@ -327,6 +352,12 @@ func (s *Service) resolveRequestScope(ctx context.Context, req store.HistoryRequ
 }
 
 func preferredSource(connection store.BrokerConnection, from string, now time.Time) string {
+	switch strings.ToUpper(connection.ProviderCode) {
+	case "SCHWAB":
+		return SourceSchwab
+	case "ALPACA":
+		return SourceAlpaca
+	}
 	flexReady := configString(connection.Config, "flex_activity_query_id") != "" && strings.TrimSpace(connection.Secrets["flex_token"]) != ""
 	gatewayReady := configString(connection.Config, "gateway_url") != "" && strings.TrimSpace(connection.Secrets["gateway_token"]) != ""
 	if flexReady && from != "" && from < now.AddDate(0, 0, -7).Format("2006-01-02") {
@@ -520,11 +551,33 @@ func (s *Service) validateAccountIDs(ctx context.Context, ids []int64, connectio
 }
 
 func validateConnectionSource(connection store.BrokerConnection, source string) error {
-	if !strings.EqualFold(connection.ProviderCode, "IBKR") {
+	provider := strings.ToUpper(connection.ProviderCode)
+	if !historyProviderSupported(provider) {
 		return fmt.Errorf("history_not_supported")
 	}
 	if !connection.Enabled {
 		return ErrSourceNotConfigured
+	}
+	if provider == "SCHWAB" {
+		if source != SourceSchwab {
+			return fmt.Errorf("history_not_supported")
+		}
+		if connection.Secrets["access_token"] == "" {
+			return ErrSourceNotConfigured
+		}
+		return nil
+	}
+	if provider == "ALPACA" {
+		if source != SourceAlpaca {
+			return fmt.Errorf("history_not_supported")
+		}
+		if connection.Secrets["api_key"] == "" || connection.Secrets["api_secret"] == "" {
+			return ErrSourceNotConfigured
+		}
+		return nil
+	}
+	if source != SourceGateway && source != SourceFlex {
+		return fmt.Errorf("history_not_supported")
 	}
 	if source == SourceFlex {
 		if configString(connection.Config, "flex_activity_query_id") == "" || strings.TrimSpace(connection.Secrets["flex_token"]) == "" {
@@ -534,6 +587,15 @@ func validateConnectionSource(connection store.BrokerConnection, source string) 
 		return ErrSourceNotConfigured
 	}
 	return nil
+}
+
+func historyProviderSupported(provider string) bool {
+	switch strings.ToUpper(provider) {
+	case "IBKR", "SCHWAB", "ALPACA":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) signalWorker() {

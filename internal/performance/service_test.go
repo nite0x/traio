@@ -13,6 +13,10 @@ type testRepository struct {
 	input      Input
 	dirty      string
 	anchor     Anchor
+	loaded     Series
+	loadedOK   bool
+	loads      int
+	accountIDs []int64
 	saves      int
 	savedFrom  string
 	clearDirty bool
@@ -20,6 +24,13 @@ type testRepository struct {
 
 func (r *testRepository) LoadPerformanceInput(context.Context, int64, string) (Input, error) {
 	return r.input, nil
+}
+func (r *testRepository) LoadPerformanceSeries(context.Context, Query, string) (Series, bool, error) {
+	r.loads++
+	return r.loaded, r.loadedOK, nil
+}
+func (r *testRepository) ListPerformanceAccountIDs(context.Context) ([]int64, error) {
+	return r.accountIDs, nil
 }
 func (r *testRepository) PerformanceDirtyFrom(context.Context, int64) (string, error) {
 	return r.dirty, nil
@@ -48,6 +59,73 @@ func (v testValuation) DailyPrices(context.Context, []Instrument, time.Time, tim
 }
 func (v testValuation) DailyFX(context.Context, []FXPair, time.Time, time.Time) (map[FXPair][]FXRate, error) {
 	return v.fx, nil
+}
+
+type countingValuation struct {
+	calls int
+}
+
+func (v *countingValuation) DailyPrices(context.Context, []Instrument, time.Time, time.Time) (map[int64][]Price, error) {
+	v.calls++
+	return map[int64][]Price{}, nil
+}
+
+func (v *countingValuation) DailyFX(context.Context, []FXPair, time.Time, time.Time) (map[FXPair][]FXRate, error) {
+	v.calls++
+	return map[FXPair][]FXRate{}, nil
+}
+
+func TestCalculateReadsPrecomputedLicensedSeries(t *testing.T) {
+	repo := &testRepository{loadedOK: true, loaded: Series{
+		AccountID: 4, BaseCurrency: "USD", AsOf: "2026-09-20T01:15:00Z",
+		Points:             []Point{{Date: "2026-09-19", Quality: "official", Finality: "eod"}},
+		CalculationVersion: CalculationVersion,
+	}}
+	valuation := &countingValuation{}
+	service := New(repo, valuation, RetentionLicensedPersistence)
+	service.now = func() time.Time { return time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC) }
+	series, err := service.Calculate(context.Background(), Query{AccountID: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series.Points) != 1 || series.Points[0].Date != "2026-09-19" || valuation.calls != 0 {
+		t.Fatalf("series=%#v valuation calls=%d", series, valuation.calls)
+	}
+	if series.RetentionMode != RetentionLicensedPersistence || repo.loads != 1 {
+		t.Fatalf("mode=%s loads=%d", series.RetentionMode, repo.loads)
+	}
+}
+
+func TestTransientCalculateReusesInMemorySeries(t *testing.T) {
+	repo := &testRepository{input: Input{
+		AccountID: 5, BaseCurrency: "USD",
+		Activities: []activity.Activity{testActivity("deposit", "2026-09-19", activity.Leg{Kind: "cash", Currency: "USD", CashDelta: "100"})},
+	}}
+	valuation := &countingValuation{}
+	service := New(repo, valuation, RetentionTransient)
+	service.now = func() time.Time { return time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC) }
+	if _, err := service.Recalculate(context.Background(), Query{AccountID: 5, From: "2026-09-19", To: "2026-09-20"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := valuation.calls
+	series, err := service.Calculate(context.Background(), Query{AccountID: 5, From: "2026-09-19", To: "2026-09-19"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valuation.calls != calls || len(series.Points) != 1 || series.Points[0].Date != "2026-09-19" {
+		t.Fatalf("cached series=%#v calls=%d want=%d", series, valuation.calls, calls)
+	}
+}
+
+func TestNextDailyRefreshUses0115UTC(t *testing.T) {
+	before := time.Date(2026, 9, 20, 1, 0, 0, 0, time.UTC)
+	if got := nextDailyRefresh(before); got != time.Date(2026, 9, 20, 1, 15, 0, 0, time.UTC) {
+		t.Fatalf("same-day refresh=%s", got)
+	}
+	after := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
+	if got := nextDailyRefresh(after); got != time.Date(2026, 9, 21, 1, 15, 0, 0, time.UTC) {
+		t.Fatalf("next-day refresh=%s", got)
+	}
 }
 
 func TestDailyPerformanceExcludesExternalFlowsAndRebuildsActivityState(t *testing.T) {

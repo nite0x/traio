@@ -204,6 +204,18 @@ func (b *ConnectionManager) AcquireDefaultSession(providerCode string) (session 
 	return nil, func() {}
 }
 
+// AcquireSession leases one explicit connection for a background history job.
+func (b *ConnectionManager) AcquireSession(connectionID int64) (broker.BrokerSession, func()) {
+	b.mu.RLock()
+	session := b.sessions[connectionID]
+	if session == nil {
+		b.mu.RUnlock()
+		return nil, func() {}
+	}
+	var once sync.Once
+	return session, func() { once.Do(b.mu.RUnlock) }
+}
+
 func (b *ConnectionManager) SyncSources() []portfolio.Source {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

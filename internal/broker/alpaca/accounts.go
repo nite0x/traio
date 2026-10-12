@@ -14,17 +14,20 @@ import (
 )
 
 type alpacaAccount struct {
-	ID               string `json:"id"`
-	AccountNumber    string `json:"account_number"`
-	Status           string `json:"status"`
-	Currency         string `json:"currency"`
-	Cash             string `json:"cash"`
-	PortfolioValue   string `json:"portfolio_value"`
-	Equity           string `json:"equity"`
-	LongMarketValue  string `json:"long_market_value"`
-	ShortMarketValue string `json:"short_market_value"`
-	BuyingPower      string `json:"buying_power"`
-	LastEquity       string `json:"last_equity"`
+	ID                   string `json:"id"`
+	AccountNumber        string `json:"account_number"`
+	Status               string `json:"status"`
+	Currency             string `json:"currency"`
+	Cash                 string `json:"cash"`
+	PortfolioValue       string `json:"portfolio_value"`
+	Equity               string `json:"equity"`
+	LongMarketValue      string `json:"long_market_value"`
+	ShortMarketValue     string `json:"short_market_value"`
+	BuyingPower          string `json:"buying_power"`
+	LastEquity           string `json:"last_equity"`
+	TradingBlocked       bool   `json:"trading_blocked"`
+	AccountBlocked       bool   `json:"account_blocked"`
+	TradeSuspendedByUser bool   `json:"trade_suspended_by_user"`
 }
 
 type alpacaPosition struct {

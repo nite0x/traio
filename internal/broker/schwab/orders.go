@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,7 +18,8 @@ import (
 var _ broker.TradingProvider = (*Client)(nil)
 
 type schwabOrder struct {
-	OrderID                                                      int64 `json:"orderId"`
+	OrderID                                                      int64  `json:"orderId"`
+	AccountNumber                                                string `json:"accountNumber"`
 	Status, EnteredTime, CloseTime, Duration, OrderType, Session string
 	Quantity, FilledQuantity, Price, StopPrice                   float64
 	Legs                                                         []struct {
@@ -26,42 +28,40 @@ type schwabOrder struct {
 	} `json:"orderLegCollection"`
 }
 
-func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (broker.Order, error) {
-	if err := broker.ValidateOrder(req); err != nil {
-		return broker.Order{}, fmt.Errorf("schwab: %w", err)
+func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (order broker.Order, err error) {
+	if err = c.validateTradingOrder(ctx, req); err != nil {
+		return broker.Order{}, err
 	}
-	if req.Notional > 0 {
-		return broker.Order{}, fmt.Errorf("schwab: notional orders are not supported by this adapter")
+	if previous, exists, beginErr := c.orders.Begin(req); beginErr != nil {
+		return broker.Order{}, beginErr
+	} else if exists {
+		if previous.Code != "" {
+			return previous.Order, broker.NewOrderError(previous.Code, previous.Error)
+		}
+		return previous.Order, nil
 	}
+	defer func() { c.orders.Finish(req, order, err) }()
 	hash, err := c.accountHash(ctx, req.AccountID)
 	if err != nil {
 		return broker.Order{}, err
 	}
-	instruction := strings.ToUpper(req.Side)
-	if req.PositionEffect == "close" {
-		instruction += "_TO_CLOSE"
-	} else if req.PositionEffect == "open" {
-		instruction += "_TO_OPEN"
-	}
-	payload := map[string]any{"session": map[bool]string{true: "SEAMLESS", false: "NORMAL"}[req.ExtendedHours], "duration": strings.ToUpper(req.TimeInForce), "orderType": schwabOrderType(req.OrderType), "orderStrategyType": "SINGLE", "quantity": req.Quantity, "orderLegCollection": []any{map[string]any{"instruction": instruction, "quantity": req.Quantity, "instrument": map[string]any{"symbol": strings.ToUpper(req.Symbol), "assetType": schwabAssetType(req.AssetClass)}}}}
-	if req.LimitPrice > 0 {
-		payload["price"] = formatPrice(req.LimitPrice)
-	}
-	if req.StopPrice > 0 {
-		payload["stopPrice"] = formatPrice(req.StopPrice)
-	}
-	body, _ := json.Marshal(payload)
+	body, _ := json.Marshal(schwabOrderPayload(req))
 	endpoint := c.traderEndpoint("/accounts/" + url.PathEscape(hash) + "/orders")
 	resp, err := c.Do(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+			return broker.Order{}, broker.NewOrderError("order_rejected", err.Error())
+		}
 		return broker.Order{}, err
 	}
 	defer resp.Body.Close()
 	id := pathBase(resp.Header.Get("Location"))
-	if id == "" {
+	parsedID, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil || parsedID <= 0 {
 		return broker.Order{}, fmt.Errorf("schwab: order response has no Location order id")
 	}
-	return c.GetOrder(ctx, req.AccountID, id)
+	return broker.Order{ID: id, ClientOrderID: req.ClientOrderID, AccountID: req.AccountID, Symbol: req.Symbol, AssetClass: req.AssetClass, Side: req.Side, OrderType: req.OrderType, Quantity: req.Quantity, LimitPrice: req.LimitPrice, StopPrice: req.StopPrice, TimeInForce: req.TimeInForce, Status: "unknown", RawStatus: "SUBMITTED_STATUS_UNVERIFIED"}, nil
 }
 
 func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broker.Order, error) {
@@ -77,6 +77,9 @@ func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broke
 	var raw schwabOrder
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return broker.Order{}, fmt.Errorf("schwab: decode order: %w", err)
+	}
+	if raw.AccountNumber != "" && raw.AccountNumber != accountID {
+		return broker.Order{}, broker.NewOrderError("invalid_order", "Schwab returned an order for another account")
 	}
 	return normalizeSchwabOrder(accountID, raw), nil
 }
@@ -101,6 +104,9 @@ func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.
 	}
 	out := make([]broker.Order, 0, len(raw))
 	for _, item := range raw {
+		if item.AccountNumber != "" && item.AccountNumber != q.AccountID {
+			return nil, broker.NewOrderError("invalid_order", "Schwab returned orders for another account")
+		}
 		o := normalizeSchwabOrder(q.AccountID, item)
 		if q.Status == "" || q.Status == "all" || o.Status == q.Status {
 			out = append(out, o)
@@ -109,6 +115,13 @@ func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.
 	return out, nil
 }
 func (c *Client) CancelOrder(ctx context.Context, accountID, orderID string) error {
+	order, err := c.GetOrder(ctx, accountID, orderID)
+	if err != nil {
+		return err
+	}
+	if order.ID != orderID || order.Status != "open" {
+		return broker.NewOrderError("invalid_order", "order is not open for cancellation")
+	}
 	hash, err := c.accountHash(ctx, accountID)
 	if err != nil {
 		return err
@@ -134,7 +147,7 @@ func (c *Client) accountHash(ctx context.Context, accountID string) (string, err
 		return "", fmt.Errorf("schwab: decode account numbers: %w", err)
 	}
 	for _, item := range items {
-		if item.AccountNumber == accountID {
+		if item.AccountNumber == accountID && item.HashValue != "" {
 			return item.HashValue, nil
 		}
 	}
@@ -179,12 +192,21 @@ func normalizeSchwabOrder(account string, o schwabOrder) broker.Order {
 		asset = strings.ToLower(o.Legs[0].Instrument.AssetType)
 		side = strings.ToLower(strings.Split(o.Legs[0].Instruction, "_")[0])
 	}
-	return broker.Order{ID: strconv.FormatInt(o.OrderID, 10), AccountID: account, Symbol: symbol, AssetClass: asset, Side: side, OrderType: strings.ToLower(o.OrderType), Quantity: o.Quantity, FilledQuantity: o.FilledQuantity, LimitPrice: o.Price, StopPrice: o.StopPrice, TimeInForce: strings.ToLower(o.Duration), Status: normalizeSchwabStatus(o.Status), RawStatus: o.Status, SubmittedAt: o.EnteredTime, UpdatedAt: o.CloseTime}
+	tif := strings.ToLower(o.Duration)
+	switch o.Duration {
+	case "GOOD_TILL_CANCEL":
+		tif = "gtc"
+	case "IMMEDIATE_OR_CANCEL":
+		tif = "ioc"
+	}
+	return broker.Order{ID: strconv.FormatInt(o.OrderID, 10), AccountID: account, Symbol: symbol, AssetClass: asset, Side: side, OrderType: strings.ToLower(o.OrderType), Quantity: o.Quantity, FilledQuantity: o.FilledQuantity, LimitPrice: o.Price, StopPrice: o.StopPrice, TimeInForce: tif, Status: normalizeSchwabStatus(o.Status), RawStatus: o.Status, SubmittedAt: o.EnteredTime, UpdatedAt: o.CloseTime}
 }
 func normalizeSchwabStatus(s string) string {
 	switch strings.ToUpper(s) {
-	case "AWAITING_PARENT_ORDER", "AWAITING_CONDITION", "AWAITING_STOP_CONDITION", "AWAITING_MANUAL_REVIEW", "ACCEPTED", "AWAITING_UR_OUT", "PENDING_ACTIVATION", "QUEUED", "WORKING", "PENDING_ACKNOWLEDGEMENT", "PENDING_RECALL", "UNKNOWN":
+	case "AWAITING_PARENT_ORDER", "AWAITING_CONDITION", "AWAITING_STOP_CONDITION", "AWAITING_MANUAL_REVIEW", "ACCEPTED", "AWAITING_UR_OUT", "PENDING_ACTIVATION", "QUEUED", "WORKING", "PENDING_ACKNOWLEDGEMENT", "PENDING_RECALL", "NEW", "AWAITING_RELEASE_TIME", "PENDING_REPLACE":
 		return "open"
+	case "PENDING_CANCEL":
+		return "pending_cancel"
 	case "FILLED":
 		return "filled"
 	case "CANCELED", "EXPIRED", "REPLACED":

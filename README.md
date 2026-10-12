@@ -19,7 +19,8 @@ Traio 的核心服务仓库，负责行情、账户、持仓、券商接入、�
 | **Go 后端** | Gin + SQLite + gorilla/websocket | REST API / WebSocket / 券商集成 / 数据存储 |
 | **MCP（独立部署）** | — | 通过稳定服务域名接入外部工具（Claude 等） |
 
-`traio-web` 会将这里的 `cmd/server` 编译为 Tauri sidecar。
+`traio-web` 默认下载本仓库 Releases 中指定版本的 Core，作为 Tauri sidecar 打包；
+本地联调仍可从这里的 `cmd/server` 编译。
 
 ## 快速开始
 
@@ -35,6 +36,41 @@ make server        # 启动 Go 后端，监听 http://127.0.0.1:38181
 ```bash
 make test          # Go 单元测试
 ```
+
+## Core 二进制发布
+
+将代码提交、推送后，在要发布的提交上创建并推送 `vX.Y.Z` 标签，例如：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`Release Core binaries` workflow 会先执行 Go 测试和 vet，再以 `CGO_ENABLED=0`
+编译 macOS、Linux、Windows 的 x64 和 ARM64 六个平台。全部成功后，在这个已有
+标签上创建 GitHub Release；`vX.Y.Z-rc.1` 等标签会发布为预发布版本。
+首次发布前需先把 workflow 和构建脚本提交到被打标签的提交。
+
+Release 附件包含：
+
+- `traio-server-<Rust target triple>`，Windows 文件带 `.exe` 后缀；
+- `SHA256SUMS`：每个二进制的 SHA-256；
+- `core-manifest.json`：版本、仓库、Git commit、Go 版本、平台、大小和 SHA-256。
+
+桌面端只需获取对应平台的三个附件，不需要拉取 Core 源码或安装 Go。这里发布的是
+独立 Core，Web 静态页面仍由桌面端或 Docker 构建提供；MCP、IBKR Manager、JRE
+和 Gateway 不在这些附件中。六个平台的编译成功不代表各平台安装包已通过实机验收。
+
+构建脚本也可以本地验证（需要 Python 3 和 `go.mod` 指定的 Go 版本）：
+
+```bash
+python3 scripts/build-core-release.py --version v0.1.0 --output dist/core
+```
+
+默认要求干净的工作区和不存在的输出目录，避免混入未提交代码或旧版本产物。
+调试脚本时可加 `--allow-dirty` 和 `--target aarch64-apple-darwin`，这类产物会
+标记 `sourceDirty`，不能作为桌面端的正式 Release 下载来源。
+已经存在的 Release 不会自动覆盖；修复后应发布新标签。
 
 ## 目录结构
 

@@ -146,6 +146,8 @@ type Anchor struct {
 
 type Repository interface {
 	LoadPerformanceInput(context.Context, int64, string) (Input, error)
+	LoadPerformanceSeries(context.Context, Query, string) (Series, bool, error)
+	ListPerformanceAccountIDs(context.Context) ([]int64, error)
 	PerformanceDirtyFrom(context.Context, int64) (string, error)
 	LoadPerformanceAnchor(context.Context, int64, string, string) (Anchor, error)
 	ReplacePerformanceSeries(context.Context, Series, string, bool) error

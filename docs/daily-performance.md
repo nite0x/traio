@@ -23,10 +23,10 @@ Traio 服务端从规范化账户活动重建每日现金和持仓，再以统�
 
 环境变量 `TRAIO_PERFORMANCE_RETENTION_MODE` 控制派生结果是否落库：
 
-- `transient`：默认值。请求时计算，不持久化每日结果，也不持久化行情原始或规范化 OHLC。
-- `licensed_persistence`：仅在明确拥有相应许可并同时设置 `TRAIO_MARKET_DATA_PERSISTENCE_LICENSED=true` 时启用。保存每日派生结果；仍不保存提供商原始或规范化 OHLC。
+- `transient`：默认值。服务启动、历史同步完成和每日调度会在内存中预计算；进程重启后重新生成，不持久化每日结果，也不持久化行情原始或规范化 OHLC。后台结果尚未生成时，首次请求会安全回退为即时计算。
+- `licensed_persistence`：仅在明确拥有相应许可并同时设置 `TRAIO_MARKET_DATA_PERSISTENCE_LICENSED=true` 时启用。保存每日派生结果，GET 直接读取已经计算的序列；仍不保存提供商原始或规范化 OHLC。
 
-交易修订会记录最早受影响日期。历史同步提交活动与覆盖后会自动触发 `licensed_persistence` 重算；`transient` 仍保留 dirty 边界但不会落库。重新计算只替换受影响日期之后的结果。
+服务启动时会在后台为已有活动的账户生成完整序列；首次历史同步和后续同步提交活动与覆盖后会立即触发账户级重算。交易修订会记录最早受影响日期，重算只替换受影响日期之后的结果。每日 01:15 UTC 还会补算上一个完整 UTC 日，避免没有新活动的账户停止推进估值日期。`transient` 只更新内存结果；`licensed_persistence` 原子替换数据库中的派生序列。
 
 ## API
 
@@ -34,5 +34,7 @@ Traio 服务端从规范化账户活动重建每日现金和持仓，再以统�
 GET /api/v1/performance/accounts/:account_id/daily?from=2026-01-01&to=2026-09-20&base_currency=USD
 POST /api/v1/performance/accounts/:account_id/recalculate?from=2026-01-01&to=2026-09-20&base_currency=USD
 ```
+
+GET 优先读取后台已经计算的结果；POST 明确执行重算。读取结果可能暂时只到最近一个已完成日期，客户端应使用响应中的 `as_of`、`coverage` 和点位 `finality` 表达新鲜度，而不在客户端重复计算。
 
 响应包含覆盖窗口、估值质量、缺失价格、缺失 FX、行情来源组合、活动代次和 `daily-performance-v1` 计算版本。

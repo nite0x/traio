@@ -32,8 +32,9 @@ func (s *Service) schedulerLoop(ctx context.Context) {
 func (s *Service) schedule(ctx context.Context) {
 	s.mu.Lock()
 	enabled := s.autoSyncEnabled
+	otherEnabled := s.autoSyncOthers
 	s.mu.Unlock()
-	if !enabled {
+	if !enabled && !otherEnabled {
 		return
 	}
 	connections, err := s.repo.ListBrokerConnections(ctx)
@@ -46,7 +47,11 @@ func (s *Service) schedule(ctx context.Context) {
 	}
 	now := s.now().UTC()
 	for _, connection := range connections {
-		if !connection.Enabled || !strings.EqualFold(connection.ProviderCode, "IBKR") || !configBool(connection.Config, "activity_history_enabled") {
+		if !connection.Enabled || !historyProviderSupported(connection.ProviderCode) || !configBool(connection.Config, "activity_history_enabled") {
+			continue
+		}
+		provider := strings.ToUpper(connection.ProviderCode)
+		if provider == "IBKR" && !enabled || provider != "IBKR" && !otherEnabled {
 			continue
 		}
 		runtimeConnection, err := s.repo.GetBrokerConnectionRuntimeConfig(ctx, connection.ID)
@@ -62,6 +67,18 @@ func (s *Service) schedule(ctx context.Context) {
 			ids = append(ids, account.ID)
 		}
 		from, to := now.AddDate(0, 0, -7).Format("2006-01-02"), now.Format("2006-01-02")
+		if provider != "IBKR" {
+			source := SourceSchwab
+			if provider == "ALPACA" {
+				source = SourceAlpaca
+			}
+			if len(ids) > 0 && validateConnectionSource(runtimeConnection, source) == nil && s.due(connection.ID, source, 24*time.Hour, now) {
+				if _, err := s.repo.CreateHistoryJob(ctx, store.HistoryRequest{AccountIDs: ids, ConnectionID: connection.ID, Source: source, From: from, To: to}); err == nil {
+					s.signalWorker()
+				}
+			}
+			continue
+		}
 		if len(ids) > 0 && validateConnectionSource(runtimeConnection, SourceGateway) == nil && s.due(connection.ID, SourceGateway, gatewayCadence, now) {
 			if _, err := s.repo.CreateHistoryJob(ctx, store.HistoryRequest{AccountIDs: ids, ConnectionID: connection.ID, Source: SourceGateway, From: from, To: to}); err == nil {
 				s.signalWorker()

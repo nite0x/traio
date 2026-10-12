@@ -36,6 +36,7 @@ type Client struct {
 	traderURL    string
 	marketURL    string
 	onToken      func(Token)
+	orders       broker.OrderSessionState
 
 	stream *streamManager
 }

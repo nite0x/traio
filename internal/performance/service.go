@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nite/traio/internal/activity"
@@ -16,16 +18,54 @@ type Service struct {
 	valuation ValuationProvider
 	mode      RetentionMode
 	now       func() time.Time
+	cacheMu   sync.RWMutex
+	cache     map[performanceCacheKey]Series
+	cacheBase map[int64]string
+	locksMu   sync.Mutex
+	locks     map[int64]*sync.Mutex
+}
+
+type performanceCacheKey struct {
+	accountID    int64
+	baseCurrency string
 }
 
 func New(repo Repository, valuation ValuationProvider, mode RetentionMode) *Service {
 	if mode == "" {
 		mode = RetentionTransient
 	}
-	return &Service{repo: repo, valuation: valuation, mode: mode, now: time.Now}
+	return &Service{
+		repo: repo, valuation: valuation, mode: mode, now: time.Now,
+		cache: map[performanceCacheKey]Series{}, cacheBase: map[int64]string{}, locks: map[int64]*sync.Mutex{},
+	}
 }
 
 func (s *Service) Calculate(ctx context.Context, query Query) (Series, error) {
+	query, err := s.normalizeReadQuery(query)
+	if err != nil {
+		return Series{}, err
+	}
+	if s.mode == RetentionLicensedPersistence {
+		dirtyFrom, err := s.repo.PerformanceDirtyFrom(ctx, query.AccountID)
+		if err != nil {
+			return Series{}, err
+		}
+		if dirtyFrom != "" {
+			if _, err = s.calculate(ctx, query, true); err != nil {
+				return Series{}, err
+			}
+		}
+		series, found, err := s.repo.LoadPerformanceSeries(ctx, query, CalculationVersion)
+		if err != nil {
+			return Series{}, err
+		}
+		if found {
+			series.RetentionMode = s.mode
+			return series, nil
+		}
+	} else if series, found := s.loadTransientSeries(query); found {
+		return series, nil
+	}
 	return s.calculate(ctx, query, false)
 }
 
@@ -34,10 +74,10 @@ func (s *Service) Recalculate(ctx context.Context, query Query) (Series, error) 
 }
 
 // RefreshAccounts is called by the history worker after normalized activities
-// and coverage are committed. Transient mode already records the durable dirty
-// boundary but intentionally performs no provider fetch or derived persistence.
+// and coverage are committed. Licensed mode updates durable derived rows;
+// transient mode only updates the in-memory read cache.
 func (s *Service) RefreshAccounts(ctx context.Context, accountIDs []int64, from string) error {
-	if s == nil || s.mode != RetentionLicensedPersistence {
+	if s == nil {
 		return nil
 	}
 	var refreshErrors []error
@@ -54,10 +94,139 @@ func (s *Service) RefreshAccounts(ctx context.Context, accountIDs []int64, from 
 	return errors.Join(refreshErrors...)
 }
 
+// Start initializes derived performance in the background and refreshes the
+// last completed UTC day once per day. Broker history commits still trigger
+// immediate account-scoped refreshes through RefreshAccounts.
+func (s *Service) Start(ctx context.Context) {
+	if s == nil || s.repo == nil || s.valuation == nil {
+		return
+	}
+	go s.refreshLoop(ctx)
+}
+
+func (s *Service) refreshLoop(ctx context.Context) {
+	s.refreshAll(ctx, Query{})
+	for {
+		now := s.now().UTC()
+		next := nextDailyRefresh(now)
+		timer := time.NewTimer(next.Sub(now))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			completed := s.now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+			s.refreshAll(ctx, Query{From: completed, To: completed})
+		}
+	}
+}
+
+func (s *Service) refreshAll(ctx context.Context, query Query) {
+	accountIDs, err := s.repo.ListPerformanceAccountIDs(ctx)
+	if err != nil {
+		log.Printf("performance background refresh: list accounts: %v", err)
+		return
+	}
+	for _, accountID := range accountIDs {
+		query.AccountID = accountID
+		if _, err := s.Recalculate(ctx, query); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("performance background refresh: account=%d: %v", accountID, err)
+		}
+	}
+}
+
+func nextDailyRefresh(now time.Time) time.Time {
+	now = now.UTC()
+	next := time.Date(now.Year(), now.Month(), now.Day(), 1, 15, 0, 0, time.UTC)
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+func (s *Service) normalizeReadQuery(query Query) (Query, error) {
+	if s == nil || s.repo == nil || s.valuation == nil || query.AccountID <= 0 {
+		return Query{}, ErrInvalidRequest
+	}
+	now := startOfDay(s.now().UTC())
+	to, err := parseDateDefault(query.To, now)
+	if err != nil || to.After(now) {
+		return Query{}, ErrInvalidRequest
+	}
+	query.To = to.Format(time.DateOnly)
+	query.BaseCurrency = strings.ToUpper(strings.TrimSpace(query.BaseCurrency))
+	if query.BaseCurrency != "" && len(query.BaseCurrency) != 3 {
+		return Query{}, ErrInvalidRequest
+	}
+	if strings.TrimSpace(query.From) != "" {
+		from, parseErr := time.Parse(time.DateOnly, strings.TrimSpace(query.From))
+		if parseErr != nil || from.After(to) {
+			return Query{}, ErrInvalidRequest
+		}
+		query.From = from.Format(time.DateOnly)
+	}
+	return query, nil
+}
+
+func (s *Service) loadTransientSeries(query Query) (Series, bool) {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	var cached Series
+	if query.BaseCurrency != "" {
+		cached = s.cache[performanceCacheKey{accountID: query.AccountID, baseCurrency: query.BaseCurrency}]
+	} else if base := s.cacheBase[query.AccountID]; base != "" {
+		cached = s.cache[performanceCacheKey{accountID: query.AccountID, baseCurrency: base}]
+	}
+	if len(cached.Points) == 0 {
+		return Series{}, false
+	}
+	return sliceSeries(cached, query.From, query.To), true
+}
+
+func (s *Service) storeTransientSeries(series Series, from string, defaultBase bool) {
+	key := performanceCacheKey{accountID: series.AccountID, baseCurrency: series.BaseCurrency}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if previous := s.cache[key]; len(previous.Points) > 0 && from != "" {
+		merged := make([]Point, 0, len(previous.Points)+len(series.Points))
+		for _, point := range previous.Points {
+			if point.Date < from {
+				merged = append(merged, point)
+			}
+		}
+		series.Points = append(merged, series.Points...)
+	}
+	s.cache[key] = series
+	if defaultBase {
+		s.cacheBase[series.AccountID] = series.BaseCurrency
+	}
+}
+
+func sliceSeries(series Series, from, to string) Series {
+	points := make([]Point, 0, len(series.Points))
+	for _, point := range series.Points {
+		if (from == "" || point.Date >= from) && (to == "" || point.Date <= to) {
+			points = append(points, point)
+		}
+	}
+	series.Points = points
+	if from != "" {
+		series.Coverage.RequestedFrom = from
+	} else if len(points) > 0 {
+		series.Coverage.RequestedFrom = points[0].Date
+	}
+	if to != "" {
+		series.Coverage.RequestedTo = to
+	}
+	return series
+}
+
 func (s *Service) calculate(ctx context.Context, query Query, useDirtyBoundary bool) (Series, error) {
 	if s == nil || s.repo == nil || s.valuation == nil || query.AccountID <= 0 {
 		return Series{}, ErrInvalidRequest
 	}
+	unlock := s.lockAccount(query.AccountID)
+	defer unlock()
 	now := s.now().UTC()
 	to, err := parseDateDefault(query.To, startOfDay(now))
 	if err != nil || to.After(startOfDay(now)) {
@@ -144,6 +313,8 @@ func (s *Service) calculate(ctx context.Context, query Query, useDirtyBoundary b
 		if err := s.repo.ReplacePerformanceSeries(ctx, series, from.Format(time.DateOnly), clearDirty); err != nil {
 			return Series{}, err
 		}
+	} else {
+		s.storeTransientSeries(series, from.Format(time.DateOnly), strings.TrimSpace(query.BaseCurrency) == "")
 	}
 	if requestedFrom.After(from) {
 		filtered := series.Points[:0]
@@ -155,6 +326,18 @@ func (s *Service) calculate(ctx context.Context, query Query, useDirtyBoundary b
 		series.Points = filtered
 	}
 	return series, nil
+}
+
+func (s *Service) lockAccount(accountID int64) func() {
+	s.locksMu.Lock()
+	lock := s.locks[accountID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.locks[accountID] = lock
+	}
+	s.locksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 func summarizeCoverage(windows []CoverageWindow, from, to string) string {

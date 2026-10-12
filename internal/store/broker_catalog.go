@@ -100,6 +100,7 @@ var defaultBrokerProviders = []providerSeed{
 			{Key: "access_token", Label: "Access Token", Type: "string", Secret: true},
 			{Key: "refresh_token", Label: "Refresh Token", Type: "string", Secret: true},
 			{Key: "expires_at", Label: "Token 过期时间", Type: "datetime"},
+			{Key: "activity_history_enabled", Label: "同步账户活动", Type: "boolean"},
 		},
 	},
 	{
@@ -115,6 +116,7 @@ var defaultBrokerProviders = []providerSeed{
 			{Key: "api_secret", Label: "API Secret", Type: "string", Secret: true, Required: true},
 			{Key: "base_url", Label: "API 地址覆盖", Type: "url"},
 			{Key: "data_base_url", Label: "Market Data API 地址", Type: "url"},
+			{Key: "activity_history_enabled", Label: "同步账户活动", Type: "boolean"},
 		},
 	},
 	{

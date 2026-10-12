@@ -219,6 +219,9 @@ func (c *Client) NewAuthenticatedRequest(ctx context.Context, method, endpoint s
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	return req, nil
 }
 
@@ -231,6 +234,11 @@ func (c *Client) Do(ctx context.Context, method, endpoint string, body io.Reader
 	c.mu.RLock()
 	httpClient := c.httpClient
 	c.mu.RUnlock()
+	if method != http.MethodGet && method != http.MethodHead {
+		copy := *httpClient
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &copy
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("schwab: API request: %w", err)

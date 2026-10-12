@@ -411,7 +411,8 @@ func updateHistoryConfig(st brokerStore, onChanged func(context.Context) error) 
 			writeBrokerStoreError(c, err)
 			return
 		}
-		if !strings.EqualFold(connection.ProviderCode, "IBKR") {
+		provider := strings.ToUpper(connection.ProviderCode)
+		if provider != "IBKR" && provider != "SCHWAB" && provider != "ALPACA" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "history_not_supported"})
 			return
 		}
@@ -422,6 +423,10 @@ func updateHistoryConfig(st brokerStore, onChanged func(context.Context) error) 
 		}
 		if req.ActivityHistoryEnabled == nil && req.ActivityHistoryFrom == nil && req.FlexActivityQueryID == nil && req.FlexQueryID == nil && req.FlexToken == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_history_config"})
+			return
+		}
+		if provider != "IBKR" && (req.FlexActivityQueryID != nil || req.FlexQueryID != nil || req.FlexToken != nil) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "history_not_supported"})
 			return
 		}
 		if req.ActivityHistoryFrom != nil {

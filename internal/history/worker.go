@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/nite/traio/internal/activity"
@@ -167,6 +168,36 @@ func (s *Service) fetchJob(ctx context.Context, job *store.HistoryJob) (fetchRes
 	}
 	if err := validateConnectionSource(connection, job.Request.Source); err != nil {
 		return fetchResult{}, err
+	}
+	if job.Request.Source == SourceSchwab || job.Request.Source == SourceAlpaca {
+		s.mu.Lock()
+		acquire := s.acquireSession
+		s.mu.Unlock()
+		if acquire == nil {
+			return fetchResult{}, ErrSourceNotConfigured
+		}
+		session, release := acquire(connection.ID)
+		defer release()
+		if session == nil || !strings.EqualFold(session.ProviderCode(), connection.ProviderCode) {
+			return fetchResult{}, ErrSourceNotConfigured
+		}
+		fetcher, ok := session.(interface {
+			FetchHistory(context.Context, string, string, string, string) ([]activity.RawRecord, error)
+		})
+		if !ok {
+			return fetchResult{}, ErrSourceNotConfigured
+		}
+		result := fetchResult{}
+		for _, id := range job.Request.AccountIDs {
+			account := accounts[id]
+			rows, err := fetcher.FetchHistory(ctx, account.ProviderAccountID, account.BaseCurrency, job.Request.From, job.Request.To)
+			if err != nil {
+				return fetchResult{}, err
+			}
+			result.records = append(result.records, rows...)
+			job.Coverage = append(job.Coverage, store.HistoryCoverage{AccountID: id, Source: job.Request.Source, DataType: "activities", ScopeKey: "account", From: job.Request.From, To: job.Request.To, FetchStatus: "observed"})
+		}
+		return result, nil
 	}
 	client, err := ibkr.NewActivityClient(connectionIBKRConfig(connection))
 	if err != nil {

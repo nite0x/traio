@@ -142,6 +142,113 @@ func (s *Store) LoadPerformanceInput(ctx context.Context, accountID int64, to st
 	return input, rows.Err()
 }
 
+func (s *Store) LoadPerformanceSeries(ctx context.Context, query performance.Query, version string) (performance.Series, bool, error) {
+	series := performance.Series{
+		AccountID: query.AccountID, Points: []performance.Point{},
+		CalculationVersion: version,
+	}
+	base := strings.ToUpper(strings.TrimSpace(query.BaseCurrency))
+	if err := s.queryRowContext(ctx, `SELECT currency FROM broker_accounts WHERE id=? AND archived_at=''`, query.AccountID).Scan(&series.BaseCurrency); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return series, false, performance.ErrAccountNotFound
+		}
+		return series, false, err
+	}
+	series.BaseCurrency = strings.ToUpper(strings.TrimSpace(series.BaseCurrency))
+	if base != "" {
+		series.BaseCurrency = base
+	}
+
+	statement := `SELECT performance_date,total_value,cash_value,holdings_value,external_cash_flow,daily_pnl,daily_return,cumulative_twr,quality,finality,missing_prices,missing_fx,missing_cost_basis,source_mix,coverage,activity_generation,calculated_at FROM daily_account_performance WHERE account_id=? AND base_currency=? AND calculation_version=?`
+	args := []any{query.AccountID, series.BaseCurrency, version}
+	if query.From != "" {
+		statement += ` AND performance_date>=?`
+		args = append(args, query.From)
+	}
+	if query.To != "" {
+		statement += ` AND performance_date<=?`
+		args = append(args, query.To)
+	}
+	statement += ` ORDER BY performance_date`
+	rows, err := s.queryContext(ctx, statement, args...)
+	if err != nil {
+		return series, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var point performance.Point
+		var total, cash, holdings, flow, pnl, dailyReturn, twr sql.NullString
+		var missingPrices, missingFX, missingCost, sources, coverageJSON string
+		var calculatedAt string
+		if err = rows.Scan(
+			&point.Date, &total, &cash, &holdings, &flow, &pnl, &dailyReturn, &twr,
+			&point.Quality, &point.Finality, &missingPrices, &missingFX, &missingCost,
+			&sources, &coverageJSON, &series.ActivityGeneration, &calculatedAt,
+		); err != nil {
+			return series, false, err
+		}
+		point.TotalValue = nullStringPointer(total)
+		point.CashValue = nullStringPointer(cash)
+		point.HoldingsValue = nullStringPointer(holdings)
+		point.ExternalCashFlow = nullStringPointer(flow)
+		point.DailyPnL = nullStringPointer(pnl)
+		point.DailyReturn = nullStringPointer(dailyReturn)
+		point.CumulativeTWR = nullStringPointer(twr)
+		point.CalculationVersion = version
+		if err = unmarshalStringList(missingPrices, &point.MissingPrices); err != nil {
+			return series, false, err
+		}
+		if err = unmarshalStringList(missingFX, &point.MissingFX); err != nil {
+			return series, false, err
+		}
+		if err = unmarshalStringList(missingCost, &point.MissingCostBasis); err != nil {
+			return series, false, err
+		}
+		if err = unmarshalStringList(sources, &point.SourceMix); err != nil {
+			return series, false, err
+		}
+		if err = json.Unmarshal([]byte(coverageJSON), &series.Coverage); err != nil {
+			return series, false, err
+		}
+		if calculatedAt > series.AsOf {
+			series.AsOf = calculatedAt
+		}
+		series.Points = append(series.Points, point)
+	}
+	if err = rows.Err(); err != nil {
+		return series, false, err
+	}
+	if len(series.Points) == 0 {
+		return series, false, nil
+	}
+	if query.From != "" {
+		series.Coverage.RequestedFrom = query.From
+	} else {
+		series.Coverage.RequestedFrom = series.Points[0].Date
+	}
+	if query.To != "" {
+		series.Coverage.RequestedTo = query.To
+	}
+	return series, true, nil
+}
+
+func (s *Store) ListPerformanceAccountIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.queryContext(ctx, `SELECT id FROM broker_accounts WHERE archived_at='' AND EXISTS (SELECT 1 FROM account_activities WHERE account_id=broker_accounts.id) ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var accountIDs []int64
+	for rows.Next() {
+		var accountID int64
+		if err = rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	return accountIDs, rows.Err()
+}
+
 func (s *Store) PerformanceDirtyFrom(ctx context.Context, accountID int64) (string, error) {
 	var value string
 	err := s.queryRowContext(ctx, `SELECT dirty_from FROM account_performance_rebuild WHERE account_id=?`, accountID).Scan(&value)
@@ -250,6 +357,24 @@ func nullableString(value *string) any {
 		return nil
 	}
 	return *value
+}
+
+func nullStringPointer(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	result := value.String
+	return &result
+}
+
+func unmarshalStringList(raw string, target *[]string) error {
+	if err := json.Unmarshal([]byte(raw), target); err != nil {
+		return err
+	}
+	if *target == nil {
+		*target = []string{}
+	}
+	return nil
 }
 
 func (s *Store) markPerformanceDirtyTx(ctx context.Context, tx *sql.Tx, accountID int64, from string) error {

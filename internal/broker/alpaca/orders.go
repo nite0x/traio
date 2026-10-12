@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -47,10 +48,19 @@ func (o *alpacaOrder) UnmarshalJSON(data []byte) error {
 
 var _ broker.TradingProvider = (*Client)(nil)
 
-func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (broker.Order, error) {
-	if err := broker.ValidateOrder(req); err != nil {
-		return broker.Order{}, fmt.Errorf("alpaca: %w", err)
+func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (order broker.Order, err error) {
+	if _, err = c.validateTradingOrder(ctx, req); err != nil {
+		return broker.Order{}, err
 	}
+	if previous, exists, beginErr := c.orders.Begin(req); beginErr != nil {
+		return broker.Order{}, beginErr
+	} else if exists {
+		if previous.Code != "" {
+			return previous.Order, broker.NewOrderError(previous.Code, previous.Error)
+		}
+		return previous.Order, nil
+	}
+	defer func() { c.orders.Finish(req, order, err) }()
 	payload := map[string]any{"symbol": strings.ToUpper(req.Symbol), "side": req.Side, "type": req.OrderType, "time_in_force": req.TimeInForce}
 	if req.Quantity > 0 {
 		payload["qty"] = decimal(req.Quantity)
@@ -70,6 +80,10 @@ func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (broke
 	body, _ := json.Marshal(payload)
 	resp, err := c.Do(ctx, http.MethodPost, "orders", bytes.NewReader(body))
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+			return broker.Order{}, broker.NewOrderError("order_rejected", err.Error())
+		}
 		return broker.Order{}, err
 	}
 	defer resp.Body.Close()
@@ -77,10 +91,16 @@ func (c *Client) PlaceOrder(ctx context.Context, req broker.OrderRequest) (broke
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return broker.Order{}, fmt.Errorf("alpaca: decode order: %w", err)
 	}
+	if raw.ID == "" {
+		return broker.Order{}, broker.NewOrderError("order_outcome_unknown", "Alpaca returned no order ID; inspect broker orders before submitting again")
+	}
 	return normalizeAlpacaOrder(req.AccountID, raw), nil
 }
 
 func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broker.Order, error) {
+	if _, err := c.findAccount(ctx, accountID); err != nil {
+		return broker.Order{}, err
+	}
 	resp, err := c.Do(ctx, http.MethodGet, "orders/"+url.PathEscape(orderID), nil)
 	if err != nil {
 		return broker.Order{}, err
@@ -94,6 +114,9 @@ func (c *Client) GetOrder(ctx context.Context, accountID, orderID string) (broke
 }
 
 func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.Order, error) {
+	if _, err := c.findAccount(ctx, q.AccountID); err != nil {
+		return nil, err
+	}
 	values := url.Values{}
 	if q.Status != "" {
 		values.Set("status", q.Status)
@@ -121,7 +144,14 @@ func (c *Client) ListOrders(ctx context.Context, q broker.OrderQuery) ([]broker.
 	return out, nil
 }
 
-func (c *Client) CancelOrder(ctx context.Context, _ string, orderID string) error {
+func (c *Client) CancelOrder(ctx context.Context, accountID string, orderID string) error {
+	order, err := c.GetOrder(ctx, accountID, orderID)
+	if err != nil {
+		return err
+	}
+	if order.ID != orderID || order.Status != "open" {
+		return broker.NewOrderError("invalid_order", "order is not open for cancellation")
+	}
 	resp, err := c.Do(ctx, http.MethodDelete, "orders/"+url.PathEscape(orderID), nil)
 	if err != nil {
 		return err
@@ -142,6 +172,8 @@ func normalizeStatus(s string) string {
 	switch strings.ToLower(s) {
 	case "new", "accepted", "pending_new", "accepted_for_bidding", "partially_filled", "pending_replace":
 		return "open"
+	case "pending_cancel":
+		return "pending_cancel"
 	case "filled":
 		return "filled"
 	case "canceled", "expired", "replaced":

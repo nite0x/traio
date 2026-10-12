@@ -154,7 +154,11 @@ func (s *Store) SaveHistoryRaw(ctx context.Context, j HistoryJob, records []acti
 	}
 	for _, r := range records {
 		var accountID int64
-		err = tx.QueryRowContext(ctx, s.bind(`SELECT id FROM broker_accounts WHERE provider_code='IBKR' AND provider_account_id=?`), r.ProviderAccountID).Scan(&accountID)
+		provider, err := historyRecordProvider(r)
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT id FROM broker_accounts WHERE provider_code=? AND provider_account_id=?`), provider, r.ProviderAccountID).Scan(&accountID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("history_account_not_found")
 		}
@@ -318,7 +322,11 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 	}
 	a := r.Activity
 	a.AccountID = accountID
-	a.Provider = "IBKR"
+	provider, err := historyRecordProvider(r)
+	if err != nil {
+		return "", err
+	}
+	a.Provider = provider
 	a.ProviderAccountID = r.ProviderAccountID
 	for i := range a.Legs {
 		l := &a.Legs[i]
@@ -330,7 +338,7 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 			a.Warnings = append(a.Warnings, "instrument_identity_unresolved")
 			continue
 		}
-		asset, err := s.resolveInstrumentTx(ctx, tx, InstrumentIdentity{PreserveBrokerIdentity: true, ProviderCode: "IBKR", ExternalID: l.ExternalInstrumentID, AssetType: l.AssetType, Symbol: l.Symbol, Currency: l.Currency})
+		asset, err := s.resolveInstrumentTx(ctx, tx, InstrumentIdentity{PreserveBrokerIdentity: true, ProviderCode: provider, ExternalID: l.ExternalInstrumentID, AssetType: l.AssetType, Symbol: l.Symbol, Currency: l.Currency})
 		if err != nil {
 			return "", err
 		}
@@ -655,6 +663,24 @@ func (s *Store) normalizeHistoryRecord(ctx context.Context, j HistoryJob, rawID 
 		return "", err
 	}
 	return result, tx.Commit()
+}
+
+func historyRecordProvider(r activity.RawRecord) (string, error) {
+	var expected string
+	switch strings.ToLower(r.Source) {
+	case "gateway", "flex", "xml":
+		expected = "IBKR"
+	case "schwab":
+		expected = "SCHWAB"
+	case "alpaca":
+		expected = "ALPACA"
+	default:
+		return "", fmt.Errorf("history_source_not_supported")
+	}
+	if r.Activity.Provider != "" && !strings.EqualFold(r.Activity.Provider, expected) {
+		return "", fmt.Errorf("history_provider_mismatch")
+	}
+	return expected, nil
 }
 
 type historyCursor struct {

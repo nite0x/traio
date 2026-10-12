@@ -43,9 +43,19 @@ func (*Factory) Open(_ context.Context, connection broker.ConnectionConfig) (bro
 	if baseURL == "" {
 		if strings.EqualFold(connection.Environment, "live") {
 			baseURL = configString(connection.ProviderConfig, "live_base_url")
+			if baseURL == "" {
+				baseURL = defaultLiveBaseURL
+			}
 		} else {
 			baseURL = configString(connection.ProviderConfig, "paper_base_url")
+			if baseURL == "" {
+				baseURL = defaultPaperBaseURL
+			}
 		}
+	}
+	actual := officialEnvironment(baseURL)
+	if strings.EqualFold(connection.Environment, "live") && actual == "paper" || strings.EqualFold(connection.Environment, "paper") && actual == "live" {
+		return nil, broker.NewOrderError("invalid_order", "Alpaca environment and API endpoint do not match")
 	}
 	cfg := config.AlpacaConfig{
 		APIKey: connection.Secrets["api_key"], APISecret: connection.Secrets["api_secret"], BaseURL: baseURL,

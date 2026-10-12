@@ -56,7 +56,7 @@ func (s *Store) CreateHistoryJob(ctx context.Context, r HistoryRequest) (History
 	if err := ValidateHistoryDates(r.From, r.To); err != nil {
 		return HistoryJob{}, err
 	}
-	if r.Source != "gateway" && r.Source != "flex" && r.Source != "xml" {
+	if r.Source != "gateway" && r.Source != "flex" && r.Source != "xml" && r.Source != "schwab" && r.Source != "alpaca" {
 		return HistoryJob{}, fmt.Errorf("invalid_history_source")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
