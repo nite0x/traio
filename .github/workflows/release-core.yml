@@ -35,7 +35,7 @@ jobs:
         env:
           CORE_VERSION: ${{ github.ref_name }}
         run: python3 scripts/build-core-release.py --version "$CORE_VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: core-release
           path: dist/core/*
